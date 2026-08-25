@@ -2,13 +2,13 @@
 #
 # Runs on every push to main, but only for packages actually touched by that
 # push (tj-actions/changed-files, same discovery pattern as test_python.yml).
-# For each changed package, python-semantic-release inspects the commits
-# since that package's last release tag — attributing them by which files
-# they touched (path_filters), not by a required commit scope — and decides
-# whether a release is warranted. A release creates and pushes a
-# `<package_dir>-v<version>` tag and a GitHub Release — no version bump or
-# changelog is ever committed back to the branch. The package's version is
-# resolved from that tag at build time by setuptools-scm.
+# For each changed package (any directory under packages/), python-semantic-release
+# inspects the commits since that package's last release tag — attributing
+# them by which files they touched (path_filters), not by a required commit
+# scope — and decides whether a release is warranted. A release creates and
+# pushes a `<package_dir>-v<version>` tag and a GitHub Release — no version
+# bump or changelog is ever committed back to the branch. The package's
+# version is resolved from that tag at build time by setuptools-scm.
 #
 # Publishing to PyPI uses trusted publishing (OIDC — no stored credentials).
 # See PACKAGE_VERSIONING.md for the full flow and the one-time
@@ -43,16 +43,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Find changed top-level directories
+      - name: Find changed package directories
         id: changed-dirs
         if: github.event_name != 'workflow_dispatch'
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
+          files: packages/**
+          files_ignore: packages/**/*.md
           dir_names: true
-          dir_names_max_depth: 1
+          dir_names_max_depth: 2
           json: true
           escape_json: false
-          files_ignore: '**/*.md'
 
       # A push considers every package touched by the diff (from the step
       # above); workflow_dispatch considers every package in the repo (PSR
@@ -71,16 +72,17 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            const isPackage = (dir) =>
-              fs.existsSync(path.join(dir, 'pyproject.toml')) &&
-              fs.existsSync(path.join(dir, 'tests'));
+            const isPackage = (name) =>
+              fs.existsSync(path.join('packages', name, 'pyproject.toml')) &&
+              fs.existsSync(path.join('packages', name, 'tests'));
 
             const candidates =
               context.eventName === 'workflow_dispatch'
-                ? fs.readdirSync('.', { withFileTypes: true })
-                    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+                ? fs.readdirSync('packages', { withFileTypes: true })
+                    .filter((entry) => entry.isDirectory())
                     .map((entry) => entry.name)
-                : JSON.parse(process.env.CHANGED_DIRS || '[]');
+                : JSON.parse(process.env.CHANGED_DIRS || '[]')
+                    .map((dir) => path.relative('packages', dir));
 
             const packages = candidates.filter(isPackage);
             core.info(`Discovered packages: ${JSON.stringify(packages)}`);
@@ -118,7 +120,7 @@ jobs:
         id: release
         uses: python-semantic-release/python-semantic-release@39dd2052f2ce8282a5d932c31d58a2ca06d2550e # v10.6.1
         with:
-          directory: ${{ matrix.package }}
+          directory: packages/${{ matrix.package }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           git_committer_name: github-actions[bot]
           git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
@@ -137,11 +139,11 @@ jobs:
 
       - name: Build package
         if: steps.release.outputs.released == 'true'
-        working-directory: ${{ matrix.package }}
+        working-directory: packages/${{ matrix.package }}
         run: uv build
 
       - name: Publish to PyPI
         if: steps.release.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          packages-dir: ${{ matrix.package }}/dist
+          packages-dir: packages/${{ matrix.package }}/dist

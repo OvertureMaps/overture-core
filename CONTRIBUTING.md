@@ -1,11 +1,11 @@
 # Contributing
 
-This is a monorepo: each top-level directory with a `pyproject.toml` and a `tests/` directory is an independent, publishable Python package, managed with [`uv`](https://docs.astral.sh/uv/).
+This is a monorepo: each directory under [`packages/`](packages) with a `pyproject.toml` and a `tests/` directory is an independent, publishable Python package, managed with [`uv`](https://docs.astral.sh/uv/).
 
 ## Adding a new package
 
 ```bash
-mkdir my_package && cd my_package
+mkdir packages/my_package && cd packages/my_package
 uv init --lib --name my-package
 ```
 
@@ -16,7 +16,7 @@ A package needs, at minimum:
 - `tests/`: pytest suite (`testpaths = ["tests"]` in `pyproject.toml`).
 - `README.md`: what it's for, how to use it.
 
-That's it: [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) and [`.github/workflows/publish_packages.yml`](.github/workflows/publish_packages.yml) auto-discover any directory matching that shape, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
+That's it: [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) and [`.github/workflows/publish_packages.yml`](.github/workflows/publish_packages.yml) auto-discover any directory under `packages/` matching that shape, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
 
 ### Versioning
 
@@ -32,7 +32,7 @@ requires = ["setuptools>=64.0", "setuptools_scm>=8.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
-root = ".."
+root = "../.."
 tag_regex = "^my_package-v(?P<version>.*)$"
 git_describe_command = "git describe --dirty --tags --long --match 'my_package-v*'"
 
@@ -79,7 +79,7 @@ The `tool.uv.sources` override is dev-only: it never ends up in the built packag
 ## Local development
 
 ```bash
-cd my_package
+cd packages/my_package
 uv sync --extra dev
 uv run pytest -v
 uv run ruff format .

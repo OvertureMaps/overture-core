@@ -1,6 +1,6 @@
 # Package versioning and publishing
 
-Each top-level package (`overture_core`, `overture_serverless`, ...) is versioned and released independently, and fully automatically: there's no version to bump and no tag to create by hand.
+Each package under [`packages/`](packages) (`overture_core`, `overture_serverless`, ...) is versioned and released independently, and fully automatically: there's no version to bump and no tag to create by hand.
 
 ## Background: python-semantic-release
 

@@ -2,14 +2,14 @@
 
 SDK everything builds on: bundle/provenance model, config, check framework, platform abstractions, registry client.
 
-A monorepo of independently versioned, independently published Python packages. Each top-level directory with a `pyproject.toml` and a `tests/` directory is one package.
+A monorepo of independently versioned, independently published Python packages. Each directory under [`packages/`](packages) with a `pyproject.toml` and a `tests/` directory is one package.
 
 ## Packages
 
 | Package | Description |
 | --- | --- |
-| [`overture_core`](overture_core) | Shared, framework-agnostic business logic — portable job classes. |
-| [`overture_serverless`](overture_serverless) | Base class for portable, framework-agnostic serverless jobs. |
+| [`overture_core`](packages/overture_core) | Shared, framework-agnostic business logic — portable job classes. |
+| [`overture_serverless`](packages/overture_serverless) | Base class for portable, framework-agnostic serverless jobs. |
 
 ## Contributing
 
