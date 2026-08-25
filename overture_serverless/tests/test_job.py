@@ -39,3 +39,9 @@ def test_get_param_strips_whitespace_only_string_to_default():
     job = _EchoJob()
     job._params = {"value": "   "}
     assert job.get_param("value", default="fallback", is_required=False) == "fallback"
+
+
+def test_log_prints_message(capsys):
+    job = _EchoJob()
+    job.log("hello from job")
+    assert "hello from job" in capsys.readouterr().out

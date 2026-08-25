@@ -176,6 +176,17 @@ class TestReadSchemaFromReleasedRc:
             with pytest.raises(RuntimeError, match="'released' marker"):
                 read_schema_from_released_rc("bkt", "X")
 
+    def test_reraises_non_404_head_object_errors(self):
+        import botocore.exceptions
+
+        s3 = self._stub_s3(runs=["run=1"], released_runs=set())
+        s3.head_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
+        )
+        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError, match="Forbidden"):
+                read_schema_from_released_rc("bkt", "X")
+
 
 # ── list_public_releases ──────────────────────────────────────────────────────
 
@@ -274,6 +285,16 @@ class TestReadExistingStacSchemas:
                 "schemaless": {"other": "field"},
                 "good": {"schema:version": "v1.0.0"},
             },
+        )
+        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+            schemas = read_existing_stac_schemas("bkt")
+
+        assert schemas == {"good": "v1.0.0"}
+
+    def test_skips_empty_release_name(self):
+        s3 = self._make_s3(
+            common_prefixes=["stac/", "stac/good/"],
+            catalog_by_release={"good": {"schema:version": "v1.0.0"}},
         )
         with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
             schemas = read_existing_stac_schemas("bkt")
