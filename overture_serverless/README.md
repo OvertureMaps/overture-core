@@ -1,5 +1,8 @@
 # overture-serverless
 
+[![PyPI](https://img.shields.io/pypi/v/overture-serverless.svg)](https://pypi.org/project/overture-serverless/)
+[![Python versions](https://img.shields.io/pypi/pyversions/overture-serverless.svg)](https://pypi.org/project/overture-serverless/)
+
 Base class for portable, framework-agnostic "job" classes. A published package that gets installed at run time wherever a job actually executes, and provides the contract your job subclasses.
 
 It contains:

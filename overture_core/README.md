@@ -1,5 +1,8 @@
 # overture_core
 
+[![PyPI](https://img.shields.io/pypi/v/overture-core.svg)](https://pypi.org/project/overture-core/)
+[![Python versions](https://img.shields.io/pypi/pyversions/overture-core.svg)](https://pypi.org/project/overture-core/)
+
 Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
 
 ## Jobs
