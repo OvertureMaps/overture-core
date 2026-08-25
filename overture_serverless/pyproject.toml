@@ -12,6 +12,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
 ]
 
 [build-system]
@@ -23,3 +24,10 @@ packages = ["overture_serverless"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["overture_serverless"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

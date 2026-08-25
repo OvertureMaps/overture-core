@@ -95,7 +95,7 @@ jobs:
 
       - name: Run tests
         working-directory: ${{ matrix.package }}
-        run: uv run pytest -v
+        run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=80
 
   # Rollup status job - required in branch protection
   rollup-python-test-status:

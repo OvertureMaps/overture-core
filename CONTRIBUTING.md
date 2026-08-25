@@ -16,7 +16,23 @@ A package needs, at minimum:
 - `tests/` — pytest suite (`testpaths = ["tests"]` in `pyproject.toml`).
 - `README.md` — what it's for, how to use it.
 
-That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) auto-discovers any directory matching that shape and runs `uv run pytest -v` against it, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
+That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) auto-discovers any directory matching that shape and runs `uv run pytest -v --cov` against it, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
+
+### Coverage floor
+
+CI fails a package's tests if coverage drops below **80%**. Add `pytest-cov` as a dev dependency and set the floor in `pyproject.toml`:
+
+```toml
+[project.optional-dependencies]
+dev = ["pytest>=9.1.1", "pytest-cov>=7.0.0"]
+
+[tool.coverage.run]
+source = ["my_package"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+```
 
 Publishing a new package to PyPI does need a one-time trusted-publisher setup — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).
 
