@@ -1,0 +1,67 @@
+[project]
+name = "overture-serverless"
+dynamic = ["version"]
+description = "Base classes for portable, framework-agnostic serverless Python jobs."
+authors = [
+    {name = "Overture Maps Foundation"}
+]
+license = "MIT"
+license-files = ["../../LICENSE"]
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["overture", "overturemaps", "serverless", "jobs"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overture_serverless"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["overture_serverless"]
+
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^overture_serverless-v(?P<version>.*)$"
+git_describe_command = "git describe --dirty --tags --long --match 'overture_serverless-v*'"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["overture_serverless"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "overture_serverless-v{version}"
+allow_zero_version = true
+
+# path_filters (relative to this directory, since the release workflow cds
+# here) is what attributes a commit to this package: PSR checks the commit's
+# actual changed files, not its scope. No scope_prefix is set, so a plain
+# `fix: ...`/`feat: ...` with no scope works, as long as the commit touches
+# files under packages/overture_serverless/.
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]

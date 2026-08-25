@@ -1,1 +1,18 @@
 # Add file and directory types to ignore
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+
+# setuptools' license-files resolution stages a copy of the referenced
+# LICENSE here as a side effect of building any package under packages/.
+/packages/LICENSE
+

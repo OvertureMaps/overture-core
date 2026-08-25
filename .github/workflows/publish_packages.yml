@@ -1,0 +1,128 @@
+# Publish Python Packages
+#
+# Auto-discovers packages the same way as test_python.yml (see
+# discover-packages.yml). On push to main: for each package actually touched
+# by that push, python-semantic-release inspects the commits since that
+# package's last release tag — attributing them by which files they touched
+# (path_filters), not by a required commit scope — and decides whether a
+# release is warranted. A release creates and pushes a
+# `<package_dir>-v<version>` tag and a GitHub Release — no version bump or
+# changelog is ever committed back to the branch — then builds and publishes
+# to real PyPI via trusted publishing.
+#
+# On workflow_dispatch: a pure smoke test. No tagging, no GitHub Release, no
+# push, every package gets built from its current (unreleased) state and
+# published to Test PyPI instead, so the packaging/publishing pipeline can be
+# exercised without touching main's release history or real PyPI.
+#
+# See PACKAGE_VERSIONING.md for the full flow and the one-time
+# trusted-publisher setup (on both pypi.org and test.pypi.org) a new package
+# needs.
+#
+# Every build (real or smoke test) is validated with `twine check --strict`
+# before any upload, catching bad PyPI metadata (broken README rendering,
+# missing/invalid classifiers, etc.) as a CI failure instead of a broken
+# PyPI project page.
+
+name: Publish Python Packages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {} # no workflow-level access; each job grants only what it needs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false # never cancel a release/publish mid-flight
+
+jobs:
+  detect-changes:
+    name: detect-changes
+    permissions:
+      contents: read # forwarded to discover-packages.yml's checkout step
+    uses: ./.github/workflows/discover-packages.yml
+
+  release:
+    name: release ${{ matrix.package }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    environment:
+      # workflow_dispatch never touches the real pypi-<package> environment
+      # (and its trusted publisher scoped to pypi.org) — it publishes under a
+      # separate testpypi-<package> environment scoped to test.pypi.org.
+      name: ${{ github.event_name == 'workflow_dispatch' && format('testpypi-{0}', matrix.package) || format('pypi-{0}', matrix.package) }}
+    permissions:
+      contents: write # push the release tag (push event only)
+      id-token: write # PyPI/TestPyPI trusted publishing
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.detect-changes.outputs.packages) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Computes the next version from the commits since this package's last
+      # release tag, attributing each commit to the package by its changed
+      # files (see path_filters in the package's pyproject.toml), and, if a
+      # release is warranted, tags and pushes it (no commit, no committed
+      # changelog — release notes go to the GitHub Release instead). PSR
+      # authenticates its own git push with github_token, independent of the
+      # checkout step's (deliberately non-persisted) credentials. Skipped
+      # entirely on workflow_dispatch: a manual run never tags or releases,
+      # it only smoke-tests the build/publish steps below.
+      - name: Release ${{ matrix.package }}
+        id: release
+        if: github.event_name == 'push'
+        uses: python-semantic-release/python-semantic-release@39dd2052f2ce8282a5d932c31d58a2ca06d2550e # v10.6.1
+        with:
+          directory: packages/${{ matrix.package }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: github-actions[bot]
+          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
+          commit: false
+          tag: true
+          push: true
+          changelog: false
+          vcs_release: true
+          build: false
+
+      - name: Install uv
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false # this job publishes a runtime artifact; don't risk a poisoned cache
+
+      - name: Build package
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: uv build
+
+      # Twine's built-in check is what PyPI itself uses to validate metadata
+      # (long_description rendering, required fields, valid classifiers) at
+      # upload time; running it here fails the build early instead of
+      # silently rejecting or mangling the package's PyPI page.
+      - name: Check package metadata
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: uvx twine check --strict dist/*
+
+      - name: Publish to PyPI
+        if: github.event_name == 'push' && steps.release.outputs.released == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: packages/${{ matrix.package }}/dist
+
+      - name: Publish to Test PyPI (smoke test)
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: packages/${{ matrix.package }}/dist
+          repository-url: https://test.pypi.org/legacy/

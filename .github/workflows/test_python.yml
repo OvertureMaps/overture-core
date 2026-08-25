@@ -1,0 +1,92 @@
+# Test Python Packages
+#
+# Auto-discovers testable packages (see discover-packages.yml): any directory
+# under packages/ with both a pyproject.toml and a tests/ directory is tested
+# via `uv run pytest -v`, then built and validated with `twine check --strict`
+# so bad PyPI metadata fails the PR instead of a real release after merge.
+# Adding a new package needs no edits here.
+
+name: Test Python
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {} # no workflow-level access; each job grants only what it needs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    name: detect-changes
+    permissions:
+      contents: read # forwarded to discover-packages.yml's checkout step
+    uses: ./.github/workflows/discover-packages.yml
+
+  test:
+    name: test ${{ matrix.package }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.detect-changes.outputs.packages) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # setuptools-scm needs tag history to resolve the version
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: packages/${{ matrix.package }}/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: packages/${{ matrix.package }}
+        run: uv sync --extra dev
+
+      - name: Run tests
+        working-directory: packages/${{ matrix.package }}
+        run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=95
+
+      - name: Build package
+        working-directory: packages/${{ matrix.package }}
+        run: uv build
+
+      # Same check publish_packages.yml runs before any real upload; running
+      # it here too catches bad PyPI metadata (broken README rendering,
+      # missing/invalid classifiers, license/classifier conflicts) as a PR
+      # failure instead of a failed release after merge.
+      - name: Check package metadata
+        working-directory: packages/${{ matrix.package }}
+        run: uvx twine check --strict dist/*
+
+  # Rollup status job - required in branch protection
+  rollup-python-test-status:
+    name: rollup-python-test-status
+    runs-on: ubuntu-latest
+    permissions: {} # are-we-good only reads job results from `needs` context
+    needs:
+      - detect-changes
+      - test
+    if: always()
+    steps:
+      - uses: lowlydba/are-we-good@f506ed6324f55ec5e4ff5d92204a72c7f1c2b4f8 # v1.0.5
+        with:
+          jobs: ${{ toJSON(needs) }}

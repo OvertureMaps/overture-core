@@ -1,0 +1,75 @@
+# Discover Packages
+#
+# Reusable workflow shared by test_python.yml and publish_packages.yml so
+# both stay in lockstep on what "a package" means, instead of each carrying
+# its own copy of this logic.
+#
+# On pull_request/push, finds the packages/ subdirectories actually touched
+# by the diff (tj-actions/changed-files). On workflow_dispatch, considers
+# every directory under packages/, since a manual run always operates
+# repo-wide. Either way, a directory only counts if it looks like a real
+# package (has both pyproject.toml and tests/).
+
+name: Discover Packages
+
+on:
+  workflow_call:
+    outputs:
+      packages:
+        description: JSON array of package directory names (relative to packages/) for this event.
+        value: ${{ jobs.detect-changes.outputs.packages }}
+
+permissions: {}
+
+jobs:
+  detect-changes:
+    name: detect-changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+    outputs:
+      packages: ${{ steps.discover.outputs.packages }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find changed package directories
+        id: changed-dirs
+        if: github.event_name != 'workflow_dispatch'
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          files: packages/**
+          files_ignore: packages/**/*.md
+          dir_names: true
+          dir_names_max_depth: 2
+          json: true
+          escape_json: false
+
+      - name: Discover packages
+        id: discover
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CHANGED_DIRS: ${{ steps.changed-dirs.outputs.all_changed_files }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const isPackage = (name) =>
+              fs.existsSync(path.join('packages', name, 'pyproject.toml')) &&
+              fs.existsSync(path.join('packages', name, 'tests'));
+
+            const candidates =
+              context.eventName === 'workflow_dispatch'
+                ? fs.readdirSync('packages', { withFileTypes: true })
+                    .filter((entry) => entry.isDirectory())
+                    .map((entry) => entry.name)
+                : JSON.parse(process.env.CHANGED_DIRS || '[]')
+                    .map((dir) => path.relative('packages', dir));
+
+            const packages = candidates.filter(isPackage);
+            core.info(`Discovered packages: ${JSON.stringify(packages)}`);
+            core.setOutput('packages', JSON.stringify(packages));

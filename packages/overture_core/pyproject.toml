@@ -1,0 +1,74 @@
+[project]
+name = "overture-core"
+dynamic = ["version"]
+description = "Shared Overture business logic — portable, framework-agnostic job classes."
+authors = [
+    {name = "Overture Maps Foundation"}
+]
+license = "MIT"
+license-files = ["../../LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["overture", "overturemaps", "stac", "gis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "overture-serverless>=0.1.0",
+    "overture-stac",
+    "pystac>=1.8.4",
+    "boto3>=1.35",
+]
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overture_core"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["overture_core*"]
+
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^overture_core-v(?P<version>.*)$"
+git_describe_command = "git describe --dirty --tags --long --match 'overture_core-v*'"
+
+[tool.uv.sources]
+overture-serverless = { path = "../overture_serverless" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["overture_core"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "overture_core-v{version}"
+allow_zero_version = true
+
+# path_filters (relative to this directory, since the release workflow cds
+# here) is what attributes a commit to this package: PSR checks the commit's
+# actual changed files, not its scope. No scope_prefix is set, so a plain
+# `fix: ...`/`feat: ...` with no scope works, as long as the commit touches
+# files under packages/overture_core/.
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]
