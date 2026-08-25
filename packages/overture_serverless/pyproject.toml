@@ -42,6 +42,11 @@ packages = ["overture_serverless"]
 root = "../.."
 tag_regex = "^overture_serverless-v(?P<version>.*)$"
 git_describe_command = "git describe --dirty --tags --long --match 'overture_serverless-v*'"
+# PyPI (and Test PyPI) rejects local version identifiers (the "+g<hash>"
+# suffix setuptools_scm appends between tags), so drop it. Only affects
+# unreleased/dirty builds (e.g. the workflow_dispatch smoke test) — a real
+# release always builds from a clean tag.
+local_scheme = "no-local-version"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
