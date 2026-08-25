@@ -38,11 +38,10 @@ A push that doesn't touch a package at all skips it outright (no job even runs);
 
 ## Trusted publishing setup (one-time per package)
 
-Each package publishes through its own GitHub Environment, named `pypi-<package_dir>` (e.g. `pypi-overture_core`), so PyPI's trusted-publisher config can scope access per package. When adding a new package:
+Each package publishes through its own GitHub Environment, named `pypi-<package_dir>` (e.g. `pypi-overture_core`), so PyPI's trusted-publisher config can scope access per package. The `release` job in `publish_packages.yml` references `pypi-${{ matrix.package }}` as its `environment`, so GitHub auto-creates that environment the first time the job runs for a given package, no manual setup needed on the GitHub side. When adding a new package, the only manual step is on PyPI:
 
 1. Create the PyPI project (or use `--dry-run` on first publish to reserve it).
 2. On the project's PyPI settings, add a trusted publisher: this repo, workflow `publish_packages.yml`, environment `pypi-<package_dir>`.
-3. Add a matching `pypi-<package_dir>` environment in this repo's GitHub settings (no secrets required).
 
 ## Adding a new package
 
