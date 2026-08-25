@@ -25,38 +25,46 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed top-level directories
+      - name: Find changed top-level directories
         id: changed-dirs
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           dir_names: true
           dir_names_max_depth: 1
+          json: true
+          escape_json: false
           files_ignore: '**/*.md'
 
+      # PRs/pushes only test packages touched by the diff (from the step above);
+      # workflow_dispatch tests every package in the repo. Either way, a
+      # "changed directory" only counts if it's actually a package (has both
+      # pyproject.toml and tests/) — filtering that requires a bit of scripting,
+      # so it's done here rather than with a marketplace action.
       - name: Discover testable packages
         id: discover
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           CHANGED_DIRS: ${{ steps.changed-dirs.outputs.all_changed_files }}
-        run: |
-          set -euo pipefail
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
 
-          # PRs only test packages touched by the diff; push/dispatch test everything.
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            CANDIDATES="${CHANGED_DIRS}"
-          else
-            CANDIDATES=$(find . -maxdepth 1 -mindepth 1 -type d -printf '%f\n')
-          fi
+            const isPackage = (dir) =>
+              fs.existsSync(path.join(dir, 'pyproject.toml')) &&
+              fs.existsSync(path.join(dir, 'tests'));
 
-          PACKAGES="[]"
-          for dir in ${CANDIDATES}; do
-            [[ "${dir}" == "." || "${dir}" == ".github" ]] && continue
-            [[ -f "${dir}/pyproject.toml" && -d "${dir}/tests" ]] || continue
-            PACKAGES=$(echo "${PACKAGES}" | jq -c --arg p "${dir}" '. + [$p]')
-          done
+            const candidates =
+              context.eventName === 'workflow_dispatch'
+                ? fs.readdirSync('.', { withFileTypes: true })
+                    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+                    .map((entry) => entry.name)
+                : JSON.parse(process.env.CHANGED_DIRS || '[]');
 
-          echo "Discovered packages: ${PACKAGES}"
-          echo "packages=${PACKAGES}" >> "${GITHUB_OUTPUT}"
+            const packages = candidates.filter(isPackage);
+            core.info(`Discovered packages: ${JSON.stringify(packages)}`);
+            core.setOutput('packages', JSON.stringify(packages));
 
   test:
     name: test ${{ matrix.package }}
