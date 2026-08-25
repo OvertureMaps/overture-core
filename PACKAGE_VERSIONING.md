@@ -47,12 +47,17 @@ flowchart TD
 
 For each package, PSR looks at the commits since its last release tag and, if any warrant a bump, tags and pushes `<package_dir>-v<version>` (e.g. `overture_core-v0.2.0`): **no commit is ever made back to `main`**, and no `CHANGELOG.md` is committed to the repo. Release notes are published to the tag's [GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github) instead, and the same job then builds with `uv build` (`setuptools-scm` picks up the version it just tagged) and publishes to PyPI via [trusted publishing](https://docs.pypi.org/trusted-publishers/), no stored credentials.
 
+### Manual dispatch publishes to Test PyPI instead
+
+Running `publish_packages.yml` manually (`workflow_dispatch`) never tags, releases, or touches real PyPI: it's a smoke test of the build/publish pipeline, not a release mechanism. Every package builds from its current (unreleased) state and publishes to [Test PyPI](https://test.pypi.org/) instead, through a separate `testpypi-<package_dir>` GitHub Environment (distinct from the `pypi-<package_dir>` one a push uses) so its trusted-publisher scoping never overlaps with a real release.
+
 ## Trusted publishing setup (one-time per package)
 
-Each package publishes through its own GitHub Environment, named `pypi-<package_dir>` (e.g. `pypi-overture_core`), so PyPI's trusted-publisher config can scope access per package. The `release` job in `publish_packages.yml` references `pypi-${{ matrix.package }}` as its `environment`, so GitHub auto-creates that environment the first time the job runs for a given package, no manual setup needed on the GitHub side. When adding a new package, the only manual step is on PyPI:
+Each package publishes through its own GitHub Environment, named `pypi-<package_dir>` (e.g. `pypi-overture_core`) for real releases and `testpypi-<package_dir>` for manual-dispatch smoke tests, so PyPI's and Test PyPI's trusted-publisher configs can each scope access per package. `publish_packages.yml`'s `release` job references these as its `environment`, so GitHub auto-creates them the first time the job runs for a given package/trigger combination, no manual setup needed on the GitHub side. When adding a new package, the only manual steps are on PyPI and Test PyPI (each has its own separate account/project system, so both need this done independently):
 
-1. Create the PyPI project (or use `--dry-run` on first publish to reserve it).
-2. On the project's PyPI settings, add a trusted publisher: this repo, workflow `publish_packages.yml`, environment `pypi-<package_dir>`.
+1. Create the project (or use a "pending" trusted publisher to reserve the name on first publish, see [PyPI's docs](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)) on both [pypi.org](https://pypi.org/manage/account/publishing/) and [test.pypi.org](https://test.pypi.org/manage/account/publishing/).
+2. On pypi.org, add a trusted publisher: this repo, workflow `publish_packages.yml`, environment `pypi-<package_dir>`.
+3. On test.pypi.org, add a trusted publisher: this repo, workflow `publish_packages.yml`, environment `testpypi-<package_dir>`.
 
 ## Adding a new package
 
