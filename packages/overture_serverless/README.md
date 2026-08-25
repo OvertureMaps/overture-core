@@ -24,7 +24,7 @@ class CollectionJob(ServerlessPythonJob):
 ## Testing locally
 
 ```bash
-cd overture_serverless
+cd packages/overture_serverless
 uv run python -c "
 from overture_serverless.job import ServerlessPythonJob
 
