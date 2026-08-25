@@ -1,1 +1,11 @@
 # Add file and directory types to ignore
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+

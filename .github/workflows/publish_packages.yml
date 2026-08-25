@@ -1,0 +1,77 @@
+# Publish Python Packages
+#
+# Triggers on a tag matching `<package_dir>-v<version>` (e.g. overture_core-v0.2.0).
+# Builds that one package and publishes it to PyPI via trusted publishing
+# (OIDC — no stored credentials). See PACKAGE_VERSIONING.md for the release
+# flow and the one-time trusted-publisher setup a new package needs.
+
+name: Publish Python Packages
+
+on:
+  push:
+    tags:
+      - "*-v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. overture_core-v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.parse.outputs.package }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Parse package and version from tag
+        id: parse
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^([a-zA-Z0-9_]+)-v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            echo "Tag '${TAG}' doesn't match <package_dir>-v<version>" >&2
+            exit 1
+          fi
+          echo "package=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "version=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-${{ needs.resolve.outputs.package }}
+    permissions:
+      id-token: write # trusted publishing
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Verify pyproject.toml version matches tag
+        working-directory: ${{ needs.resolve.outputs.package }}
+        run: |
+          set -euo pipefail
+          PROJECT_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          if [[ "${PROJECT_VERSION}" != "${{ needs.resolve.outputs.version }}" ]]; then
+            echo "pyproject.toml version (${PROJECT_VERSION}) != tag version (${{ needs.resolve.outputs.version }})" >&2
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build package
+        working-directory: ${{ needs.resolve.outputs.package }}
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: ${{ needs.resolve.outputs.package }}/dist

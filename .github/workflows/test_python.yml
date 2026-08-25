@@ -1,0 +1,102 @@
+# Test Python Packages
+#
+# Auto-discovers testable packages: any top-level directory with both a
+# pyproject.toml and a tests/ directory is tested via `uv run pytest -v`.
+# Adding a new package needs no edits here.
+
+name: Test Python
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.discover.outputs.packages }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed top-level directories
+        id: changed-dirs
+        if: github.event_name == 'pull_request'
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          dir_names: true
+          dir_names_max_depth: 1
+          files_ignore: '**/*.md'
+
+      - name: Discover testable packages
+        id: discover
+        env:
+          CHANGED_DIRS: ${{ steps.changed-dirs.outputs.all_changed_files }}
+        run: |
+          set -euo pipefail
+
+          # PRs only test packages touched by the diff; push/dispatch test everything.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            CANDIDATES="${CHANGED_DIRS}"
+          else
+            CANDIDATES=$(find . -maxdepth 1 -mindepth 1 -type d -printf '%f\n')
+          fi
+
+          PACKAGES="[]"
+          for dir in ${CANDIDATES}; do
+            [[ "${dir}" == "." || "${dir}" == ".github" ]] && continue
+            [[ -f "${dir}/pyproject.toml" && -d "${dir}/tests" ]] || continue
+            PACKAGES=$(echo "${PACKAGES}" | jq -c --arg p "${dir}" '. + [$p]')
+          done
+
+          echo "Discovered packages: ${PACKAGES}"
+          echo "packages=${PACKAGES}" >> "${GITHUB_OUTPUT}"
+
+  test:
+    name: test ${{ matrix.package }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.detect-changes.outputs.packages) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: ${{ matrix.package }}/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.package }}
+        run: uv sync --extra dev
+
+      - name: Run tests
+        working-directory: ${{ matrix.package }}
+        run: uv run pytest -v
+
+  # Rollup status job - required in branch protection
+  rollup-python-test-status:
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - test
+    if: always()
+    steps:
+      - uses: lowlydba/are-we-good@f506ed6324f55ec5e4ff5d92204a72c7f1c2b4f8 # v1.0.5
+        with:
+          jobs: ${{ toJSON(needs) }}

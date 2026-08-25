@@ -1,0 +1,36 @@
+name: Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: lint-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Ruff Format
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          args: "format --check"
+          version-file: "pyproject.toml"
+      - name: Ruff Check
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          args: "check"
+          version-file: "pyproject.toml"
+
+  # Rollup status job - require this in branch protection
+  rollup-lint-status:
+    runs-on: ubuntu-latest
+    needs:
+      - python
+    if: always()
+    steps:
+      - uses: lowlydba/are-we-good@f506ed6324f55ec5e4ff5d92204a72c7f1c2b4f8 # v1.0.5
+        with:
+          jobs: ${{ toJSON(needs) }}

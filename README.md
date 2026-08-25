@@ -1,44 +1,19 @@
-# Project Title
+# overture-core
 
-Simple overview of use/purpose.
+SDK everything builds on: bundle/provenance model, config, check framework, platform abstractions, registry client.
 
-## Description
+A monorepo of independently versioned, independently published Python packages. Each top-level directory with a `pyproject.toml` and a `tests/` directory is one package.
 
-An in-depth paragraph about your project and overview of use.
+## Packages
 
-## Getting Started
+| Package | Description |
+| --- | --- |
+| [`overture_core`](overture_core) | Shared, framework-agnostic business logic — portable job classes. |
+| [`overture_serverless`](overture_serverless) | Base class for portable, framework-agnostic serverless jobs. |
 
-### Dependencies
+## Contributing
 
-* Describe any prerequisites, libraries, OS version, etc., needed before installing program.
-* ex. Windows 10
-
-### Installing
-
-* How/where to download your program
-* Any modifications needed to be made to files/folders
-
-## Help
-
-Any advise for common problems or issues.
-```
-command to run if program contains helper info
-```
-
-## Authors
-
-Contributors names and contact info
-
-ex. Dominique Pizzie
-ex. [@DomPizzie](https://twitter.com/dompizzie)
-
-## Version History
-
-* 0.2
-    * Various bug fixes and optimizations
-    * See [commit change]() or See [release history]()
-* 0.1
-    * Initial Release
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to add a package, wire up cross-package dependencies, and run tests/lint locally. See [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for how a version bump turns into a PyPI release.
 
 ## Maintainers
 

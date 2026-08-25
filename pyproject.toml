@@ -1,0 +1,28 @@
+[project]
+name = "overture-core-monorepo"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["ruff==0.16.3"]  # Keep in sync with .pre-commit-config.yaml
+
+[tool.ruff]
+required-version = "0.16.3" # Ensures local executions of ruff use a consistent version/installation
+
+[tool.ruff.format]
+# ruff format is Black-compatible by default.
+
+[tool.ruff.lint]
+ignore = ["E501"]  # line length enforced by ruff format
+select = [
+   "F401", # unused imports
+   "F403", # star imports (`from x import *`)
+   "F821", # undefined names (missing imports / typos)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["E402", "E712", "F811", "F405", "F403"]
+"**/conftest.py" = ["F401"]  # pytest discovers fixtures via import side effects

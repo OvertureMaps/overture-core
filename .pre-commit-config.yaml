@@ -1,0 +1,7 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3  # Keep in sync with pyproject.toml's dev dependency group
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix]

@@ -1,0 +1,25 @@
+[project]
+name = "overture-serverless"
+version = "0.1.0"
+description = "Base classes for portable, framework-agnostic serverless Python jobs."
+authors = [
+    {name = "Overture Maps Foundation"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["overture_serverless"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
