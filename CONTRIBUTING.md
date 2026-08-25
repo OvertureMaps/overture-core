@@ -28,7 +28,7 @@ name = "my-package"
 dynamic = ["version"]
 
 [build-system]
-requires = ["setuptools>=64.0", "setuptools_scm>=8.0", "wheel"]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
@@ -46,6 +46,29 @@ path_filters = ["."]
 ```
 
 Publishing a new package to PyPI also needs a one-time trusted-publisher setup, see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).
+
+### PyPI metadata
+
+`publish_packages.yml` runs `twine check --strict` on every build, so a package's metadata has to satisfy PyPI's actual upload validation, not just build without erroring. Include at least:
+
+```toml
+[project]
+license = "MIT" # SPDX expression; don't also add a "License :: ..." classifier, setuptools rejects the combination
+license-files = ["../../LICENSE"]
+keywords = ["overture", "overturemaps", "..."]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11", # one line per supported version
+]
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/my_package"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
+```
 
 ### Coverage floor
 

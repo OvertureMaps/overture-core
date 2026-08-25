@@ -5,14 +5,29 @@ description = "Shared Overture business logic — portable, framework-agnostic j
 authors = [
     {name = "Overture Maps Foundation"}
 ]
+license = "MIT"
+license-files = ["../../LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["overture", "overturemaps", "stac", "gis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
 dependencies = [
     "overture-serverless>=0.1.0",
     "overture-stac",
     "pystac>=1.8.4",
     "boto3>=1.35",
 ]
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overture_core"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -21,7 +36,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=64.0", "setuptools_scm>=8.0", "wheel"]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -5,9 +5,25 @@ description = "Base classes for portable, framework-agnostic serverless Python j
 authors = [
     {name = "Overture Maps Foundation"}
 ]
+license = "MIT"
+license-files = ["../../LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
+keywords = ["overture", "overturemaps", "serverless", "jobs"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overture_serverless"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -16,7 +32,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=64.0", "setuptools_scm>=8.0", "wheel"]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

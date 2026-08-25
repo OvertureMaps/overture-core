@@ -1,8 +1,10 @@
 # Test Python Packages
 #
 # Auto-discovers testable packages: any directory under packages/ with both a
-# pyproject.toml and a tests/ directory is tested via `uv run pytest -v`.
-# Adding a new package needs no edits here.
+# pyproject.toml and a tests/ directory is tested via `uv run pytest -v`, then
+# built and validated with `twine check --strict` so bad PyPI metadata fails
+# the PR instead of a real release after merge. Adding a new package needs no
+# edits here.
 
 name: Test Python
 
@@ -113,6 +115,18 @@ jobs:
       - name: Run tests
         working-directory: packages/${{ matrix.package }}
         run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=95
+
+      - name: Build package
+        working-directory: packages/${{ matrix.package }}
+        run: uv build
+
+      # Same check publish_packages.yml runs before any real upload; running
+      # it here too catches bad PyPI metadata (broken README rendering,
+      # missing/invalid classifiers, license/classifier conflicts) as a PR
+      # failure instead of a failed release after merge.
+      - name: Check package metadata
+        working-directory: packages/${{ matrix.package }}
+        run: uvx twine check --strict dist/*
 
   # Rollup status job - required in branch protection
   rollup-python-test-status:

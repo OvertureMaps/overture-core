@@ -18,6 +18,11 @@
 # See PACKAGE_VERSIONING.md for the full flow and the one-time
 # trusted-publisher setup (on both pypi.org and test.pypi.org) a new package
 # needs.
+#
+# Every build (real or smoke test) is validated with `twine check --strict`
+# before any upload, catching bad PyPI metadata (broken README rendering,
+# missing/invalid classifiers, etc.) as a CI failure instead of a broken
+# PyPI project page.
 
 name: Publish Python Packages
 
@@ -152,6 +157,15 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uv build
+
+      # Twine's built-in check is what PyPI itself uses to validate metadata
+      # (long_description rendering, required fields, valid classifiers) at
+      # upload time; running it here fails the build early instead of
+      # silently rejecting or mangling the package's PyPI page.
+      - name: Check package metadata
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: uvx twine check --strict dist/*
 
       - name: Publish to PyPI
         if: github.event_name == 'push' && steps.release.outputs.released == 'true'

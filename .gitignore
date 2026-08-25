@@ -12,3 +12,7 @@ htmlcov/
 dist/
 build/
 
+# setuptools' license-files resolution stages a copy of the referenced
+# LICENSE here as a side effect of building any package under packages/.
+/packages/LICENSE
+
