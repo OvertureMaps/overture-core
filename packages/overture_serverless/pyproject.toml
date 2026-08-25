@@ -6,7 +6,11 @@ authors = [
     {name = "Overture Maps Foundation"}
 ]
 license = "MIT"
-license-files = ["../../LICENSE"]
+# Vendored copy of the repo-root LICENSE: setuptools copies license-files
+# sdist entries to the exact relative path given, so "../../LICENSE" landed
+# outside the sdist root and PyPI rejected the upload. A package-local path
+# is the only one that survives packaging.
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["overture", "overturemaps", "serverless", "jobs"]
