@@ -44,4 +44,4 @@ allow_zero_version = true
 
 [tool.semantic_release.commit_parser_options]
 path_filters = ["."]
-scope_prefix = "overture_serverless-"
+scope_prefix = "overture_serverless"

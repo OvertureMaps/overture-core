@@ -18,7 +18,7 @@ The `<package_dir>` scope (e.g. `fix(overture_core): ...`) is what tells [python
 
 ### PR title = the commit PSR reads
 
-This repo's PRs are squash-merged, and GitHub's default squash-commit subject is the PR title verbatim. So the **PR title itself** must be a properly scoped Conventional Commit — e.g. `fix(overture_core): handle empty release list` — not the org's generic `[TYPE] Description` convention. Get the scope right or the release silently doesn't happen.
+This repo requires [Overture PR Checks (v2)](https://github.com/OvertureMaps/.github/blob/main/docs/pull-request-checks.md), which only accepts strict Conventional Commits titles (`type: description` / `type(scope): description`). Since PRs are squash-merged, GitHub's default squash-commit subject is the PR title verbatim — so a title that merely satisfies the org check (e.g. plain `fix: ...` with no scope) won't trigger a release; the scope has to match the package (`fix(overture_core): ...`) for PSR to associate the commit with it.
 
 ## Release
 

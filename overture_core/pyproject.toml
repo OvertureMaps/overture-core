@@ -52,4 +52,4 @@ allow_zero_version = true
 
 [tool.semantic_release.commit_parser_options]
 path_filters = ["."]
-scope_prefix = "overture_core-"
+scope_prefix = "overture_core"
