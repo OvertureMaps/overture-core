@@ -1,6 +1,6 @@
 [project]
 name = "overture-serverless"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Base classes for portable, framework-agnostic serverless Python jobs."
 authors = [
     {name = "Overture Maps Foundation"}
@@ -16,11 +16,16 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64.0", "setuptools_scm>=8.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["overture_serverless"]
+
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^overture_serverless-v(?P<version>.*)$"
+git_describe_command = "git describe --dirty --tags --long --match 'overture_serverless-v*'"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -31,3 +36,12 @@ source = ["overture_serverless"]
 [tool.coverage.report]
 fail_under = 95
 show_missing = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "overture_serverless-v{version}"
+allow_zero_version = true
+
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]
+scope_prefix = "overture_serverless-"

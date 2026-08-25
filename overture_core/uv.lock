@@ -486,7 +486,6 @@ wheels = [
 
 [[package]]
 name = "overture-core"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
@@ -514,7 +513,6 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "overture-serverless"
-version = "0.1.0"
 source = { directory = "../overture_serverless" }
 
 [package.metadata]

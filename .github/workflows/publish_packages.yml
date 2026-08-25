@@ -1,77 +1,106 @@
 # Publish Python Packages
 #
-# Triggers on a tag matching `<package_dir>-v<version>` (e.g. overture_core-v0.2.0).
-# Builds that one package and publishes it to PyPI via trusted publishing
-# (OIDC — no stored credentials). See PACKAGE_VERSIONING.md for the release
-# flow and the one-time trusted-publisher setup a new package needs.
+# Runs on every push to main. python-semantic-release inspects each package's
+# conventional commits (scoped to that package by commit_parser_options in its
+# pyproject.toml) and decides whether it needs a release. A release creates
+# and pushes a `<package_dir>-v<version>` tag and a GitHub Release — no version
+# bump or changelog is ever committed back to the branch. The package's
+# version is resolved from that tag at build time by setuptools-scm.
+#
+# Publishing to PyPI uses trusted publishing (OIDC — no stored credentials).
+# See PACKAGE_VERSIONING.md for the full flow and the one-time
+# trusted-publisher setup a new package needs.
 
 name: Publish Python Packages
 
 on:
   push:
-    tags:
-      - "*-v[0-9]+.[0-9]+.[0-9]+*"
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to publish (e.g. overture_core-v0.2.0)"
-        required: true
 
 permissions:
   contents: read
 
 jobs:
-  resolve:
+  discover:
     runs-on: ubuntu-latest
     outputs:
-      package: ${{ steps.parse.outputs.package }}
-      version: ${{ steps.parse.outputs.version }}
+      packages: ${{ steps.discover.outputs.packages }}
     steps:
-      - name: Parse package and version from tag
-        id: parse
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ ! "${TAG}" =~ ^([a-zA-Z0-9_]+)-v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
-            echo "Tag '${TAG}' doesn't match <package_dir>-v<version>" >&2
-            exit 1
-          fi
-          echo "package=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-          echo "version=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-  publish:
-    needs: resolve
+      - name: Discover publishable packages
+        id: discover
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const isPackage = (dir) =>
+              fs.existsSync(path.join(dir, 'pyproject.toml')) &&
+              fs.existsSync(path.join(dir, 'tests'));
+
+            const packages = fs
+              .readdirSync('.', { withFileTypes: true })
+              .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+              .map((entry) => entry.name)
+              .filter(isPackage);
+
+            core.info(`Discovered packages: ${JSON.stringify(packages)}`);
+            core.setOutput('packages', JSON.stringify(packages));
+
+  release:
+    name: release ${{ matrix.package }}
+    needs: discover
+    if: needs.discover.outputs.packages != '[]'
     runs-on: ubuntu-latest
     environment:
-      name: pypi-${{ needs.resolve.outputs.package }}
+      name: pypi-${{ matrix.package }}
     permissions:
-      id-token: write # trusted publishing
-      contents: read
+      contents: write # push the release tag
+      id-token: write # PyPI trusted publishing
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.discover.outputs.packages) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
 
-      - name: Verify pyproject.toml version matches tag
-        working-directory: ${{ needs.resolve.outputs.package }}
-        run: |
-          set -euo pipefail
-          PROJECT_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
-          if [[ "${PROJECT_VERSION}" != "${{ needs.resolve.outputs.version }}" ]]; then
-            echo "pyproject.toml version (${PROJECT_VERSION}) != tag version (${{ needs.resolve.outputs.version }})" >&2
-            exit 1
-          fi
+      # Computes the next version from conventional commits scoped to this
+      # package and, if one is warranted, tags and pushes it (no commit, no
+      # committed changelog — release notes go to the GitHub Release instead).
+      - name: Release ${{ matrix.package }}
+        id: release
+        uses: python-semantic-release/python-semantic-release@39dd2052f2ce8282a5d932c31d58a2ca06d2550e # v10.6.1
+        with:
+          directory: ${{ matrix.package }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: github-actions[bot]
+          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
+          commit: false
+          tag: true
+          push: true
+          changelog: false
+          vcs_release: true
+          build: false
 
       - name: Install uv
+        if: steps.release.outputs.released == 'true'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
       - name: Build package
-        working-directory: ${{ needs.resolve.outputs.package }}
+        if: steps.release.outputs.released == 'true'
+        working-directory: ${{ matrix.package }}
         run: uv build
 
       - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          packages-dir: ${{ needs.resolve.outputs.package }}/dist
+          packages-dir: ${{ matrix.package }}/dist

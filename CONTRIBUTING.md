@@ -10,13 +10,43 @@ uv init --lib --name my-package
 ```
 
 A package needs, at minimum:
-- `pyproject.toml` — standard `uv`/setuptools project config. Start `version` at `0.1.0`.
+- `pyproject.toml` — standard `uv`/setuptools project config, plus dynamic versioning and release config (see [Versioning](#versioning) below).
 - `.python-version` — the Python version CI installs for this package.
 - `my_package/` — the importable package.
 - `tests/` — pytest suite (`testpaths = ["tests"]` in `pyproject.toml`).
 - `README.md` — what it's for, how to use it.
 
-That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) auto-discovers any directory matching that shape and runs `uv run pytest -v --cov` against it, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
+That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) and [`.github/workflows/publish_packages.yml`](.github/workflows/publish_packages.yml) auto-discover any directory matching that shape, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
+
+### Versioning
+
+There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your conventional commits — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow. A new package needs:
+
+```toml
+[project]
+name = "my-package"
+dynamic = ["version"]
+
+[build-system]
+requires = ["setuptools>=64.0", "setuptools_scm>=8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^my_package-v(?P<version>.*)$"
+git_describe_command = "git describe --dirty --tags --long --match 'my_package-v*'"
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "my_package-v{version}"
+allow_zero_version = true
+
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]
+scope_prefix = "my_package-"
+```
+
+Publishing a new package to PyPI also needs a one-time trusted-publisher setup — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).
 
 ### Coverage floor
 
@@ -33,8 +63,6 @@ source = ["my_package"]
 fail_under = 95
 show_missing = true
 ```
-
-Publishing a new package to PyPI does need a one-time trusted-publisher setup — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).
 
 ## Cross-package dependencies
 
