@@ -14,7 +14,16 @@ What you do control is the version *bump*, via [Conventional Commits](https://ww
 | `feat(<package_dir>): ...`                                  | minor |
 | `feat(<package_dir>)!: ...` / a `BREAKING CHANGE:` footer   | major |
 
-The `<package_dir>` scope (e.g. `fix(overture_core): ...`) is what tells [python-semantic-release](https://python-semantic-release.readthedocs.io/) (PSR) which package a commit belongs to — commits without a matching scope don't trigger a release for that package. Squash-merge your PR with a properly scoped, conventional title/body, since that's the commit PSR evaluates.
+The `<package_dir>` scope (e.g. `fix(overture_core): ...`) is what tells [python-semantic-release](https://python-semantic-release.readthedocs.io/) (PSR) which package a commit belongs to — commits without a matching scope don't trigger a release for that package.
+
+### PR title vs. the commit PSR reads
+
+This repo's PRs are squash-merged, and the [required PR-title check](https://github.com/OvertureMaps/.github/blob/main/docs/pull-request-checks.md) enforces the org's `[TYPE] Description` format (e.g. `[FEATURE] Add foo`) — **not** Conventional Commits. GitHub's default squash-commit subject is just the PR title verbatim, so an unedited `[FEATURE] ...` title becomes a commit message PSR's conventional parser won't recognize at all, and no release will trigger.
+
+So there are two independent things to get right on every PR:
+
+1. **PR title** — keep it `[TYPE] Description`, unrelated to versioning, to satisfy the org's required check.
+2. **Squash-commit message** — before clicking "Squash and merge", edit the commit message box (GitHub lets you edit it at merge time) to lead with a properly scoped Conventional Commit, e.g. `fix(overture_core): handle empty release list`. This is the line PSR actually parses — get it right or the release silently doesn't happen.
 
 ## Release
 

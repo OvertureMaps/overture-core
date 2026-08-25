@@ -20,7 +20,7 @@ That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_pytho
 
 ### Versioning
 
-There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your conventional commits — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow. A new package needs:
+There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your conventional commits — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow, **including the important distinction between your PR title (org's `[TYPE]` format) and the squash-commit message (must be a scoped Conventional Commit) — get the latter wrong and your release just won't fire.** A new package needs:
 
 ```toml
 [project]
