@@ -83,7 +83,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           pipx install "python-semantic-release==10.6.1"
-          pipx inject python-semantic-release "gitpython<3.1.60"
+          pipx inject --force python-semantic-release "gitpython<3.1.60"
 
       # Computes the next version from the commits since this package's last
       # release tag, attributing each commit to the package by its changed
