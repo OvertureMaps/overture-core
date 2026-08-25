@@ -19,7 +19,11 @@ class ServerlessPythonJob(ABC):
     def run(self, params: "str | dict" = "{}") -> None:
         print(f"Starting job {self.__class__.__name__}")
         self._params = json.loads(params) if isinstance(params, str) else params
-        print(json.dumps(self._params, indent=4))
+        if not isinstance(self._params, dict):
+            raise TypeError(
+                f"params must decode to a JSON object/dict, got {type(self._params).__name__}"
+            )
+        print(f"Received params: {sorted(self._params.keys())}")
         self.execute_job()
         print(f"Job {self.__class__.__name__} completed successfully")
 

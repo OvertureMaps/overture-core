@@ -16,7 +16,7 @@ concurrency:
 jobs:
   label-issues-policy:
     name: label-issues-policy
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     permissions:
       issues: write # advanced-issue-labeler applies labels to the issue
       contents: read # checkout

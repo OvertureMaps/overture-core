@@ -22,6 +22,20 @@ def test_run_accepts_dict_params():
     assert job.value == "hello"
 
 
+def test_run_rejects_non_dict_params(capsys):
+    job = _EchoJob()
+    with pytest.raises(TypeError, match="params must decode to a JSON object/dict"):
+        job.run("[1, 2, 3]")
+
+
+def test_run_logs_only_param_keys_not_values(capsys):
+    job = _EchoJob()
+    job.run({"value": "super-secret-token"})
+    out = capsys.readouterr().out
+    assert "super-secret-token" not in out
+    assert "value" in out
+
+
 def test_get_param_returns_default_when_missing():
     job = _EchoJob()
     job.run({})
