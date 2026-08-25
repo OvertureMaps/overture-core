@@ -20,7 +20,7 @@ That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_pytho
 
 ### Coverage floor
 
-CI fails a package's tests if coverage drops below **80%**. Add `pytest-cov` as a dev dependency and set the floor in `pyproject.toml`:
+CI fails a package's tests if coverage drops below **95%**. Add `pytest-cov` as a dev dependency and set the floor in `pyproject.toml`:
 
 ```toml
 [project.optional-dependencies]
@@ -30,7 +30,7 @@ dev = ["pytest>=9.1.1", "pytest-cov>=7.0.0"]
 source = ["my_package"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 95
 show_missing = true
 ```
 
