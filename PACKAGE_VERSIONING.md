@@ -28,13 +28,24 @@ This repo requires [Overture PR Checks (v2)](https://github.com/OvertureMaps/.gi
 
 ## Release
 
-On every push to `main`, [`publish_packages.yml`](.github/workflows/publish_packages.yml) first narrows to the packages actually touched by that push ([`tj-actions/changed-files`](https://github.com/tj-actions/changed-files), same discovery as [`test_python.yml`](.github/workflows/test_python.yml)), then runs PSR for each of those. For each package, PSR looks at the commits since its last release tag and, if any warrant a bump:
+On every push to `main`, [`publish_packages.yml`](.github/workflows/publish_packages.yml) first narrows to the packages actually touched by that push ([`tj-actions/changed-files`](https://github.com/tj-actions/changed-files), same discovery as [`test_python.yml`](.github/workflows/test_python.yml)), then runs PSR for each of those:
 
-1. Computes the next version and creates + pushes a `<package_dir>-v<version>` tag (e.g. `overture_core-v0.2.0`): **no commit is ever made back to `main`**, and no `CHANGELOG.md` is committed to the repo. Release notes are published to the tag's [GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github) instead.
-2. Builds the package with `uv build` (`setuptools-scm` picks up the version it just tagged).
-3. Publishes to PyPI via [trusted publishing](https://docs.pypi.org/trusted-publishers/), no stored credentials.
+```mermaid
+%%{init: {"theme": "dark", "flowchart": {"padding": 8}, "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif", "fontSize": "14px", "mainBkg": "#21262d", "nodeBorder": "#4493f8"}}}%%
+flowchart TD
+    classDef default rx:8,ry:8,stroke-width:0.75px
+    A[Push to main] --> B{tj-actions/changed-files:<br/>which packages did this touch?}
+    B -->|package touched| C[Run PSR for that package]
+    B -->|not touched| Z[Skip, no job runs]
+    C --> D{Commits since last tag<br/>warrant a bump?}
+    D -->|no| E[Nothing tagged]
+    D -->|yes| F[Tag + push<br/>package_dir-vX.Y.Z]
+    F --> G[Publish GitHub Release<br/>with notes]
+    F --> H[uv build]
+    H --> I[Publish to PyPI<br/>via trusted publishing]
+```
 
-A push that doesn't touch a package at all skips it outright (no job even runs); a push that touches a package but carries no release-worthy commit still runs PSR for it, which then determines nothing needs tagging.
+For each package, PSR looks at the commits since its last release tag and, if any warrant a bump, tags and pushes `<package_dir>-v<version>` (e.g. `overture_core-v0.2.0`): **no commit is ever made back to `main`**, and no `CHANGELOG.md` is committed to the repo. Release notes are published to the tag's [GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github) instead, and the same job then builds with `uv build` (`setuptools-scm` picks up the version it just tagged) and publishes to PyPI via [trusted publishing](https://docs.pypi.org/trusted-publishers/), no stored credentials.
 
 ## Trusted publishing setup (one-time per package)
 
