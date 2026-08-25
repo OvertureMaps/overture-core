@@ -8,27 +8,27 @@ There is no `version` field to edit. Each package's `pyproject.toml` declares `d
 
 What you do control is the version *bump*, via [Conventional Commits](https://www.conventionalcommits.org/) on your PR:
 
-| Commit prefix                                              | Bump  |
-| ------------------------------------------------------------ | ----- |
-| `fix(<package_dir>): ...`                                   | patch |
-| `feat(<package_dir>): ...`                                  | minor |
-| `feat(<package_dir>)!: ...` / a `BREAKING CHANGE:` footer   | major |
+| Commit prefix                            | Bump  |
+| ------------------------------------------ | ----- |
+| `fix: ...`                                | patch |
+| `feat: ...`                               | minor |
+| `feat!: ...` / a `BREAKING CHANGE:` footer | major |
 
-The `<package_dir>` scope (e.g. `fix(overture_core): ...`) is what tells [python-semantic-release](https://python-semantic-release.readthedocs.io/) (PSR) which package a commit belongs to — commits without a matching scope don't trigger a release for that package.
+PSR attributes a commit to a package by which files it actually touched, not by a scope in the message — a plain `fix: ...` with no scope is fine, as long as the commit's diff falls under that package's directory. This means a single PR/commit that touches both packages correctly triggers an independent release for each.
 
 ### PR title = the commit PSR reads
 
-This repo requires [Overture PR Checks (v2)](https://github.com/OvertureMaps/.github/blob/main/docs/pull-request-checks.md), which only accepts strict Conventional Commits titles (`type: description` / `type(scope): description`). Since PRs are squash-merged, GitHub's default squash-commit subject is the PR title verbatim — so a title that merely satisfies the org check (e.g. plain `fix: ...` with no scope) won't trigger a release; the scope has to match the package (`fix(overture_core): ...`) for PSR to associate the commit with it.
+This repo requires [Overture PR Checks (v2)](https://github.com/OvertureMaps/.github/blob/main/docs/pull-request-checks.md), which only accepts strict Conventional Commits titles (`type: description` / `type(scope): description`). Since PRs are squash-merged, GitHub's default squash-commit subject is the PR title verbatim — so the PR title has to be Conventional Commits for PSR to recognize it at all, but no particular scope is required.
 
 ## Release
 
-On every push to `main`, [`publish_packages.yml`](.github/workflows/publish_packages.yml) runs PSR once per package. For each package, PSR looks at the commits since its last release tag and, if any warrant a bump:
+On every push to `main`, [`publish_packages.yml`](.github/workflows/publish_packages.yml) first narrows to the packages actually touched by that push ([`tj-actions/changed-files`](https://github.com/tj-actions/changed-files), same discovery as [`test_python.yml`](.github/workflows/test_python.yml)), then runs PSR for each of those. For each package, PSR looks at the commits since its last release tag and, if any warrant a bump:
 
 1. Computes the next version and creates + pushes a `<package_dir>-v<version>` tag (e.g. `overture_core-v0.2.0`) — **no commit is ever made back to `main`**, and no `CHANGELOG.md` is committed to the repo. Release notes are published to the tag's [GitHub Release](https://docs.github.com/en/repositories/releasing-projects-on-github) instead.
 2. Builds the package with `uv build` (`setuptools-scm` picks up the version it just tagged).
 3. Publishes to PyPI via [trusted publishing](https://docs.pypi.org/trusted-publishers/) — no stored credentials.
 
-A package with no PR-worthy commits since its last release is simply skipped — the workflow runs for every package on every push, but only tags/publishes the ones that changed.
+A push that doesn't touch a package at all skips it outright (no job even runs); a push that touches a package but carries no release-worthy commit still runs PSR for it, which then determines nothing needs tagging.
 
 ## Trusted publishing setup (one-time per package)
 

@@ -20,7 +20,7 @@ That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_pytho
 
 ### Versioning
 
-There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your PR title — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow. **PRs are squash-merged, so the PR title must itself be a scoped Conventional Commit (e.g. `fix(overture_core): ...`)** — that's the line PSR parses. A new package needs:
+There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your PR title — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow. **PRs are squash-merged, so the PR title must itself be Conventional Commits** (e.g. `fix: handle empty release list`) — that's the line PSR parses, and PSR figures out which package(s) it applies to from which files the commit touched, not from a scope. A new package needs:
 
 ```toml
 [project]
@@ -43,7 +43,6 @@ allow_zero_version = true
 
 [tool.semantic_release.commit_parser_options]
 path_filters = ["."]
-scope_prefix = "my_package-"
 ```
 
 Publishing a new package to PyPI also needs a one-time trusted-publisher setup — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).

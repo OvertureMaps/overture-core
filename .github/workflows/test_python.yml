@@ -14,9 +14,18 @@ on:
       - main
   workflow_dispatch:
 
+permissions: {} # no workflow-level access; each job grants only what it needs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   detect-changes:
+    name: detect-changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
     outputs:
       packages: ${{ steps.discover.outputs.packages }}
     steps:
@@ -24,6 +33,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Find changed top-level directories
         id: changed-dirs
@@ -71,6 +81,8 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.packages != '[]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +92,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # setuptools-scm needs tag history to resolve the version
+          persist-credentials: false
 
       - name: Install Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -101,7 +114,9 @@ jobs:
 
   # Rollup status job - required in branch protection
   rollup-python-test-status:
+    name: rollup-python-test-status
     runs-on: ubuntu-latest
+    permissions: {} # are-we-good only reads job results from `needs` context
     needs:
       - detect-changes
       - test

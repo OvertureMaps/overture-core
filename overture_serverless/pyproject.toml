@@ -42,6 +42,10 @@ commit_parser = "conventional-monorepo"
 tag_format = "overture_serverless-v{version}"
 allow_zero_version = true
 
+# path_filters (relative to this directory, since the release workflow cds
+# here) is what attributes a commit to this package: PSR checks the commit's
+# actual changed files, not its scope. No scope_prefix is set, so a plain
+# `fix: ...`/`feat: ...` with no scope works, as long as the commit touches
+# files under overture_serverless/.
 [tool.semantic_release.commit_parser_options]
 path_filters = ["."]
-scope_prefix = "overture_serverless"
