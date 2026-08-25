@@ -1,14 +1,14 @@
 # Publish Python Packages
 #
-# On push to main: for each package actually touched by that push
-# (tj-actions/changed-files, same discovery pattern as test_python.yml),
-# python-semantic-release inspects the commits since that package's last
-# release tag — attributing them by which files they touched (path_filters),
-# not by a required commit scope — and decides whether a release is
-# warranted. A release creates and pushes a `<package_dir>-v<version>` tag
-# and a GitHub Release — no version bump or changelog is ever committed back
-# to the branch — then builds and publishes to real PyPI via trusted
-# publishing.
+# Auto-discovers packages the same way as test_python.yml (see
+# discover-packages.yml). On push to main: for each package actually touched
+# by that push, python-semantic-release inspects the commits since that
+# package's last release tag — attributing them by which files they touched
+# (path_filters), not by a required commit scope — and decides whether a
+# release is warranted. A release creates and pushes a
+# `<package_dir>-v<version>` tag and a GitHub Release — no version bump or
+# changelog is ever committed back to the branch — then builds and publishes
+# to real PyPI via trusted publishing.
 #
 # On workflow_dispatch: a pure smoke test. No tagging, no GitHub Release, no
 # push, every package gets built from its current (unreleased) state and
@@ -41,62 +41,7 @@ concurrency:
 jobs:
   detect-changes:
     name: detect-changes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read # checkout
-    outputs:
-      packages: ${{ steps.discover.outputs.packages }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Find changed package directories
-        id: changed-dirs
-        if: github.event_name != 'workflow_dispatch'
-        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
-        with:
-          files: packages/**
-          files_ignore: packages/**/*.md
-          dir_names: true
-          dir_names_max_depth: 2
-          json: true
-          escape_json: false
-
-      # A push considers every package touched by the diff (from the step
-      # above); workflow_dispatch considers every package in the repo, since
-      # it's a smoke test of the whole publish pipeline, not a real release.
-      # Either way, a "changed directory" only counts if it's actually a
-      # package (has both pyproject.toml and tests/) — filtering that
-      # requires a bit of scripting, so it's done here rather than with a
-      # marketplace action.
-      - name: Discover publishable packages
-        id: discover
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          CHANGED_DIRS: ${{ steps.changed-dirs.outputs.all_changed_files }}
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            const isPackage = (name) =>
-              fs.existsSync(path.join('packages', name, 'pyproject.toml')) &&
-              fs.existsSync(path.join('packages', name, 'tests'));
-
-            const candidates =
-              context.eventName === 'workflow_dispatch'
-                ? fs.readdirSync('packages', { withFileTypes: true })
-                    .filter((entry) => entry.isDirectory())
-                    .map((entry) => entry.name)
-                : JSON.parse(process.env.CHANGED_DIRS || '[]')
-                    .map((dir) => path.relative('packages', dir));
-
-            const packages = candidates.filter(isPackage);
-            core.info(`Discovered packages: ${JSON.stringify(packages)}`);
-            core.setOutput('packages', JSON.stringify(packages));
+    uses: ./.github/workflows/discover-packages.yml
 
   release:
     name: release ${{ matrix.package }}
