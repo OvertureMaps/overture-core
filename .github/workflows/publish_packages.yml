@@ -69,30 +69,43 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The official Docker action resolves GitPython (an unpinned transitive
+      # dependency) at image-build time, so every run picks up whatever
+      # GitPython release is newest. GitPython v3.1.60 dropped the
+      # `Actor.name_email_regex` class attribute that PSR v10.6.1 (latest as
+      # of writing) still reads unconditionally, breaking config load for
+      # every user of the action regardless of which PSR tag is pinned. The
+      # fix is an open PR with no PSR release yet, so install PSR ourselves
+      # in an isolated pipx venv where we can pin GitPython below the broken
+      # release. Revert to the Docker action once a fixed PSR version ships.
+      # See: https://github.com/python-semantic-release/python-semantic-release/issues/1476
+      - name: Install python-semantic-release
+        if: github.event_name == 'push'
+        run: |
+          pipx install "python-semantic-release==10.6.1"
+          pipx inject python-semantic-release "gitpython<3.1.60"
+
       # Computes the next version from the commits since this package's last
       # release tag, attributing each commit to the package by its changed
       # files (see path_filters in the package's pyproject.toml), and, if a
       # release is warranted, tags and pushes it (no commit, no committed
       # changelog — release notes go to the GitHub Release instead). PSR
-      # authenticates its own git push with github_token, independent of the
+      # authenticates its own git push with GH_TOKEN, independent of the
       # checkout step's (deliberately non-persisted) credentials. Skipped
       # entirely on workflow_dispatch: a manual run never tags or releases,
-      # it only smoke-tests the build/publish steps below.
+      # it only smoke-tests the build/publish steps below. PSR itself detects
+      # $GITHUB_OUTPUT and writes the same `released`/`version`/`tag`/etc.
+      # outputs the Docker action would have.
       - name: Release ${{ matrix.package }}
         id: release
         if: github.event_name == 'push'
-        uses: python-semantic-release/python-semantic-release@39dd2052f2ce8282a5d932c31d58a2ca06d2550e # v10.6.1
-        with:
-          directory: packages/${{ matrix.package }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          git_committer_name: github-actions[bot]
-          git_committer_email: 41898282+github-actions[bot]@users.noreply.github.com
-          commit: false
-          tag: true
-          push: true
-          changelog: false
-          vcs_release: true
-          build: false
+        working-directory: packages/${{ matrix.package }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          semantic-release -v version --no-commit --tag --push --no-changelog --vcs-release --skip-build
 
       - name: Install uv
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
