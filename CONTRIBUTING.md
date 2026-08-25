@@ -10,17 +10,17 @@ uv init --lib --name my-package
 ```
 
 A package needs, at minimum:
-- `pyproject.toml` — standard `uv`/setuptools project config, plus dynamic versioning and release config (see [Versioning](#versioning) below).
-- `.python-version` — the Python version CI installs for this package.
-- `my_package/` — the importable package.
-- `tests/` — pytest suite (`testpaths = ["tests"]` in `pyproject.toml`).
-- `README.md` — what it's for, how to use it.
+- `pyproject.toml`: standard `uv`/setuptools project config, plus dynamic versioning and release config (see [Versioning](#versioning) below).
+- `.python-version`: the Python version CI installs for this package.
+- `my_package/`: the importable package.
+- `tests/`: pytest suite (`testpaths = ["tests"]` in `pyproject.toml`).
+- `README.md`: what it's for, how to use it.
 
-That's it — [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) and [`.github/workflows/publish_packages.yml`](.github/workflows/publish_packages.yml) auto-discover any directory matching that shape, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
+That's it: [`.github/workflows/test_python.yml`](.github/workflows/test_python.yml) and [`.github/workflows/publish_packages.yml`](.github/workflows/publish_packages.yml) auto-discover any directory matching that shape, no workflow edits required. [`.github/workflows/lint.yml`](.github/workflows/lint.yml) covers the whole repo through the root `pyproject.toml`'s `ruff` config.
 
 ### Versioning
 
-There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your PR title — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow. **PRs are squash-merged, so the PR title must itself be Conventional Commits** (e.g. `fix: handle empty release list`) — that's the line PSR parses, and PSR figures out which package(s) it applies to from which files the commit touched, not from a scope. A new package needs:
+There's no `version` field to maintain by hand. Each package uses [`setuptools-scm`](https://setuptools-scm.readthedocs.io/) for dynamic, tag-derived versioning and [python-semantic-release](https://python-semantic-release.readthedocs.io/) to decide *when* and *what* to release from your PR title, see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for the full flow. **PRs are squash-merged, so the PR title must itself be Conventional Commits** (e.g. `fix: handle empty release list`), that's the line PSR parses, and PSR figures out which package(s) it applies to from which files the commit touched, not from a scope. A new package needs:
 
 ```toml
 [project]
@@ -45,7 +45,7 @@ allow_zero_version = true
 path_filters = ["."]
 ```
 
-Publishing a new package to PyPI also needs a one-time trusted-publisher setup — see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).
+Publishing a new package to PyPI also needs a one-time trusted-publisher setup, see [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md).
 
 ### Coverage floor
 
@@ -74,7 +74,7 @@ dependencies = ["overture-serverless>=0.1.0"]
 overture-serverless = { path = "../overture_serverless" }
 ```
 
-The `tool.uv.sources` override is dev-only — it never ends up in the built package's metadata, so published wheels resolve the dependency from PyPI like anyone else's install would.
+The `tool.uv.sources` override is dev-only: it never ends up in the built package's metadata, so published wheels resolve the dependency from PyPI like anyone else's install would.
 
 ## Local development
 
