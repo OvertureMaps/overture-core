@@ -22,7 +22,12 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 dependencies = [
-    "overture-serverless>=0.1.0",
+    # >=0.1.0 is unsatisfiable until overture-serverless gets its own real
+    # release: today's first e2e release published overture-serverless as
+    # 0.0.0, so this floor breaks pip install overture-core outright. Lower
+    # it as a stopgap; raise it back once overture-serverless has a real fix
+    # or feat commit against it.
+    "overture-serverless>=0.0.0",
     "overture-stac",
     "pystac>=1.8.4",
     "boto3>=1.35",
