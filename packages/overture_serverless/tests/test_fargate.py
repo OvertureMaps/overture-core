@@ -149,6 +149,28 @@ def test_output_path_forwarded_to_ecs_task_builder_factory():
     assert builder.kwargs["output_path"] == "s3://bucket/pipeline/metadata"
 
 
+def test_ecs_cluster_and_log_group_default_to_overture_runner():
+    _build_task_group()
+    (builder,) = _FakeEcsTaskBuilder.instances
+    [container] = builder.kwargs["container_definitions"]
+    assert builder.kwargs["cluster"] == "overture-python-runner"
+    assert builder.kwargs["awslogs_group"] == "/ecs/overture-python-runner"
+    assert container["logConfiguration"]["options"]["awslogs-group"] == (
+        "/ecs/overture-python-runner"
+    )
+
+
+def test_ecs_cluster_and_log_group_are_overridable():
+    _build_task_group(ecs_cluster="other-cluster", log_group="/ecs/other-cluster")
+    (builder,) = _FakeEcsTaskBuilder.instances
+    [container] = builder.kwargs["container_definitions"]
+    assert builder.kwargs["cluster"] == "other-cluster"
+    assert builder.kwargs["awslogs_group"] == "/ecs/other-cluster"
+    assert container["logConfiguration"]["options"]["awslogs-group"] == (
+        "/ecs/other-cluster"
+    )
+
+
 def test_teardown_called_with_run_operator():
     _build_task_group()
     (builder,) = _FakeEcsTaskBuilder.instances
@@ -316,6 +338,44 @@ def test_execute_ignores_containers_with_other_names(mock_boto_client):
     sidecar, runner = op.overrides["containerOverrides"]
     assert sidecar["environment"] == []
     assert any(e["name"] == "PIP_INDEX_URL" for e in runner["environment"])
+
+
+@patch("boto3.client")
+def test_execute_raises_when_target_container_missing(mock_boto_client):
+    mock_ca = MagicMock()
+    mock_ca.get_authorization_token.return_value = {"authorizationToken": "tok"}
+    mock_boto_client.return_value = mock_ca
+
+    op = _make_run_operator(
+        overrides={"containerOverrides": [{"name": "sidecar", "environment": []}]}
+    )
+    with pytest.raises(ValueError, match="not found in containerOverrides"):
+        op.execute(context={})
+
+
+@patch("boto3.client")
+def test_execute_replaces_stale_pip_index_url_on_retry(mock_boto_client):
+    mock_ca = MagicMock()
+    mock_ca.get_authorization_token.side_effect = [
+        {"authorizationToken": "first-token"},
+        {"authorizationToken": "second-token"},
+    ]
+    mock_boto_client.return_value = mock_ca
+
+    op = _make_run_operator()
+    with patch(
+        "airflow.providers.amazon.aws.operators.ecs.EcsRunTaskOperator.execute",
+        return_value=None,
+    ):
+        op.execute(context={})  # first attempt
+        op.execute(context={})  # simulated retry, same operator instance
+
+    [container] = op.overrides["containerOverrides"]
+    pip_index_urls = [
+        e["value"] for e in container["environment"] if e["name"] == "PIP_INDEX_URL"
+    ]
+    assert len(pip_index_urls) == 1
+    assert "second-token" in pip_index_urls[0]
 
 
 def test_start_task_logs_job_console_url(caplog):

@@ -42,8 +42,8 @@ from airflow.providers.amazon.aws.operators.ecs import EcsRunTaskOperator
 
 from overture_serverless.airflow_compat import TaskGroup, chain, mask_secret
 
-_ECS_CLUSTER = "overture-python-runner"
-_LOG_GROUP = "/ecs/overture-python-runner"
+_DEFAULT_ECS_CLUSTER = "overture-python-runner"
+_DEFAULT_LOG_GROUP = "/ecs/overture-python-runner"
 
 log = logging.getLogger(__name__)
 
@@ -183,16 +183,27 @@ class _CodeArtifactPipIndexUrlEcsOperator(EcsRunTaskOperator):
             f"/pypi/{self._ca_repo}/simple/"
         )
         mask_secret(pip_index_url)
-        for container in self.overrides.get("containerOverrides", []):
-            if container.get("name") != self._target_container_name:
-                continue
-            # NativeEnvironment can literal_eval a JSON string back to a dict.
-            for env in container.get("environment", []):
-                if not isinstance(env.get("value"), str):
-                    env["value"] = json.dumps(env["value"])
-            container.setdefault("environment", []).append(
-                {"name": "PIP_INDEX_URL", "value": pip_index_url}
+        containers = self.overrides.get("containerOverrides", [])
+        target = next(
+            (c for c in containers if c.get("name") == self._target_container_name),
+            None,
+        )
+        if target is None:
+            raise ValueError(
+                f"target_container_name={self._target_container_name!r} not found "
+                f"in containerOverrides; cannot inject PIP_INDEX_URL"
             )
+        # NativeEnvironment can literal_eval a JSON string back to a dict.
+        environment = target.setdefault("environment", [])
+        for env in environment:
+            if not isinstance(env.get("value"), str):
+                env["value"] = json.dumps(env["value"])
+        # Retries re-run execute() on the same operator instance, so drop any
+        # PIP_INDEX_URL this method injected on a prior attempt before adding
+        # the freshly minted one -- otherwise the container sees duplicate,
+        # increasingly stale entries.
+        environment[:] = [e for e in environment if e.get("name") != "PIP_INDEX_URL"]
+        environment.append({"name": "PIP_INDEX_URL", "value": pip_index_url})
         return super().execute(context)
 
     def _start_task(self):
@@ -235,6 +246,8 @@ def serverless_python_task_group(
     job_name: str = "",
     region: str = "us-west-2",
     log_region: str | None = None,
+    ecs_cluster: str = _DEFAULT_ECS_CLUSTER,
+    log_group: str = _DEFAULT_LOG_GROUP,
     codeartifact_domain: str = "overture-pypi",
     codeartifact_owner: str = "505071440022",
     codeartifact_repo: str = "overture",
@@ -300,6 +313,12 @@ def serverless_python_task_group(
         region: AWS region for Fargate, ECS, and CodeArtifact.
         log_region: AWS region for CloudWatch Logs. Defaults to ``region`` --
             override when logs live in a different region than compute.
+        ecs_cluster: ECS cluster name. Defaults to Overture's reference
+            runner cluster (``"overture-python-runner"``); override for any
+            other deployment.
+        log_group: CloudWatch Logs group for the task's container logs.
+            Defaults to Overture's reference runner log group; override for
+            any other deployment.
         codeartifact_domain, codeartifact_owner, codeartifact_repo:
             CodeArtifact coordinates. This backend fetches an auth token
             and assembles a ``PIP_INDEX_URL`` before invoking the runner;
@@ -324,8 +343,8 @@ def serverless_python_task_group(
     with TaskGroup(group_id=group_id) as tg:
         ecs = ecs_task_builder_factory(
             family=family,
-            cluster=_ECS_CLUSTER,
-            awslogs_group=_LOG_GROUP,
+            cluster=ecs_cluster,
+            awslogs_group=log_group,
             container_definitions=[
                 {
                     "name": _CONTAINER_NAME,
@@ -334,7 +353,7 @@ def serverless_python_task_group(
                     "logConfiguration": {
                         "logDriver": "awslogs",
                         "options": {
-                            "awslogs-group": _LOG_GROUP,
+                            "awslogs-group": log_group,
                             "awslogs-region": resolved_log_region,
                             "awslogs-stream-prefix": f"serverless-python/{group_id}",
                         },
@@ -361,7 +380,7 @@ def serverless_python_task_group(
         # must have been called to expose the task-definition XCom.
         run = _CodeArtifactPipIndexUrlEcsOperator(
             task_id="execute_job",
-            cluster=_ECS_CLUSTER,
+            cluster=ecs_cluster,
             task_definition=str(register.output),
             launch_type="FARGATE",
             overrides={
@@ -378,7 +397,7 @@ def serverless_python_task_group(
                 ]
             },
             network_configuration=network_config,
-            awslogs_group=_LOG_GROUP,
+            awslogs_group=log_group,
             awslogs_region=resolved_log_region,
             awslogs_stream_prefix=f"serverless-python/{group_id}",
             do_xcom_push=True,

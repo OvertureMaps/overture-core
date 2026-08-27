@@ -243,7 +243,7 @@ def __getattr__(name: str) -> Any:
             return _load(v2_mod, name)
         raise ImportError(f"airflow_compat: {name!r} requires Airflow 3+")
 
-    raise AttributeError(f"module 'airflow_compat' has no attribute {name!r}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = ["Variable", *_RENAME_MAP, *_IMPORT_MAP, *_MODULE_MAP]
