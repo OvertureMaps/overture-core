@@ -4,7 +4,9 @@ A backend is an Airflow-facing function that provisions managed compute,
 injects the runner-contract env vars (``MODULE_NAME``, ``CLASS_NAME``,
 ``PYTHON_PACKAGES``, ``PIP_INDEX_URL``, ``PARAMS``), and runs the container.
 :mod:`overture_serverless.backends.fargate` is the AWS ECS Fargate
-implementation shipped today.
+implementation shipped today. It also exposes the generic lifecycle layer it
+is built on -- ``fargate_task_group`` -- for callers that bring their own
+container image and command and don't need the pip-install runner contract.
 
 Every cloud- or account-specific value (network configuration, IAM role,
 container image URI, ECS task-definition composition) is a parameter the
