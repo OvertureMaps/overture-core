@@ -20,9 +20,8 @@ def _run(params: dict, resolved: str = "2026-06-01.0") -> LatestRelease:
     ) as mock_read:
         job = LatestRelease()
         job.run(json.dumps(params))
-        mock_read.job = mock_read  # keep a handle for tests that need call args
-    job._mock_read = mock_read
-    return job
+        job._mock_read = mock_read
+        return job
 
 
 class TestLatestRelease:
