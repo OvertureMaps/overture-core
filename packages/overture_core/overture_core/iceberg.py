@@ -17,13 +17,6 @@ ICEBERG_SPARK_EXTENSIONS = (
     "org.apache.sedona.sql.SedonaSqlExtensions"
 )
 
-# There is exactly one S3 Tables bucket per environment; every s3tables
-# namespace (violations, geocoder, embeddings, ...) lives in it. Emitted as a
-# Jinja template into REST (Glue/Databricks) configs, which the operator
-# resolves at runtime; Wherobots resolves it to a concrete bucket at parse time
-# (see spark_factory).
-MANAGED_ICEBERG_BUCKET_TEMPLATE = "{{ var.value.managed_bucket_iceberg }}"
-
 
 class Platform(Enum):
     """Execution platform, which determines HOW a catalog is reached.
