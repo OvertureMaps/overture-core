@@ -7,7 +7,9 @@ Base class for portable, framework-agnostic "job" classes, plus the Airflow-faci
 
 It contains:
 - `ServerlessPythonJob` — abstract base class your jobs subclass (`execute_job()`), with parameter parsing (`get_param()`) and logging (`log()`). Plain Python, no cloud dependencies — runs identically on any backend or on your laptop.
-- `backends.fargate.serverless_python_task_group` — an Airflow `TaskGroup` factory that runs a job on AWS ECS Fargate. Requires the `fargate` extra (`pip install overture-serverless[fargate]`), which pulls in `apache-airflow` and `apache-airflow-providers-amazon`; the base install stays dependency-free since `ServerlessPythonJob` runs inside the job container, not inside Airflow.
+- `backends.fargate` — the AWS ECS Fargate backend. Requires the `fargate` extra (`pip install overture-serverless[fargate]`), which pulls in `apache-airflow` and `apache-airflow-providers-amazon`; the base install stays dependency-free since `ServerlessPythonJob` runs inside the job container, not inside Airflow.
+  - `serverless_python_task_group` — an Airflow `TaskGroup` factory that runs a job on AWS ECS Fargate.
+  - `fargate_task_group` — the generic Fargate lifecycle layer `serverless_python_task_group` is built on: register → run → teardown for *any* container image and command, with no pip-install or module-dispatch assumptions.
 
 ## Writing a job
 
@@ -57,6 +59,27 @@ collect = serverless_python_task_group(
 ```
 
 See the `serverless_python_task_group` docstring for the full parameter list (sizing presets, CodeArtifact coordinates, retries, etc.).
+
+## Launching any container on Fargate
+
+If your image is pre-baked and doesn't need the pip-install runner contract (e.g. it's invoked by subcommand), use the generic lifecycle layer directly. It owns the same register → run → teardown scaffolding and CPU/memory sizing validation, but takes a plain image + command/environment:
+
+```python
+from overture_serverless.backends.fargate import fargate_task_group
+
+diff = fargate_task_group(
+    group_id="bundle_diff",
+    family="bundle-diff",  # ECS task-definition family name
+    image_uri=my_resolved_image_uri,
+    command=["diff", "--bundle", "s3://..."],  # optional containerOverrides command
+    environment={"LOG_LEVEL": "info"},  # optional env vars
+    task_role_arn=my_resolved_role_arn,
+    network_config=my_ecs_network_config,
+    ecs_task_builder_factory=MyEcsTaskBuilder,
+)
+```
+
+`serverless_python_task_group` is a thin wrapper over this construct.
 
 ## Publishing
 
