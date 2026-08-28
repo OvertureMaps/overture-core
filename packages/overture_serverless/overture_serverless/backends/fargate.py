@@ -200,13 +200,11 @@ def fargate_task_group(
             groups, ``assignPublicIp``) as accepted by the ECS ``RunTask``
             API. Required -- resolve it from wherever your deployment stores
             VPC/subnet/security-group configuration before calling in.
-        ecs_task_builder_factory: Callable with the same call signature as
-            ``EcsTaskBuilder.__init__`` (``family``, ``container_definitions``,
-            ``role_arn``, ``network_configuration``, ``cpu``, ``memory``,
-            ``ephemeral_storage_gib``, ``cluster``, ``awslogs_group``,
-            ``awslogs_region``, ``launch_type``, ``network_mode``,
-            ``output_path``) that returns an object satisfying
+        ecs_task_builder_factory: Factory callable that returns an object satisfying
             :class:`EcsTaskBuilderLike` (``register()``/``run()``/``teardown()``).
+            It is called with ``family``, ``cluster``, ``awslogs_group``,
+            ``container_definitions``, ``role_arn``, ``network_configuration``,
+            ``cpu``, ``memory``, ``ephemeral_storage_gib``, and ``output_path``.
             Required -- pass your deployment's ECS task-definition builder
             (e.g. Overture's internal ``EcsTaskBuilder``); this module never
             constructs ECS task definitions on its own.
