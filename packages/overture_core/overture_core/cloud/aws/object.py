@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import boto3
 import botocore.exceptions
@@ -55,7 +56,7 @@ def prefix_exists(bucket: str, prefix: str) -> bool:
     return response.get("KeyCount", 0) > 0
 
 
-def bucket_writable(bucket: str, test_key: str = ".overture_core_write_test") -> bool:
+def bucket_writable(bucket: str, test_key: str | None = None) -> bool:
     """Return whether the caller's credentials can write to *bucket*.
 
     Probes by putting and then deleting an empty object at *test_key*.
@@ -63,7 +64,15 @@ def bucket_writable(bucket: str, test_key: str = ".overture_core_write_test") ->
     than raising — this is a plain boolean check to branch on, not a
     validation function. Cleans up the test object if the put succeeded but
     something else failed before the delete.
+
+    *test_key* defaults to a random per-call key under
+    ``.overture_core_write_test/`` — a fixed key would let concurrent probes
+    against the same bucket race on the same object (one call's delete
+    removing another's still-in-flight test object). Pass an explicit
+    *test_key* only if you need a deterministic path, e.g. in a test.
     """
+    if test_key is None:
+        test_key = f".overture_core_write_test/{uuid4().hex}"
     s3 = boto3.client("s3")
     put_succeeded = False
     deleted = False

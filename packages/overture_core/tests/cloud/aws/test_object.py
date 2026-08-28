@@ -117,12 +117,19 @@ class TestBucketWritable:
         s3 = MagicMock()
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             assert bucket_writable("bucket") is True
-        s3.put_object.assert_called_once_with(
-            Bucket="bucket", Key=".overture_core_write_test", Body=b""
-        )
-        s3.delete_object.assert_called_once_with(
-            Bucket="bucket", Key=".overture_core_write_test"
-        )
+        put_key = s3.put_object.call_args.kwargs["Key"]
+        assert put_key.startswith(".overture_core_write_test/")
+        s3.put_object.assert_called_once_with(Bucket="bucket", Key=put_key, Body=b"")
+        s3.delete_object.assert_called_once_with(Bucket="bucket", Key=put_key)
+
+    def test_default_key_is_unique_per_call(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            bucket_writable("bucket")
+            bucket_writable("bucket")
+        first_key = s3.put_object.call_args_list[0].kwargs["Key"]
+        second_key = s3.put_object.call_args_list[1].kwargs["Key"]
+        assert first_key != second_key
 
     def test_uses_custom_test_key(self):
         s3 = MagicMock()
