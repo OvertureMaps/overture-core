@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import boto3
 import botocore.exceptions
@@ -42,6 +43,55 @@ def object_exists(bucket: str, key: str) -> bool:
         raise
 
 
+def prefix_exists(bucket: str, prefix: str) -> bool:
+    """Return whether at least one object exists under ``bucket/prefix``.
+
+    Unlike :func:`object_exists` (an exact-key check via ``head_object``),
+    this checks whether anything lives under a prefix — the S3 equivalent of
+    "does this directory have contents".
+    """
+    response = boto3.client("s3").list_objects_v2(
+        Bucket=bucket, Prefix=prefix, MaxKeys=1
+    )
+    return response.get("KeyCount", 0) > 0
+
+
+def bucket_writable(bucket: str, test_key: str | None = None) -> bool:
+    """Return whether the caller's credentials can write to *bucket*.
+
+    Probes by putting and then deleting an empty object at *test_key*.
+    Returns ``False`` on any ``ClientError`` (e.g. ``AccessDenied``) rather
+    than raising — this is a plain boolean check to branch on, not a
+    validation function. Cleans up the test object if the put succeeded but
+    something else failed before the delete.
+
+    *test_key* defaults to a random per-call key under
+    ``.overture_core_write_test/`` — a fixed key would let concurrent probes
+    against the same bucket race on the same object (one call's delete
+    removing another's still-in-flight test object). Pass an explicit
+    *test_key* only if you need a deterministic path, e.g. in a test.
+    """
+    if test_key is None:
+        test_key = f".overture_core_write_test/{uuid4().hex}"
+    s3 = boto3.client("s3")
+    put_succeeded = False
+    deleted = False
+    try:
+        s3.put_object(Bucket=bucket, Key=test_key, Body=b"")
+        put_succeeded = True
+        s3.delete_object(Bucket=bucket, Key=test_key)
+        deleted = True
+        return True
+    except botocore.exceptions.ClientError:
+        return False
+    finally:
+        if put_succeeded and not deleted:
+            try:
+                s3.delete_object(Bucket=bucket, Key=test_key)
+            except botocore.exceptions.ClientError:
+                pass
+
+
 def delete_object(bucket: str, key: str) -> None:
     """Delete an object at ``bucket/key``.
 
@@ -56,6 +106,37 @@ def delete_object(bucket: str, key: str) -> None:
 def write_marker(bucket: str, key: str) -> None:
     """Write an empty marker object (e.g. a ``_SUCCESS`` file) to ``bucket/key``."""
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=b"")
+
+
+def get_object_bytes(bucket: str, key: str) -> bytes | None:
+    """Read an object's body as bytes, or ``None`` if ``bucket/key`` doesn't exist.
+
+    Collapses the "does this exist" question into the return value instead
+    of a try/except at every call site. Raises for any error other than a
+    missing key.
+    """
+    try:
+        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return None
+        raise
+    return response["Body"].read()
+
+
+def put_object(
+    bucket: str, key: str, body: bytes, content_type: str | None = None
+) -> None:
+    """Write *body* to ``bucket/key``, optionally setting *content_type*.
+
+    Generalizes :func:`write_marker` (which always writes an empty body) to
+    an arbitrary payload, the common case for writing a JSON or text
+    artifact rather than a zero-byte marker file.
+    """
+    kwargs = {"Bucket": bucket, "Key": key, "Body": body}
+    if content_type is not None:
+        kwargs["ContentType"] = content_type
+    boto3.client("s3").put_object(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -149,3 +230,25 @@ def delete_prefix(bucket: str, prefix: str) -> int:
         deleted += len(keys)
 
     return deleted
+
+
+def list_common_prefixes(bucket: str, prefix: str) -> list[str]:
+    """List immediate "subdirectory" names one level under *prefix*.
+
+    Paginates ``ListObjectsV2`` with ``Delimiter="/"`` and returns each
+    ``CommonPrefixes`` entry trimmed to just its segment name (no bucket, no
+    *prefix*, no trailing slash). Skips the ``$folder$`` placeholder some
+    tools write.
+
+    Example: for ``prefix="root/"`` with ``root/version=1/`` and
+    ``root/version=2/`` present, returns ``["version=1", "version=2"]``.
+    """
+    s3 = boto3.client("s3")
+    names: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []):
+            name = cp["Prefix"][len(prefix) :].rstrip("/")
+            if name and name != "$folder$":
+                names.append(name)
+    return names

@@ -8,11 +8,16 @@ import pytest
 from overture_core.cloud.aws.object import (
     CopyResult,
     build_s3_uri,
+    bucket_writable,
     copy_prefix,
     delete_object,
     delete_prefix,
+    get_object_bytes,
+    list_common_prefixes,
     object_exists,
     parse_s3_uri,
+    prefix_exists,
+    put_object,
     write_marker,
 )
 
@@ -87,6 +92,85 @@ class TestObjectExists:
                 object_exists("bucket", "key")
 
 
+class TestPrefixExists:
+    def test_true_when_objects_present(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 1}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert prefix_exists("bucket", "some/prefix") is True
+        s3.list_objects_v2.assert_called_once_with(
+            Bucket="bucket", Prefix="some/prefix", MaxKeys=1
+        )
+
+    def test_false_when_no_objects(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 0}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert prefix_exists("bucket", "empty/prefix") is False
+
+    def test_false_when_key_count_missing(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert prefix_exists("bucket", "empty/prefix") is False
+
+
+class TestBucketWritable:
+    def test_true_on_successful_put_and_delete(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert bucket_writable("bucket") is True
+        put_key = s3.put_object.call_args.kwargs["Key"]
+        assert put_key.startswith(".overture_core_write_test/")
+        s3.put_object.assert_called_once_with(Bucket="bucket", Key=put_key, Body=b"")
+        s3.delete_object.assert_called_once_with(Bucket="bucket", Key=put_key)
+
+    def test_default_key_is_unique_per_call(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            bucket_writable("bucket")
+            bucket_writable("bucket")
+        first_key = s3.put_object.call_args_list[0].kwargs["Key"]
+        second_key = s3.put_object.call_args_list[1].kwargs["Key"]
+        assert first_key != second_key
+
+    def test_uses_custom_test_key(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            bucket_writable("bucket", test_key="custom/probe")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket", Key="custom/probe", Body=b""
+        )
+
+    def test_false_on_put_access_denied(self):
+        s3 = MagicMock()
+        s3.put_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "PutObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert bucket_writable("bucket") is False
+        s3.delete_object.assert_not_called()
+
+    def test_false_on_delete_access_denied_but_cleans_up_via_finally(self):
+        s3 = MagicMock()
+        s3.delete_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DeleteObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert bucket_writable("bucket") is False
+        # First delete attempt (in the try) raised; finally retries cleanup once.
+        assert s3.delete_object.call_count == 2
+
+    def test_finally_swallows_cleanup_failure(self):
+        s3 = MagicMock()
+        s3.delete_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DeleteObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            # Should not raise even though every delete_object call fails.
+            assert bucket_writable("bucket") is False
+
+
 class TestDeleteObject:
     def test_calls_delete_object(self):
         s3 = MagicMock()
@@ -105,6 +189,51 @@ class TestWriteMarker:
             write_marker("bucket", "path/_SUCCESS")
         s3.put_object.assert_called_once_with(
             Bucket="bucket", Key="path/_SUCCESS", Body=b""
+        )
+
+
+class TestGetObjectBytes:
+    def test_returns_body_bytes(self):
+        s3 = MagicMock()
+        s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"contents")}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert get_object_bytes("bucket", "key") == b"contents"
+        s3.get_object.assert_called_once_with(Bucket="bucket", Key="key")
+
+    def test_none_on_missing_key(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = _not_found_error("GetObject")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert get_object_bytes("bucket", "missing") is None
+
+    def test_reraises_other_client_errors(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "GetObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                get_object_bytes("bucket", "key")
+
+
+class TestPutObject:
+    def test_writes_body_without_content_type(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            put_object("bucket", "key", b"contents")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket", Key="key", Body=b"contents"
+        )
+
+    def test_writes_body_with_content_type(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            put_object("bucket", "key", b"{}", content_type="application/json")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket",
+            Key="key",
+            Body=b"{}",
+            ContentType="application/json",
         )
 
 
@@ -194,3 +323,55 @@ class TestDeletePrefix:
         s3.get_paginator.return_value.paginate.assert_called_once_with(
             Bucket="bucket", Prefix=""
         )
+
+
+class TestListCommonPrefixes:
+    def test_returns_immediate_segment_names(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {
+                "CommonPrefixes": [
+                    {"Prefix": "root/version=1/"},
+                    {"Prefix": "root/version=2/"},
+                ]
+            }
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "root/")
+
+        assert names == ["version=1", "version=2"]
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix="root/", Delimiter="/"
+        )
+
+    def test_paginates_across_pages(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"CommonPrefixes": [{"Prefix": "root/a/"}]},
+            {"CommonPrefixes": [{"Prefix": "root/b/"}]},
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "root/")
+
+        assert names == ["a", "b"]
+
+    def test_empty_prefix_returns_no_matches(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [{}]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "empty/")
+        assert names == []
+
+    def test_skips_folder_placeholder(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {
+                "CommonPrefixes": [
+                    {"Prefix": "root/$folder$/"},
+                    {"Prefix": "root/real/"},
+                ]
+            }
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "root/")
+        assert names == ["real"]

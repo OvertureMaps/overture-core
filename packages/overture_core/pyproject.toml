@@ -28,7 +28,6 @@ dependencies = [
     # it as a stopgap; raise it back once overture-serverless has a real fix
     # or feat commit against it.
     "overture-serverless>=0.0.0",
-    "overture-stac",
     "pystac>=1.8.4",
     "boto3>=1.35",
 ]
@@ -39,9 +38,17 @@ Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overt
 Issues = "https://github.com/OvertureMaps/overture-core/issues"
 
 [project.optional-dependencies]
+# overture-stac pulls in stac-geoparquet>=0.7.0, which floors pyarrow>=16.
+# Keeping it out of the base dependencies lets consumers who only need the
+# cloud/iceberg/versioning/aws/s3 modules stay on older pyarrow pins (e.g.
+# pyarrow==14.0.2 for Airflow 2.11 compat).
+stac = [
+    "overture-stac",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
+    "overture-core[stac]",
 ]
 
 [build-system]
