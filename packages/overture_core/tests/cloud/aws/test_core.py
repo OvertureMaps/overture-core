@@ -2,7 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
-from overture_core.aws import assume_role, build_role_arn, get_account_id, get_region
+from overture_core.cloud.aws.core import (
+    assume_role,
+    build_role_arn,
+    get_account_id,
+    get_region,
+)
 
 
 class TestGetAccountId:
@@ -10,14 +15,16 @@ class TestGetAccountId:
         get_account_id.cache_clear()
         sts = MagicMock()
         sts.get_caller_identity.return_value = {"Account": "123456789012"}
-        with patch("overture_core.aws.boto3.client", return_value=sts):
+        with patch("overture_core.cloud.aws.core.boto3.client", return_value=sts):
             assert get_account_id() == "123456789012"
 
     def test_caches_across_calls(self):
         get_account_id.cache_clear()
         sts = MagicMock()
         sts.get_caller_identity.return_value = {"Account": "123456789012"}
-        with patch("overture_core.aws.boto3.client", return_value=sts) as client:
+        with patch(
+            "overture_core.cloud.aws.core.boto3.client", return_value=sts
+        ) as client:
             get_account_id()
             get_account_id()
         assert client.call_count == 1
@@ -69,7 +76,7 @@ class TestAssumeRole:
                 "SessionToken": "token",
             }
         }
-        with patch("overture_core.aws.boto3.client", return_value=sts):
+        with patch("overture_core.cloud.aws.core.boto3.client", return_value=sts):
             creds = assume_role("arn:aws:iam::123456789012:role/my-role", "session")
 
         assert creds == {
@@ -93,7 +100,7 @@ class TestAssumeRole:
                 "SessionToken": "token",
             }
         }
-        with patch("overture_core.aws.boto3.client", return_value=sts):
+        with patch("overture_core.cloud.aws.core.boto3.client", return_value=sts):
             creds = assume_role(
                 "arn:aws:iam::123456789012:role/my-role",
                 "session",

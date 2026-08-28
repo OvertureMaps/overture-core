@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import botocore.exceptions
 import pytest
 
-from overture_core.s3 import (
+from overture_core.cloud.aws.object import (
     CopyResult,
     build_s3_uri,
     copy_prefix,
@@ -68,13 +68,13 @@ def _not_found_error(operation: str) -> botocore.exceptions.ClientError:
 class TestObjectExists:
     def test_true_when_head_object_succeeds(self):
         s3 = MagicMock()
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             assert object_exists("bucket", "key") is True
 
     def test_false_on_404(self):
         s3 = MagicMock()
         s3.head_object.side_effect = _not_found_error("HeadObject")
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             assert object_exists("bucket", "key") is False
 
     def test_reraises_other_client_errors(self):
@@ -82,7 +82,7 @@ class TestObjectExists:
         s3.head_object.side_effect = botocore.exceptions.ClientError(
             {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
         )
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             with pytest.raises(botocore.exceptions.ClientError):
                 object_exists("bucket", "key")
 
@@ -90,7 +90,7 @@ class TestObjectExists:
 class TestDeleteObject:
     def test_calls_delete_object(self):
         s3 = MagicMock()
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             assert delete_object("bucket", "key") is None
         s3.delete_object.assert_called_once_with(Bucket="bucket", Key="key")
         # No pre-check: DeleteObject is idempotent, so a missing key costs
@@ -101,7 +101,7 @@ class TestDeleteObject:
 class TestWriteMarker:
     def test_writes_empty_object(self):
         s3 = MagicMock()
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             write_marker("bucket", "path/_SUCCESS")
         s3.put_object.assert_called_once_with(
             Bucket="bucket", Key="path/_SUCCESS", Body=b""
@@ -120,7 +120,7 @@ class TestCopyPrefix:
                 ]
             }
         ]
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             result = copy_prefix("source-bucket", "src", "dest-bucket", "dst")
 
         assert result == CopyResult(files_copied=2, total_bytes=300)
@@ -135,7 +135,7 @@ class TestCopyPrefix:
     def test_no_objects_returns_zero_result(self):
         s3 = MagicMock()
         s3.get_paginator.return_value.paginate.return_value = [{}]
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             result = copy_prefix("source-bucket", "src", "dest-bucket", "dst")
         assert result == CopyResult(files_copied=0, total_bytes=0)
 
@@ -144,7 +144,7 @@ class TestCopyPrefix:
         s3.get_paginator.return_value.paginate.return_value = [
             {"Contents": [{"Key": "a.parquet", "Size": 100}]}
         ]
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             result = copy_prefix("source-bucket", "", "dest-bucket", "")
 
         assert result == CopyResult(files_copied=1, total_bytes=100)
@@ -165,7 +165,7 @@ class TestDeletePrefix:
         s3.get_paginator.return_value.paginate.return_value = [
             {"Contents": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}]}
         ]
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             deleted = delete_prefix("bucket", "src")
 
         assert deleted == 2
@@ -177,7 +177,7 @@ class TestDeletePrefix:
     def test_no_objects_skips_delete_call(self):
         s3 = MagicMock()
         s3.get_paginator.return_value.paginate.return_value = [{}]
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             deleted = delete_prefix("bucket", "src")
         assert deleted == 0
         s3.delete_objects.assert_not_called()
@@ -187,7 +187,7 @@ class TestDeletePrefix:
         s3.get_paginator.return_value.paginate.return_value = [
             {"Contents": [{"Key": "a.parquet"}]}
         ]
-        with patch("overture_core.s3.boto3.client", return_value=s3):
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             deleted = delete_prefix("bucket", "")
 
         assert deleted == 1
