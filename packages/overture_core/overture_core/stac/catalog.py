@@ -11,13 +11,27 @@ import pystac
 from botocore import UNSIGNED
 from botocore.config import Config
 
+
+def _is_missing_optional_stac_package(exc: ModuleNotFoundError) -> bool:
+    """Return whether *exc* is "overture_stac itself isn't installed".
+
+    Distinguishes that case from a transitive import failure inside an
+    *installed* ``overture_stac`` (e.g. one of its own dependencies missing),
+    which should propagate rather than be silently treated as "extra not
+    installed".
+    """
+    return exc.name is not None and exc.name.partition(".")[0] == "overture_stac"
+
+
 try:
     # overture-stac is an optional extra (`overture-core[stac]`) so that
     # consumers of the cloud/iceberg/versioning/aws/s3 modules aren't forced
     # onto stac-geoparquet's pyarrow>=16 floor. Only build_release_catalog
     # below needs it.
     from overture_stac.overture_stac import OvertureRelease
-except ImportError:
+except ModuleNotFoundError as exc:
+    if not _is_missing_optional_stac_package(exc):
+        raise
     OvertureRelease = None
 
 PROD_ROOT_HREF = "https://stac.overturemaps.org"
@@ -159,7 +173,7 @@ def build_release_catalog(
     if OvertureRelease is None:
         raise ImportError(
             "build_release_catalog requires the 'stac' extra: "
-            "install with `pip install overture-core[stac]`"
+            "install with `pip install 'overture-core[stac]'`"
         )
     catalog = OvertureRelease(
         release=release,
