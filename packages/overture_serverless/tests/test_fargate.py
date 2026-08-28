@@ -7,10 +7,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
+from airflow.providers.amazon.aws.operators.ecs import EcsRunTaskOperator
 
 from overture_serverless.backends.fargate import (
     _CodeArtifactPipIndexUrlEcsOperator,
     _resolve_cpu_memory,
+    fargate_task_group,
     serverless_python_task_group,
 )
 
@@ -81,6 +83,30 @@ def _build_task_group(**overrides):
     kwargs.update(overrides)
     with DAG(dag_id="test_dag", start_date=datetime(2024, 1, 1), schedule=None):
         return serverless_python_task_group(**kwargs)
+
+
+def _build_generic_task_group(**overrides):
+    kwargs = dict(
+        group_id="diff_job",
+        family="bundle-diff",
+        image_uri="123456789012.dkr.ecr.us-west-2.amazonaws.com/overture-agent-runner:stable",
+        task_role_arn="arn:aws:iam::123456789012:role/overture-agent-runner-role",
+        network_config={
+            "awsvpcConfiguration": {
+                "subnets": ["subnet-abc"],
+                "securityGroups": ["sg-abc"],
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        ecs_task_builder_factory=_FakeEcsTaskBuilder,
+    )
+    kwargs.update(overrides)
+    with DAG(dag_id="test_dag_generic", start_date=datetime(2024, 1, 1), schedule=None):
+        return fargate_task_group(**kwargs)
+
+
+def _run_operator_of(tg):
+    return next(t for t in tg if t.task_id.endswith("execute_job"))
 
 
 def test_builds_expected_task_ids():
@@ -235,6 +261,130 @@ def test_family_name_includes_job_name_suffix():
     assert builder.kwargs["family"] == (
         "serverless-python-overture_addresses-collect-CollectionJob-nightly"
     )
+
+
+def test_python_flavor_uses_codeartifact_operator_with_runner_env_vars():
+    """The published wrapper must keep injecting the runner-contract env vars
+    and the token-minting operator, now via the generic layer underneath."""
+    tg = _build_task_group(parameters='{"a": 1}')
+    run = _run_operator_of(tg)
+    assert isinstance(run, _CodeArtifactPipIndexUrlEcsOperator)
+    [container] = run.overrides["containerOverrides"]
+    assert container["name"] == "runner"
+    assert "command" not in container
+    env_by_name = {e["name"]: e["value"] for e in container["environment"]}
+    assert env_by_name == {
+        "MODULE_NAME": "overture_addresses.collect",
+        "CLASS_NAME": "CollectionJob",
+        "PYTHON_PACKAGES": "overture-addresses==1.0.0",
+        "PARAMS": '{"a": 1}',
+    }
+    assert run.awslogs_stream_prefix == "serverless-python/collection_job"
+
+
+# ---------------------------------------------------------------------------
+# Generic lifecycle layer (fargate_task_group)
+# ---------------------------------------------------------------------------
+
+
+def test_generic_builds_expected_task_ids():
+    tg = _build_generic_task_group()
+    task_ids = {t.split(".")[-1] for t in tg.children}
+    assert task_ids == {"setup", "execute_job", "cleanup"}
+
+
+def test_generic_default_run_operator_is_plain_ecs_run_task():
+    tg = _build_generic_task_group()
+    run = _run_operator_of(tg)
+    assert type(run) is EcsRunTaskOperator
+
+
+def test_generic_passes_command_and_environment_into_overrides():
+    tg = _build_generic_task_group(
+        command=["diff", "--bundle", "s3://bucket/x"],
+        environment={"LOG_LEVEL": "info"},
+    )
+    run = _run_operator_of(tg)
+    [container] = run.overrides["containerOverrides"]
+    assert container["command"] == ["diff", "--bundle", "s3://bucket/x"]
+    assert container["environment"] == [{"name": "LOG_LEVEL", "value": "info"}]
+
+
+def test_generic_omits_command_and_environment_when_not_given():
+    tg = _build_generic_task_group()
+    run = _run_operator_of(tg)
+    [container] = run.overrides["containerOverrides"]
+    assert container == {"name": "runner"}
+
+
+def test_generic_no_pip_or_module_dispatch_assumptions():
+    tg = _build_generic_task_group(environment={"MY_VAR": "x"})
+    run = _run_operator_of(tg)
+    [container] = run.overrides["containerOverrides"]
+    env_names = {e["name"] for e in container["environment"]}
+    assert not env_names & {
+        "MODULE_NAME",
+        "CLASS_NAME",
+        "PYTHON_PACKAGES",
+        "PIP_INDEX_URL",
+        "PARAMS",
+    }
+
+
+def test_generic_uses_injected_family_verbatim():
+    _build_generic_task_group(family="my-custom-family")
+    (builder,) = _FakeEcsTaskBuilder.instances
+    assert builder.kwargs["family"] == "my-custom-family"
+
+
+def test_generic_stream_prefix_defaults_to_group_id():
+    tg = _build_generic_task_group()
+    run = _run_operator_of(tg)
+    (builder,) = _FakeEcsTaskBuilder.instances
+    [container] = builder.kwargs["container_definitions"]
+    assert run.awslogs_stream_prefix == "diff_job"
+    assert (
+        container["logConfiguration"]["options"]["awslogs-stream-prefix"] == "diff_job"
+    )
+
+
+def test_generic_stream_prefix_overridable():
+    tg = _build_generic_task_group(awslogs_stream_prefix="custom/prefix")
+    run = _run_operator_of(tg)
+    assert run.awslogs_stream_prefix == "custom/prefix"
+
+
+def test_generic_container_name_flows_everywhere():
+    tg = _build_generic_task_group(container_name="agent")
+    run = _run_operator_of(tg)
+    (builder,) = _FakeEcsTaskBuilder.instances
+    [definition] = builder.kwargs["container_definitions"]
+    [override] = run.overrides["containerOverrides"]
+    assert definition["name"] == "agent"
+    assert override["name"] == "agent"
+    assert builder.teardown_calls[0]["container_name"] == "agent"
+
+
+def test_generic_sizing_validation_applies():
+    with pytest.raises(ValueError, match="not a valid Fargate combo"):
+        _build_generic_task_group(cpu="256", memory="999999")
+    with pytest.raises(ValueError, match="ephemeral_storage_gib"):
+        _build_generic_task_group(ephemeral_storage_gib=1)
+
+
+def test_generic_run_operator_factory_receives_assembled_kwargs():
+    captured: dict = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return EcsRunTaskOperator(**kwargs)
+
+    tg = _build_generic_task_group(run_operator_factory=factory, retries=3)
+    run = _run_operator_of(tg)
+    assert captured["task_id"] == "execute_job"
+    assert captured["launch_type"] == "FARGATE"
+    assert captured["retries"] == 3
+    assert run.retries == 3
 
 
 def _make_run_operator(**overrides) -> _CodeArtifactPipIndexUrlEcsOperator:

@@ -1,13 +1,21 @@
 """AWS ECS Fargate backend for the ``serverless_python`` framework.
 
-One implementation of the ``serverless_python_task_group`` contract. It
-launches the reference runner container (``overture-python-runner``) on
-Fargate; at run time the container installs the requested Python packages
-from a pip index and dispatches to the caller's job class.
+Two layers live here:
+
+1. **Generic Fargate lifecycle** -- :func:`fargate_task_group` owns the
+   register -> run -> teardown task-group scaffolding, CPU/memory combo
+   validation, and log wiring for *any* container image and command. It has
+   no opinion on how the image gets its code: pass a pre-baked image invoked
+   by subcommand, a custom entrypoint, or anything else ECS can run.
+2. **Python-package delivery flavor** -- :func:`serverless_python_task_group`
+   layers the pip-install-at-run-time contract on top. It launches the
+   reference runner container (``overture-python-runner``); at run time the
+   container installs the requested Python packages from a pip index and
+   dispatches to the caller's job class.
 
 The runner container is cloud-agnostic -- it speaks a simple runner contract
 (``MODULE_NAME``, ``CLASS_NAME``, ``PYTHON_PACKAGES``, ``PIP_INDEX_URL``,
-``PARAMS`` env vars) and takes a single ``PIP_INDEX_URL``. This backend
+``PARAMS`` env vars) and takes a single ``PIP_INDEX_URL``. The Python flavor
 assembles that URL from CodeArtifact credentials before passing it in; a
 hypothetical GCP Cloud Run or Azure Container Apps backend would live
 alongside this file and assemble the URL from its own artifact registry.
@@ -17,7 +25,7 @@ role ARNs, container image URI, and how the underlying ECS task definition is
 registered/run/torn down -- is supplied by the caller rather than resolved
 here, so this module has no dependency on any one deployment's private
 helpers. See ``network_config``, ``task_role_arn``, ``image_uri``, and
-``ecs_task_builder_factory`` on :func:`serverless_python_task_group`.
+``ecs_task_builder_factory`` on :func:`fargate_task_group`.
 
 Task pipeline::
 
@@ -26,17 +34,20 @@ Task pipeline::
 - ``register_task_definition`` / ``deregister_task_definition`` come from the
   injected ``ecs_task_builder_factory`` and manage the ephemeral Fargate task
   definition.
-- ``execute_job`` fetches a short-lived CodeArtifact auth token inside the
-  operator's ``execute()`` and injects a fully-formed ``PIP_INDEX_URL`` into
-  ``containerOverrides`` in memory before calling ECS ``RunTask``. The token
-  never lands in XCom, task logs, or the metadata DB.
+- In the Python flavor, ``execute_job`` fetches a short-lived CodeArtifact
+  auth token inside the operator's ``execute()`` and injects a fully-formed
+  ``PIP_INDEX_URL`` into ``containerOverrides`` in memory before calling ECS
+  ``RunTask``. The token never lands in XCom, task logs, or the metadata DB.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
 
 from airflow.providers.amazon.aws.operators.ecs import EcsRunTaskOperator
 
@@ -137,6 +148,197 @@ def _resolve_cpu_memory(
             "and update _build_fargate_combos() accordingly."
         )
     return cpu, memory
+
+
+def fargate_task_group(
+    group_id: str,
+    *,
+    family: str,
+    image_uri: str,
+    task_role_arn: str,
+    network_config: dict,
+    ecs_task_builder_factory: "type[EcsTaskBuilderLike] | Any",
+    command: "Sequence[str] | None" = None,
+    environment: "Mapping[str, str] | None" = None,
+    size: Literal["xs", "s", "m", "l"] | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    ephemeral_storage_gib: int = 21,
+    retries: int = 0,
+    region: str = "us-west-2",
+    log_region: str | None = None,
+    ecs_cluster: str = _DEFAULT_ECS_CLUSTER,
+    log_group: str = _DEFAULT_LOG_GROUP,
+    container_name: str = _CONTAINER_NAME,
+    awslogs_stream_prefix: str | None = None,
+    output_path: str | None = None,
+    run_operator_factory: "Callable[..., Any] | None" = None,
+):
+    """Run any container image on AWS ECS Fargate as a register -> run ->
+    teardown Airflow task group.
+
+    This is the generic Fargate lifecycle layer: it registers an ephemeral
+    task definition (via the injected builder), runs the container with the
+    given ``command``/``environment``, and deregisters the task definition
+    afterwards. It makes no assumptions about how the image gets its code --
+    pre-baked images invoked by subcommand work as well as install-at-run-time
+    runners. For the pip-install/module-dispatch flavor, see
+    :func:`serverless_python_task_group`, which is built on top of this.
+
+    Args:
+        group_id: Airflow task group ID shown in the UI.
+        family: ECS task-definition family name registered for this run.
+        image_uri: Fully resolved container image URI (registry, repository,
+            and tag). Required -- build it however your deployment maps
+            environments/versions to image tags (e.g. via an ECR-URI builder
+            keyed by account and region) before calling in.
+        task_role_arn: Full ARN of the IAM role used as both ``taskRoleArn``
+            and ``executionRoleArn``. Required -- resolve it (e.g. from an
+            IAM role name via STS) before calling in; this module has no
+            opinion on how role names map to ARNs in your account.
+        network_config: ECS ``networkConfiguration`` dict (subnets, security
+            groups, ``assignPublicIp``) as accepted by the ECS ``RunTask``
+            API. Required -- resolve it from wherever your deployment stores
+            VPC/subnet/security-group configuration before calling in.
+        ecs_task_builder_factory: Callable with the same call signature as
+            ``EcsTaskBuilder.__init__`` (``family``, ``container_definitions``,
+            ``role_arn``, ``network_configuration``, ``cpu``, ``memory``,
+            ``ephemeral_storage_gib``, ``cluster``, ``awslogs_group``,
+            ``awslogs_region``, ``launch_type``, ``network_mode``,
+            ``output_path``) that returns an object satisfying
+            :class:`EcsTaskBuilderLike` (``register()``/``run()``/``teardown()``).
+            Required -- pass your deployment's ECS task-definition builder
+            (e.g. Overture's internal ``EcsTaskBuilder``); this module never
+            constructs ECS task definitions on its own.
+        command: Optional container command override (ECS
+            ``containerOverrides[].command``), e.g. a baked image's
+            subcommand and flags. Omit to run the image's default command.
+        environment: Optional env vars for the container, as a plain
+            name -> value mapping; converted to ECS
+            ``containerOverrides[].environment`` shape.
+        size: T-shirt preset. ``xs`` (default) covers streaming I/O, API
+            calls, and lightweight transforms. Presets:
+
+            +------+-----------+------------+-----------+---------+
+            | size | CPU units | Memory MiB | real vCPU | RAM     |
+            +======+===========+============+===========+=========+
+            | xs   | 256       | 512        | 0.25      | 0.5 GB  |
+            | s    | 512       | 1024       | 0.5       | 1 GB    |
+            | m    | 1024      | 2048       | 1         | 2 GB    |
+            | l    | 2048      | 4096       | 2         | 4 GB    |
+            +------+-----------+------------+-----------+---------+
+
+            If ``l`` is not enough, pass ``cpu``/``memory`` explicitly.
+        cpu, memory: Escape hatch for exact Fargate CPU units / memory MiB.
+            Must form a valid Fargate combo; validated at parse time.
+            Mutually exclusive with ``size``.
+        ephemeral_storage_gib: Fargate ephemeral storage in GiB (minimum 21
+            when set explicitly, max 200).
+        retries: Airflow-level retries on the ECS run task.
+        region: AWS region for Fargate/ECS.
+        log_region: AWS region for CloudWatch Logs. Defaults to ``region`` --
+            override when logs live in a different region than compute.
+        ecs_cluster: ECS cluster name. Defaults to Overture's reference
+            runner cluster (``"overture-python-runner"``); override for any
+            other deployment.
+        log_group: CloudWatch Logs group for the task's container logs.
+            Defaults to Overture's reference runner log group; override for
+            any other deployment.
+        container_name: Name of the (single) container in the task
+            definition; also the target of ``command``/``environment``
+            overrides and teardown.
+        awslogs_stream_prefix: CloudWatch Logs stream prefix. Defaults to
+            ``group_id``.
+        output_path: Forwarded to ``ecs_task_builder_factory`` so an
+            injected builder can record container image provenance; this
+            module does not interpret it itself.
+        run_operator_factory: Escape hatch for flavors that need a custom
+            run operator (e.g. one that injects secrets at execute time).
+            Called with the fully assembled ``EcsRunTaskOperator`` keyword
+            arguments and must return the run operator. Defaults to
+            ``EcsRunTaskOperator`` itself.
+    """
+    resolved_cpu, resolved_memory = _resolve_cpu_memory(size, cpu, memory)
+
+    if not 21 <= ephemeral_storage_gib <= 200:
+        raise ValueError(
+            f"ephemeral_storage_gib={ephemeral_storage_gib} is invalid; Fargate requires 21..200 GiB"
+        )
+    resolved_log_region = log_region or region
+    stream_prefix = (
+        awslogs_stream_prefix if awslogs_stream_prefix is not None else group_id
+    )
+
+    with TaskGroup(group_id=group_id) as tg:
+        ecs = ecs_task_builder_factory(
+            family=family,
+            cluster=ecs_cluster,
+            awslogs_group=log_group,
+            container_definitions=[
+                {
+                    "name": container_name,
+                    "image": image_uri,
+                    "essential": True,
+                    "logConfiguration": {
+                        "logDriver": "awslogs",
+                        "options": {
+                            "awslogs-group": log_group,
+                            "awslogs-region": resolved_log_region,
+                            "awslogs-stream-prefix": stream_prefix,
+                        },
+                    },
+                }
+            ],
+            role_arn=task_role_arn,
+            network_configuration=network_config,
+            cpu=resolved_cpu,
+            memory=resolved_memory,
+            ephemeral_storage_gib=ephemeral_storage_gib,
+            output_path=output_path,
+        )
+
+        # Task IDs use platform-agnostic names (setup / execute_job / cleanup)
+        # rather than the ECS-specific "register_task_definition" /
+        # "deregister_task_definition" defaults, so future backends
+        # (k8s Jobs, Cloud Run, Azure Container Apps) can slot into the
+        # same UI shape without leaking cloud vocabulary.
+        register = ecs.register(task_id="setup")
+
+        container_override: dict[str, Any] = {"name": container_name}
+        if command is not None:
+            container_override["command"] = list(command)
+        if environment is not None:
+            container_override["environment"] = [
+                {"name": name, "value": value} for name, value in environment.items()
+            ]
+
+        # Build the run operator directly rather than via ``ecs.run()`` so
+        # flavors can substitute a custom operator subclass (see
+        # ``run_operator_factory``). Mirrors ``EcsTaskBuilder.run()``
+        # internals; register() must have been called to expose the
+        # task-definition XCom.
+        build_run_operator = run_operator_factory or EcsRunTaskOperator
+        run = build_run_operator(
+            task_id="execute_job",
+            cluster=ecs_cluster,
+            task_definition=str(register.output),
+            launch_type="FARGATE",
+            overrides={"containerOverrides": [container_override]},
+            network_configuration=network_config,
+            awslogs_group=log_group,
+            awslogs_region=resolved_log_region,
+            awslogs_stream_prefix=stream_prefix,
+            do_xcom_push=True,
+            retries=retries,
+        )
+
+        chain(
+            register,
+            run,
+            ecs.teardown(container_name, run_op=run, task_id="cleanup"),
+        )
+
+    return tg
 
 
 class _CodeArtifactPipIndexUrlEcsOperator(EcsRunTaskOperator):
@@ -255,6 +457,11 @@ def serverless_python_task_group(
 ):
     """Run a Python job on the AWS ECS Fargate serverless backend.
 
+    The pip-install/module-dispatch flavor of :func:`fargate_task_group`: it
+    layers the runner contract (``MODULE_NAME``, ``CLASS_NAME``,
+    ``PYTHON_PACKAGES``, ``PARAMS`` env vars plus a CodeArtifact-minted
+    ``PIP_INDEX_URL``) on top of the generic Fargate lifecycle.
+
     Callers implement a class exposing ``run(params: str) -> None`` --
     typically a ``ServerlessPythonJob`` subclass, but any object with that
     shape works. The class is cloud-agnostic; only this factory ties the
@@ -327,95 +534,48 @@ def serverless_python_task_group(
             injected builder can record container image provenance; this
             module does not interpret it itself.
     """
-    resolved_cpu, resolved_memory = _resolve_cpu_memory(size, cpu, memory)
-
-    if not 21 <= ephemeral_storage_gib <= 200:
-        raise ValueError(
-            f"ephemeral_storage_gib={ephemeral_storage_gib} is invalid; Fargate requires 21..200 GiB"
-        )
-    resolved_log_region = log_region or region
-
     family_suffix = "-".join(
         part.replace(".", "-") for part in (module_name, class_name, job_name) if part
     )
     family = f"serverless-python-{family_suffix}"
 
-    with TaskGroup(group_id=group_id) as tg:
-        ecs = ecs_task_builder_factory(
-            family=family,
-            cluster=ecs_cluster,
-            awslogs_group=log_group,
-            container_definitions=[
-                {
-                    "name": _CONTAINER_NAME,
-                    "image": image_uri,
-                    "essential": True,
-                    "logConfiguration": {
-                        "logDriver": "awslogs",
-                        "options": {
-                            "awslogs-group": log_group,
-                            "awslogs-region": resolved_log_region,
-                            "awslogs-stream-prefix": f"serverless-python/{group_id}",
-                        },
-                    },
-                }
-            ],
-            role_arn=task_role_arn,
-            network_configuration=network_config,
-            cpu=resolved_cpu,
-            memory=resolved_memory,
-            ephemeral_storage_gib=ephemeral_storage_gib,
-            output_path=output_path,
-        )
-
-        # Task IDs use platform-agnostic names (setup / execute_job / cleanup)
-        # rather than the ECS-specific "register_task_definition" /
-        # "deregister_task_definition" defaults, so future backends
-        # (k8s Jobs, Cloud Run, Azure Container Apps) can slot into the
-        # same UI shape without leaking cloud vocabulary.
-        register = ecs.register(task_id="setup")
-        # Build the run operator directly rather than via ``ecs.run()`` so we
-        # can use the custom subclass that mints and injects PIP_INDEX_URL at
-        # execute time. Mirrors ``EcsTaskBuilder.run()`` internals; register()
-        # must have been called to expose the task-definition XCom.
-        run = _CodeArtifactPipIndexUrlEcsOperator(
-            task_id="execute_job",
-            cluster=ecs_cluster,
-            task_definition=str(register.output),
-            launch_type="FARGATE",
-            overrides={
-                "containerOverrides": [
-                    {
-                        "name": _CONTAINER_NAME,
-                        "environment": [
-                            {"name": "MODULE_NAME", "value": module_name},
-                            {"name": "CLASS_NAME", "value": class_name},
-                            {"name": "PYTHON_PACKAGES", "value": python_packages},
-                            {"name": "PARAMS", "value": parameters},
-                        ],
-                    }
-                ]
-            },
-            network_configuration=network_config,
-            awslogs_group=log_group,
-            awslogs_region=resolved_log_region,
-            awslogs_stream_prefix=f"serverless-python/{group_id}",
-            do_xcom_push=True,
-            retries=retries,
+    def _build_run_operator(**run_operator_kwargs) -> EcsRunTaskOperator:
+        return _CodeArtifactPipIndexUrlEcsOperator(
             codeartifact_domain=codeartifact_domain,
             codeartifact_owner=codeartifact_owner,
             codeartifact_repo=codeartifact_repo,
             codeartifact_region=region,
             target_container_name=_CONTAINER_NAME,
+            **run_operator_kwargs,
         )
 
-        chain(
-            register,
-            run,
-            ecs.teardown(_CONTAINER_NAME, run_op=run, task_id="cleanup"),
-        )
+    return fargate_task_group(
+        group_id,
+        family=family,
+        image_uri=image_uri,
+        task_role_arn=task_role_arn,
+        network_config=network_config,
+        ecs_task_builder_factory=ecs_task_builder_factory,
+        environment={
+            "MODULE_NAME": module_name,
+            "CLASS_NAME": class_name,
+            "PYTHON_PACKAGES": python_packages,
+            "PARAMS": parameters,
+        },
+        size=size,
+        cpu=cpu,
+        memory=memory,
+        ephemeral_storage_gib=ephemeral_storage_gib,
+        retries=retries,
+        region=region,
+        log_region=log_region,
+        ecs_cluster=ecs_cluster,
+        log_group=log_group,
+        container_name=_CONTAINER_NAME,
+        awslogs_stream_prefix=f"serverless-python/{group_id}",
+        output_path=output_path,
+        run_operator_factory=_build_run_operator,
+    )
 
-    return tg
 
-
-__all__ = ["serverless_python_task_group", "EcsTaskBuilderLike"]
+__all__ = ["fargate_task_group", "serverless_python_task_group", "EcsTaskBuilderLike"]
