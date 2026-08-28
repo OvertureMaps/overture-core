@@ -76,18 +76,14 @@ class TestObjectExists:
 
 
 class TestDeleteObject:
-    def test_deletes_and_returns_true_when_present(self):
+    def test_calls_delete_object(self):
         s3 = MagicMock()
         with patch("overture_core.s3.boto3.client", return_value=s3):
-            assert delete_object("bucket", "key") is True
+            assert delete_object("bucket", "key") is None
         s3.delete_object.assert_called_once_with(Bucket="bucket", Key="key")
-
-    def test_returns_false_when_absent(self):
-        s3 = MagicMock()
-        s3.head_object.side_effect = _not_found_error("HeadObject")
-        with patch("overture_core.s3.boto3.client", return_value=s3):
-            assert delete_object("bucket", "key") is False
-        s3.delete_object.assert_not_called()
+        # No pre-check: DeleteObject is idempotent, so a missing key costs
+        # exactly one API call, not a head_object round trip first.
+        s3.head_object.assert_not_called()
 
 
 class TestWriteMarker:

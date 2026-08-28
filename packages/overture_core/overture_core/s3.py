@@ -41,16 +41,15 @@ def object_exists(bucket: str, key: str) -> bool:
         raise
 
 
-def delete_object(bucket: str, key: str) -> bool:
-    """Delete an object at ``bucket/key`` if present.
+def delete_object(bucket: str, key: str) -> None:
+    """Delete an object at ``bucket/key``.
 
-    Returns:
-        True if an object was deleted, False if nothing existed at that key.
+    S3's ``DeleteObject`` is idempotent — it returns success whether or not
+    the key existed, so this is a plain no-op-safe delete rather than a
+    check-then-act (checking first with :func:`object_exists` would cost an
+    extra round trip and a TOCTOU race for no benefit).
     """
-    if not object_exists(bucket, key):
-        return False
     boto3.client("s3").delete_object(Bucket=bucket, Key=key)
-    return True
 
 
 def write_marker(bucket: str, key: str) -> None:
@@ -58,7 +57,7 @@ def write_marker(bucket: str, key: str) -> None:
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=b"")
 
 
-@dataclass
+@dataclass(frozen=True)
 class CopyResult:
     """Outcome of a :func:`copy_prefix` call."""
 

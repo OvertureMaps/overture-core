@@ -1,6 +1,6 @@
 """Unit tests for CloudProvider and Partition."""
 
-from overture_core.data import CloudProvider, Partition
+from overture_core.cloud import CloudProvider, Partition
 
 
 class TestCloudProvider:

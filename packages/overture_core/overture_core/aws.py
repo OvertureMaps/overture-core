@@ -1,5 +1,6 @@
 """AWS account, region, and role helpers built on boto3."""
 
+import os
 from functools import lru_cache
 
 import boto3
@@ -22,8 +23,6 @@ def get_region(default: str = "us-west-2") -> str:
     Args:
         default: Region to fall back to when ``AWS_REGION`` isn't set.
     """
-    import os
-
     return os.environ.get("AWS_REGION", default)
 
 
@@ -45,7 +44,11 @@ def assume_role(
         role_arn: Full ARN of the role to assume.
         session_name: Identifier for the assumed-role session (appears in CloudTrail).
         region: Region for the returned client kwargs. Defaults to ``get_region()``.
-        duration_seconds: Session duration in seconds (max 3600 for role chaining).
+        duration_seconds: Session duration in seconds. 3600 is the ceiling when
+            the caller's own credentials were themselves obtained via
+            AssumeRole ("role chaining"); a role assumed directly from a
+            non-temporary identity may allow up to its configured
+            ``MaxSessionDuration`` (up to 43200).
 
     Returns:
         A dict with ``aws_access_key_id``, ``aws_secret_access_key``,
