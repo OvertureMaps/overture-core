@@ -1,4 +1,4 @@
-"""STAC publishing operations. Composed by ``job.py``."""
+"""STAC catalog operations — reads and writes composed by the STAC jobs."""
 
 from __future__ import annotations
 
@@ -89,6 +89,21 @@ def list_public_releases(
             if name:
                 releases.append(name)
     return sorted(releases)
+
+
+def read_latest_release_from_stac(root_href: str = PROD_ROOT_HREF) -> str:
+    """Return the newest release ID present in the STAC root catalog at *root_href*.
+
+    Reads ``{root_href}/catalog.json`` over HTTPS via ``pystac`` and picks the
+    greatest child catalog ID. Overture release IDs (``YYYY-MM-DD.N``) sort
+    lexicographically as dates, so ``max()`` == newest. Raises if the root
+    catalog has no children.
+    """
+    catalog = pystac.Catalog.from_file(f"{root_href.rstrip('/')}/catalog.json")
+    releases = sorted(child.id for child in catalog.get_children())
+    if not releases:
+        raise RuntimeError(f"No release catalogs found under {root_href}")
+    return releases[-1]
 
 
 def read_existing_stac_schemas(
