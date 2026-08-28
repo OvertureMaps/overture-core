@@ -7,8 +7,9 @@ Base class for portable, framework-agnostic "job" classes, plus the Airflow-faci
 
 It contains:
 - `ServerlessPythonJob` — abstract base class your jobs subclass (`execute_job()`), with parameter parsing (`get_param()`) and logging (`log()`). Plain Python, no cloud dependencies — runs identically on any backend or on your laptop.
-- `backends.fargate.serverless_python_task_group` — an Airflow `TaskGroup` factory that runs a job on AWS ECS Fargate. Requires the `fargate` extra (`pip install overture-serverless[fargate]`), which pulls in `apache-airflow` and `apache-airflow-providers-amazon`; the base install stays dependency-free since `ServerlessPythonJob` runs inside the job container, not inside Airflow.
-- `backends.fargate.fargate_task_group` — the generic Fargate lifecycle layer `serverless_python_task_group` is built on: register → run → teardown for *any* container image and command, with no pip-install or module-dispatch assumptions. Same `fargate` extra.
+- `backends.fargate` — the AWS ECS Fargate backend. Requires the `fargate` extra (`pip install overture-serverless[fargate]`), which pulls in `apache-airflow` and `apache-airflow-providers-amazon`; the base install stays dependency-free since `ServerlessPythonJob` runs inside the job container, not inside Airflow.
+  - `serverless_python_task_group` — an Airflow `TaskGroup` factory that runs a job on AWS ECS Fargate.
+  - `fargate_task_group` — the generic Fargate lifecycle layer `serverless_python_task_group` is built on: register → run → teardown for *any* container image and command, with no pip-install or module-dispatch assumptions.
 
 ## Writing a job
 
