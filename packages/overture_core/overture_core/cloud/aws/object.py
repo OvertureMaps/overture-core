@@ -199,3 +199,25 @@ def delete_prefix(bucket: str, prefix: str) -> int:
         deleted += len(keys)
 
     return deleted
+
+
+def list_common_prefixes(bucket: str, prefix: str) -> list[str]:
+    """List immediate "subdirectory" names one level under *prefix*.
+
+    Paginates ``ListObjectsV2`` with ``Delimiter="/"`` and returns each
+    ``CommonPrefixes`` entry trimmed to just its segment name (no bucket, no
+    *prefix*, no trailing slash). Skips the ``$folder$`` placeholder some
+    tools write.
+
+    Example: for ``prefix="root/"`` with ``root/version=1/`` and
+    ``root/version=2/`` present, returns ``["version=1", "version=2"]``.
+    """
+    s3 = boto3.client("s3")
+    names: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []):
+            name = cp["Prefix"][len(prefix) :].rstrip("/")
+            if name and name != "$folder$":
+                names.append(name)
+    return names

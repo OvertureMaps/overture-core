@@ -12,6 +12,7 @@ from overture_core.cloud.aws.object import (
     copy_prefix,
     delete_object,
     delete_prefix,
+    list_common_prefixes,
     object_exists,
     parse_s3_uri,
     prefix_exists,
@@ -275,3 +276,55 @@ class TestDeletePrefix:
         s3.get_paginator.return_value.paginate.assert_called_once_with(
             Bucket="bucket", Prefix=""
         )
+
+
+class TestListCommonPrefixes:
+    def test_returns_immediate_segment_names(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {
+                "CommonPrefixes": [
+                    {"Prefix": "root/version=1/"},
+                    {"Prefix": "root/version=2/"},
+                ]
+            }
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "root/")
+
+        assert names == ["version=1", "version=2"]
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix="root/", Delimiter="/"
+        )
+
+    def test_paginates_across_pages(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"CommonPrefixes": [{"Prefix": "root/a/"}]},
+            {"CommonPrefixes": [{"Prefix": "root/b/"}]},
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "root/")
+
+        assert names == ["a", "b"]
+
+    def test_empty_prefix_returns_no_matches(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [{}]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "empty/")
+        assert names == []
+
+    def test_skips_folder_placeholder(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {
+                "CommonPrefixes": [
+                    {"Prefix": "root/$folder$/"},
+                    {"Prefix": "root/real/"},
+                ]
+            }
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            names = list_common_prefixes("bucket", "root/")
+        assert names == ["real"]
