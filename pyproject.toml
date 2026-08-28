@@ -6,11 +6,20 @@ requires-python = ">=3.11"
 [tool.uv]
 package = false
 
+[tool.uv.workspace]
+members = [
+    "packages/overture_cairn",
+]
+
 [dependency-groups]
 dev = ["ruff==0.16.3"]  # Keep in sync with .pre-commit-config.yaml
 
 [tool.ruff]
 required-version = "0.16.3" # Ensures local executions of ruff use a consistent version/installation
+# ruff formats Python inside markdown code blocks. These docs quote pipeline code
+# as illustration, with `...` standing in for elided bodies and comments aligned
+# to make a point, so formatting them changes what they say.
+extend-exclude = ["packages/overture_cairn/docs"]
 
 [tool.ruff.format]
 # ruff format is Black-compatible by default.
