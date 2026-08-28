@@ -517,10 +517,14 @@ source = { directory = "../overture_serverless" }
 
 [package.metadata]
 requires-dist = [
+    { name = "apache-airflow", marker = "extra == 'dev'", specifier = ">=2.9,<3" },
+    { name = "apache-airflow", marker = "extra == 'fargate'", specifier = ">=2.9,<3" },
+    { name = "apache-airflow-providers-amazon", marker = "extra == 'dev'", specifier = ">=8.13.0,<9" },
+    { name = "apache-airflow-providers-amazon", marker = "extra == 'fargate'", specifier = ">=8.13.0,<9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["fargate", "dev"]
 
 [[package]]
 name = "overture-stac"

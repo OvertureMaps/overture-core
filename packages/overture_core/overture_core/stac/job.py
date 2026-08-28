@@ -1,4 +1,4 @@
-"""``PublishStac`` — composes ``publisher.py`` helpers into a serverless job.
+"""``PublishStac`` — composes ``catalog.py`` helpers into a serverless job.
 
 Two modes, selected by presence of the ``release`` parameter:
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 from overture_serverless.job import ServerlessPythonJob
 
-from overture_core.stac.publisher import (
+from overture_core.stac.catalog import (
     PROD_ROOT_HREF,
     PUBLIC_RELEASE_BUCKET,
     STAC_S3_PREFIX,

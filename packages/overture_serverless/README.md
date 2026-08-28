@@ -3,10 +3,11 @@
 [![PyPI](https://img.shields.io/pypi/v/overture-serverless.svg)](https://pypi.org/project/overture-serverless/)
 [![Python versions](https://img.shields.io/pypi/pyversions/overture-serverless.svg)](https://pypi.org/project/overture-serverless/)
 
-Base class for portable, framework-agnostic "job" classes. A published package that gets installed at run time wherever a job actually executes, and provides the contract your job subclasses.
+Base class for portable, framework-agnostic "job" classes, plus the Airflow-facing backends that launch them. A published package that gets installed at run time wherever a job actually executes, and provides the contract your job subclasses.
 
 It contains:
 - `ServerlessPythonJob` — abstract base class your jobs subclass (`execute_job()`), with parameter parsing (`get_param()`) and logging (`log()`). Plain Python, no cloud dependencies — runs identically on any backend or on your laptop.
+- `backends.fargate.serverless_python_task_group` — an Airflow `TaskGroup` factory that runs a job on AWS ECS Fargate. Requires the `fargate` extra (`pip install overture-serverless[fargate]`), which pulls in `apache-airflow` and `apache-airflow-providers-amazon`; the base install stays dependency-free since `ServerlessPythonJob` runs inside the job container, not inside Airflow.
 
 ## Writing a job
 
@@ -35,6 +36,27 @@ class ExampleJob(ServerlessPythonJob):
 ExampleJob().run('{\"input_path\": \"s3://...\"}')
 "
 ```
+
+## Launching a job on Fargate
+
+`serverless_python_task_group` builds an Airflow `TaskGroup` that provisions an ECS Fargate task, runs your job's runner container, and tears the task definition down afterward. It has no opinion on your AWS account's VPC layout, IAM roles, or container registry — you resolve those and pass them in:
+
+```python
+from overture_serverless.backends.fargate import serverless_python_task_group
+
+collect = serverless_python_task_group(
+    group_id="collection_job",
+    module_name="overture_addresses.collect",
+    class_name="CollectionJob",
+    python_packages="overture-addresses",
+    task_role_arn=my_resolved_role_arn,  # e.g. via STS in your own DAG code
+    network_config=my_ecs_network_config,  # ECS `networkConfiguration` dict
+    image_uri=my_resolved_runner_image_uri,  # e.g. from your own ECR-URI builder
+    ecs_task_builder_factory=MyEcsTaskBuilder,  # your register/run/teardown builder
+)
+```
+
+See the `serverless_python_task_group` docstring for the full parameter list (sizing presets, CodeArtifact coordinates, retries, etc.).
 
 ## Publishing
 
