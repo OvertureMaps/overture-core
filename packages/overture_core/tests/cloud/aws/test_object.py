@@ -8,11 +8,13 @@ import pytest
 from overture_core.cloud.aws.object import (
     CopyResult,
     build_s3_uri,
+    bucket_writable,
     copy_prefix,
     delete_object,
     delete_prefix,
     object_exists,
     parse_s3_uri,
+    prefix_exists,
     write_marker,
 )
 
@@ -85,6 +87,78 @@ class TestObjectExists:
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             with pytest.raises(botocore.exceptions.ClientError):
                 object_exists("bucket", "key")
+
+
+class TestPrefixExists:
+    def test_true_when_objects_present(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 1}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert prefix_exists("bucket", "some/prefix") is True
+        s3.list_objects_v2.assert_called_once_with(
+            Bucket="bucket", Prefix="some/prefix", MaxKeys=1
+        )
+
+    def test_false_when_no_objects(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 0}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert prefix_exists("bucket", "empty/prefix") is False
+
+    def test_false_when_key_count_missing(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert prefix_exists("bucket", "empty/prefix") is False
+
+
+class TestBucketWritable:
+    def test_true_on_successful_put_and_delete(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert bucket_writable("bucket") is True
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket", Key=".overture_core_write_test", Body=b""
+        )
+        s3.delete_object.assert_called_once_with(
+            Bucket="bucket", Key=".overture_core_write_test"
+        )
+
+    def test_uses_custom_test_key(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            bucket_writable("bucket", test_key="custom/probe")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket", Key="custom/probe", Body=b""
+        )
+
+    def test_false_on_put_access_denied(self):
+        s3 = MagicMock()
+        s3.put_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "PutObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert bucket_writable("bucket") is False
+        s3.delete_object.assert_not_called()
+
+    def test_false_on_delete_access_denied_but_cleans_up_via_finally(self):
+        s3 = MagicMock()
+        s3.delete_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DeleteObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert bucket_writable("bucket") is False
+        # First delete attempt (in the try) raised; finally retries cleanup once.
+        assert s3.delete_object.call_count == 2
+
+    def test_finally_swallows_cleanup_failure(self):
+        s3 = MagicMock()
+        s3.delete_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DeleteObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            # Should not raise even though every delete_object call fails.
+            assert bucket_writable("bucket") is False
 
 
 class TestDeleteObject:

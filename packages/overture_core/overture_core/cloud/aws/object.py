@@ -42,6 +42,47 @@ def object_exists(bucket: str, key: str) -> bool:
         raise
 
 
+def prefix_exists(bucket: str, prefix: str) -> bool:
+    """Return whether at least one object exists under ``bucket/prefix``.
+
+    Unlike :func:`object_exists` (an exact-key check via ``head_object``),
+    this checks whether anything lives under a prefix — the S3 equivalent of
+    "does this directory have contents".
+    """
+    response = boto3.client("s3").list_objects_v2(
+        Bucket=bucket, Prefix=prefix, MaxKeys=1
+    )
+    return response.get("KeyCount", 0) > 0
+
+
+def bucket_writable(bucket: str, test_key: str = ".overture_core_write_test") -> bool:
+    """Return whether the caller's credentials can write to *bucket*.
+
+    Probes by putting and then deleting an empty object at *test_key*.
+    Returns ``False`` on any ``ClientError`` (e.g. ``AccessDenied``) rather
+    than raising — this is a plain boolean check to branch on, not a
+    validation function. Cleans up the test object if the put succeeded but
+    something else failed before the delete.
+    """
+    s3 = boto3.client("s3")
+    put_succeeded = False
+    deleted = False
+    try:
+        s3.put_object(Bucket=bucket, Key=test_key, Body=b"")
+        put_succeeded = True
+        s3.delete_object(Bucket=bucket, Key=test_key)
+        deleted = True
+        return True
+    except botocore.exceptions.ClientError:
+        return False
+    finally:
+        if put_succeeded and not deleted:
+            try:
+                s3.delete_object(Bucket=bucket, Key=test_key)
+            except botocore.exceptions.ClientError:
+                pass
+
+
 def delete_object(bucket: str, key: str) -> None:
     """Delete an object at ``bucket/key``.
 
