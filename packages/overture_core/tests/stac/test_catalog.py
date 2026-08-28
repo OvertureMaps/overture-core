@@ -9,11 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from overture_core.stac.publisher import (
+from overture_core.stac.catalog import (
     build_release_catalog,
     list_public_releases,
     mirror_directory_to_s3,
     read_existing_stac_schemas,
+    read_latest_release_from_stac,
     read_schema_from_released_rc,
     read_schema_version_from_rc_bundle,
 )
@@ -41,7 +42,7 @@ class TestReadSchemaVersion:
             }
         }
         with patch(
-            "overture_core.stac.publisher.boto3.client",
+            "overture_core.stac.catalog.boto3.client",
             return_value=self._stub_s3(body),
         ):
             assert (
@@ -59,7 +60,7 @@ class TestReadSchemaVersion:
             }
         }
         with patch(
-            "overture_core.stac.publisher.boto3.client",
+            "overture_core.stac.catalog.boto3.client",
             return_value=self._stub_s3(body),
         ):
             assert (
@@ -70,7 +71,7 @@ class TestReadSchemaVersion:
     def test_missing_schema_raises_runtime_error(self):
         body = {"cdp_release_candidate_dag": {"inputs": []}}
         with patch(
-            "overture_core.stac.publisher.boto3.client",
+            "overture_core.stac.catalog.boto3.client",
             return_value=self._stub_s3(body),
         ):
             with pytest.raises(RuntimeError, match="schema_version not found"):
@@ -84,7 +85,7 @@ class TestReadSchemaVersion:
                 }
             }
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             read_schema_version_from_rc_bundle("bucket", "path/to/bundle/")
 
         s3.get_object.assert_called_once_with(
@@ -147,7 +148,7 @@ class TestReadSchemaFromReleasedRc:
             released_runs={"run=2"},
             metadata_body=self._payload("v1.18.0"),
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             assert read_schema_from_released_rc("bkt", "X") == "v1.18.0"
 
     def test_picks_latest_when_multiple_released(self):
@@ -156,7 +157,7 @@ class TestReadSchemaFromReleasedRc:
             released_runs={"run=1", "run=3"},
             metadata_body=self._payload("v2.0.0"),
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             read_schema_from_released_rc("bkt", "X")
         get_calls = [c for c in s3.get_object.call_args_list]
         assert (
@@ -166,13 +167,13 @@ class TestReadSchemaFromReleasedRc:
 
     def test_raises_when_no_runs_found(self):
         s3 = self._stub_s3(runs=[], released_runs=set())
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             with pytest.raises(RuntimeError, match="No RC runs found"):
                 read_schema_from_released_rc("bkt", "X")
 
     def test_raises_when_no_run_has_released_marker(self):
         s3 = self._stub_s3(runs=["run=1", "run=2"], released_runs=set())
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             with pytest.raises(RuntimeError, match="'released' marker"):
                 read_schema_from_released_rc("bkt", "X")
 
@@ -183,7 +184,7 @@ class TestReadSchemaFromReleasedRc:
         s3.head_object.side_effect = botocore.exceptions.ClientError(
             {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             with pytest.raises(botocore.exceptions.ClientError, match="Forbidden"):
                 read_schema_from_released_rc("bkt", "X")
 
@@ -209,17 +210,57 @@ class TestListPublicReleases:
                 "release/2026-06-01.0/",
             ]
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             releases = list_public_releases("bkt")
 
         assert releases == ["2026-04-15.0", "2026-05-20.0", "2026-06-01.0"]
 
     def test_ignores_empty_prefixes(self):
         s3 = self._stub_s3(["release/", "release/2026-05-20.0/"])
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             releases = list_public_releases("bkt")
 
         assert releases == ["2026-05-20.0"]
+
+
+# ── read_latest_release_from_stac ─────────────────────────────────────────────
+
+
+class TestReadLatestReleaseFromStac:
+    def _stub_catalog(self, child_ids: list[str]) -> MagicMock:
+        catalog = MagicMock()
+        catalog.get_children.return_value = [MagicMock(id=cid) for cid in child_ids]
+        return catalog
+
+    def test_returns_greatest_child_id(self):
+        catalog = self._stub_catalog(["2026-05-20.0", "2026-04-15.0", "2026-06-01.0"])
+        with patch(
+            "overture_core.stac.catalog.pystac.Catalog.from_file",
+            return_value=catalog,
+        ) as mock_from_file:
+            assert (
+                read_latest_release_from_stac("https://stac.example.com")
+                == "2026-06-01.0"
+            )
+        mock_from_file.assert_called_once_with("https://stac.example.com/catalog.json")
+
+    def test_strips_trailing_slash_from_root_href(self):
+        catalog = self._stub_catalog(["2026-05-20.0"])
+        with patch(
+            "overture_core.stac.catalog.pystac.Catalog.from_file",
+            return_value=catalog,
+        ) as mock_from_file:
+            read_latest_release_from_stac("https://stac.example.com/")
+        mock_from_file.assert_called_once_with("https://stac.example.com/catalog.json")
+
+    def test_raises_when_catalog_has_no_children(self):
+        catalog = self._stub_catalog([])
+        with patch(
+            "overture_core.stac.catalog.pystac.Catalog.from_file",
+            return_value=catalog,
+        ):
+            with pytest.raises(RuntimeError, match="No release catalogs found"):
+                read_latest_release_from_stac("https://stac.example.com")
 
 
 # ── read_existing_stac_schemas ────────────────────────────────────────────────
@@ -257,7 +298,7 @@ class TestReadExistingStacSchemas:
                 "2026-04-15.0": {"schema:version": "v1.17.0"},
             },
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             schemas = read_existing_stac_schemas("bkt")
 
         assert schemas == {
@@ -273,7 +314,7 @@ class TestReadExistingStacSchemas:
                 "no-catalog": RuntimeError("NoSuchKey"),
             },
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             schemas = read_existing_stac_schemas("bkt")
 
         assert schemas == {"good": "v1.0.0"}
@@ -286,7 +327,7 @@ class TestReadExistingStacSchemas:
                 "good": {"schema:version": "v1.0.0"},
             },
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             schemas = read_existing_stac_schemas("bkt")
 
         assert schemas == {"good": "v1.0.0"}
@@ -296,7 +337,7 @@ class TestReadExistingStacSchemas:
             common_prefixes=["stac/", "stac/good/"],
             catalog_by_release={"good": {"schema:version": "v1.0.0"}},
         )
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             schemas = read_existing_stac_schemas("bkt")
 
         assert schemas == {"good": "v1.0.0"}
@@ -308,7 +349,7 @@ class TestReadExistingStacSchemas:
 class TestBuildReleaseCatalog:
     def test_configures_overture_release_and_saves_absolute_catalog(self, tmp_path):
         with patch(
-            "overture_core.stac.publisher.OvertureRelease"
+            "overture_core.stac.catalog.OvertureRelease"
         ) as mock_overture_release:
             catalog_obj = MagicMock()
             mock_overture_release.return_value = catalog_obj
@@ -339,7 +380,7 @@ class TestBuildReleaseCatalog:
         )
 
     def test_accepts_none_schema(self, tmp_path):
-        with patch("overture_core.stac.publisher.OvertureRelease") as mock_or:
+        with patch("overture_core.stac.catalog.OvertureRelease") as mock_or:
             mock_or.return_value = MagicMock()
             build_release_catalog(
                 release="2026-05-20.0",
@@ -372,7 +413,7 @@ class TestMirrorDirectoryToS3:
         self._make_local_tree(tmp_path, ["a.json", "sub/b.json"])
         s3 = self._stub_s3(remote_keys=[])
 
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             deleted = mirror_directory_to_s3(tmp_path, "bkt", "stac/")
 
         assert deleted == 0
@@ -384,7 +425,7 @@ class TestMirrorDirectoryToS3:
         self._make_local_tree(tmp_path, ["keep.json"])
         s3 = self._stub_s3(remote_keys=["stac/keep.json", "stac/gone.json"])
 
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             deleted = mirror_directory_to_s3(tmp_path, "bkt", "stac/")
 
         assert deleted == 1
@@ -398,7 +439,7 @@ class TestMirrorDirectoryToS3:
         orphans = [f"stac/orphan-{i:04d}.json" for i in range(2500)]
         s3 = self._stub_s3(remote_keys=["stac/keep.json", *orphans])
 
-        with patch("overture_core.stac.publisher.boto3.client", return_value=s3):
+        with patch("overture_core.stac.catalog.boto3.client", return_value=s3):
             deleted = mirror_directory_to_s3(tmp_path, "bkt", "stac/")
 
         assert deleted == 2500

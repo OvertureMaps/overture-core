@@ -1,8 +1,8 @@
 """Unit tests for the PublishStac orchestrator.
 
-Verifies orchestration only — that ``execute_job`` calls the publisher
-helpers in the right order with the right arguments. Publisher functions
-themselves are covered in ``test_publisher.py``.
+Verifies orchestration only — that ``execute_job`` calls the catalog
+helpers in the right order with the right arguments. Catalog functions
+themselves are covered in ``test_catalog.py``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def _run(
     schema_from_rc: str = "v1.99.0",
     schema_from_released_rc: str = "v1.99.0",
 ):
-    """Run PublishStac with all publisher helpers mocked; return the mocks."""
+    """Run PublishStac with all catalog helpers mocked; return the mocks."""
     with (
         patch("overture_core.stac.job.read_existing_stac_schemas") as mock_existing,
         patch("overture_core.stac.job.read_schema_version_from_rc_bundle") as mock_rc,
