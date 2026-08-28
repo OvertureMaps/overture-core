@@ -304,6 +304,8 @@ def fargate_task_group(
 
         container_override: dict[str, Any] = {"name": container_name}
         if command is not None:
+            if isinstance(command, str):
+                raise TypeError("command must be a sequence of strings, not a single string")
             container_override["command"] = list(command)
         if environment is not None:
             container_override["environment"] = [
