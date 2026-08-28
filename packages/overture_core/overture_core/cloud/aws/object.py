@@ -108,6 +108,37 @@ def write_marker(bucket: str, key: str) -> None:
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=b"")
 
 
+def get_object_bytes(bucket: str, key: str) -> bytes | None:
+    """Read an object's body as bytes, or ``None`` if ``bucket/key`` doesn't exist.
+
+    Collapses the "does this exist" question into the return value instead
+    of a try/except at every call site. Raises for any error other than a
+    missing key.
+    """
+    try:
+        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return None
+        raise
+    return response["Body"].read()
+
+
+def put_object(
+    bucket: str, key: str, body: bytes, content_type: str | None = None
+) -> None:
+    """Write *body* to ``bucket/key``, optionally setting *content_type*.
+
+    Generalizes :func:`write_marker` (which always writes an empty body) to
+    an arbitrary payload, the common case for writing a JSON or text
+    artifact rather than a zero-byte marker file.
+    """
+    kwargs = {"Bucket": bucket, "Key": key, "Body": body}
+    if content_type is not None:
+        kwargs["ContentType"] = content_type
+    boto3.client("s3").put_object(**kwargs)
+
+
 @dataclass(frozen=True)
 class CopyResult:
     """Outcome of a :func:`copy_prefix` call."""

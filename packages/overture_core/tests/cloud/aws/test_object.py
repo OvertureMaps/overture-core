@@ -12,10 +12,12 @@ from overture_core.cloud.aws.object import (
     copy_prefix,
     delete_object,
     delete_prefix,
+    get_object_bytes,
     list_common_prefixes,
     object_exists,
     parse_s3_uri,
     prefix_exists,
+    put_object,
     write_marker,
 )
 
@@ -187,6 +189,51 @@ class TestWriteMarker:
             write_marker("bucket", "path/_SUCCESS")
         s3.put_object.assert_called_once_with(
             Bucket="bucket", Key="path/_SUCCESS", Body=b""
+        )
+
+
+class TestGetObjectBytes:
+    def test_returns_body_bytes(self):
+        s3 = MagicMock()
+        s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"contents")}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert get_object_bytes("bucket", "key") == b"contents"
+        s3.get_object.assert_called_once_with(Bucket="bucket", Key="key")
+
+    def test_none_on_missing_key(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = _not_found_error("GetObject")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert get_object_bytes("bucket", "missing") is None
+
+    def test_reraises_other_client_errors(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "GetObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                get_object_bytes("bucket", "key")
+
+
+class TestPutObject:
+    def test_writes_body_without_content_type(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            put_object("bucket", "key", b"contents")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket", Key="key", Body=b"contents"
+        )
+
+    def test_writes_body_with_content_type(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            put_object("bucket", "key", b"{}", content_type="application/json")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket",
+            Key="key",
+            Body=b"{}",
+            ContentType="application/json",
         )
 
 
