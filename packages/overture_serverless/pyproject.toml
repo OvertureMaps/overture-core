@@ -83,3 +83,11 @@ allow_zero_version = true
 # files under packages/overture_serverless/.
 [tool.semantic_release.commit_parser_options]
 path_filters = ["."]
+# Without this, a conventional type outside minor_tags/patch_tags (docs,
+# style, refactor, chore, build, ci, test) is parsed but contributes no
+# bump, so a package can go multiple merges with no_release even though it
+# changed. Floor every recognized type at a patch bump so any release-worthy
+# push to this package always produces a new version.
+# PSR 10.6.1's pydantic schema wants LevelBump's raw IntEnum value here, not
+# the string name (a bare "patch" fails validation) -- 2 == LevelBump.PATCH.
+default_bump_level = 2
