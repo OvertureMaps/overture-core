@@ -10,7 +10,15 @@ import boto3
 import pystac
 from botocore import UNSIGNED
 from botocore.config import Config
-from overture_stac.overture_stac import OvertureRelease
+
+try:
+    # overture-stac is an optional extra (`overture-core[stac]`) so that
+    # consumers of the cloud/iceberg/versioning/aws/s3 modules aren't forced
+    # onto stac-geoparquet's pyarrow>=16 floor. Only build_release_catalog
+    # below needs it.
+    from overture_stac.overture_stac import OvertureRelease
+except ImportError:
+    OvertureRelease = None
 
 PROD_ROOT_HREF = "https://stac.overturemaps.org"
 STAC_S3_PREFIX = "stac/"
@@ -148,6 +156,11 @@ def build_release_catalog(
     TODO: move upstream into ``overture-stac`` — this is the exact call
     sequence in that library's CLI; belongs as a public API there.
     """
+    if OvertureRelease is None:
+        raise ImportError(
+            "build_release_catalog requires the 'stac' extra: "
+            "install with `pip install overture-core[stac]`"
+        )
     catalog = OvertureRelease(
         release=release,
         schema=schema_version,

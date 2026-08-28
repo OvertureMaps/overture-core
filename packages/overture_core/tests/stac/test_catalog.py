@@ -389,6 +389,15 @@ class TestBuildReleaseCatalog:
             )
         assert mock_or.call_args.kwargs["schema"] is None
 
+    def test_raises_helpful_error_without_stac_extra(self, tmp_path):
+        with patch("overture_core.stac.catalog.OvertureRelease", None):
+            with pytest.raises(ImportError, match=r"overture-core\[stac\]"):
+                build_release_catalog(
+                    release="2026-05-20.0",
+                    schema_version="v1.18.0",
+                    output=tmp_path,
+                )
+
 
 # ── mirror_directory_to_s3 ────────────────────────────────────────────────────
 

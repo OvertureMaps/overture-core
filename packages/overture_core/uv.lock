@@ -490,26 +490,30 @@ source = { editable = "." }
 dependencies = [
     { name = "boto3" },
     { name = "overture-serverless" },
-    { name = "overture-stac" },
     { name = "pystac" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "overture-stac" },
     { name = "pytest" },
     { name = "pytest-cov" },
+]
+stac = [
+    { name = "overture-stac" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
+    { name = "overture-core", extras = ["stac"], marker = "extra == 'dev'" },
     { name = "overture-serverless", directory = "../overture_serverless" },
-    { name = "overture-stac" },
+    { name = "overture-stac", marker = "extra == 'stac'" },
     { name = "pystac", specifier = ">=1.8.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["stac", "dev"]
 
 [[package]]
 name = "overture-serverless"

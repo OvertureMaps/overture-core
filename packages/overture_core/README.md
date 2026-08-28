@@ -5,6 +5,8 @@
 
 Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
 
+`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` if you need `stac.job.PublishStac`, `stac.job.LatestRelease`, or `stac.catalog.build_release_catalog`; plain `overture-core` covers the `cloud`/`iceberg`/`versioning` modules without it.
+
 ## Jobs
 
 - **`stac.job.PublishStac`** — publishes the Overture STAC catalog. Two modes selected by the presence of the `release` param:
