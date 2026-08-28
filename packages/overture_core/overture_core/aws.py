@@ -18,12 +18,18 @@ def get_account_id() -> str:
 
 
 def get_region(default: str = "us-west-2") -> str:
-    """Return the AWS region from the ``AWS_REGION`` environment variable.
+    """Return the AWS region from ``AWS_REGION`` or ``AWS_DEFAULT_REGION``.
+
+    Checks ``AWS_REGION`` first, then falls back to ``AWS_DEFAULT_REGION``
+    (the variable boto3 itself checks when ``AWS_REGION`` isn't set), then
+    *default*.
 
     Args:
-        default: Region to fall back to when ``AWS_REGION`` isn't set.
+        default: Region to fall back to when neither env var is set.
     """
-    return os.environ.get("AWS_REGION", default)
+    return (
+        os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or default
+    )
 
 
 def build_role_arn(account_id: str, role_name: str) -> str:

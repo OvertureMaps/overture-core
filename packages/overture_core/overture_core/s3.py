@@ -17,17 +17,18 @@ def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
     """Split an ``s3://bucket/key`` URI into ``(bucket, key)``.
 
     Raises:
-        ValueError: If *s3_uri* isn't an ``s3://`` URI.
+        ValueError: If *s3_uri* isn't an ``s3://`` URI, or has no bucket.
     """
     parsed = urlparse(s3_uri)
-    if parsed.scheme != "s3":
+    if parsed.scheme != "s3" or not parsed.netloc:
         raise ValueError(f"Not an S3 URI: {s3_uri!r}")
     return parsed.netloc, parsed.path.lstrip("/")
 
 
 def build_s3_uri(bucket: str, key: str) -> str:
     """Build an ``s3://bucket/key`` URI from a bucket and key."""
-    return f"s3://{bucket}/{key.lstrip('/')}"
+    key = key.lstrip("/")
+    return f"s3://{bucket}/{key}" if key else f"s3://{bucket}"
 
 
 def object_exists(bucket: str, key: str) -> bool:
@@ -102,14 +103,19 @@ def copy_prefix(
     files_copied = 0
     total_bytes = 0
     paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=source_bucket, Prefix=f"{source_prefix}/"):
+    list_prefix = f"{source_prefix}/" if source_prefix else ""
+    for page in paginator.paginate(Bucket=source_bucket, Prefix=list_prefix):
         for obj in page.get("Contents", []):
             source_key = obj["Key"]
             if source_key.endswith("/"):
                 continue
 
             relative_key = source_key[len(source_prefix) :].lstrip("/")
-            dest_key = f"{destination_prefix}/{relative_key}"
+            dest_key = (
+                f"{destination_prefix}/{relative_key}"
+                if destination_prefix
+                else relative_key
+            )
 
             s3.copy(
                 CopySource={"Bucket": source_bucket, "Key": source_key},
@@ -134,7 +140,8 @@ def delete_prefix(bucket: str, prefix: str) -> int:
 
     deleted = 0
     paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/"):
+    list_prefix = f"{prefix}/" if prefix else ""
+    for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
         keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if not keys:
             continue

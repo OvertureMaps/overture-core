@@ -28,12 +28,24 @@ class TestGetRegion:
         monkeypatch.setenv("AWS_REGION", "eu-west-1")
         assert get_region() == "eu-west-1"
 
+    def test_falls_back_to_aws_default_region(self, monkeypatch):
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+        assert get_region() == "ap-northeast-1"
+
+    def test_aws_region_takes_priority_over_default_region(self, monkeypatch):
+        monkeypatch.setenv("AWS_REGION", "eu-west-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+        assert get_region() == "eu-west-1"
+
     def test_falls_back_to_default(self, monkeypatch):
         monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
         assert get_region() == "us-west-2"
 
     def test_custom_default(self, monkeypatch):
         monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
         assert get_region(default="ap-south-1") == "ap-south-1"
 
 
@@ -48,6 +60,7 @@ class TestBuildRoleArn:
 class TestAssumeRole:
     def test_returns_client_kwargs(self, monkeypatch):
         monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
         sts = MagicMock()
         sts.assume_role.return_value = {
             "Credentials": {

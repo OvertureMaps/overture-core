@@ -31,6 +31,10 @@ class TestParseS3Uri:
         with pytest.raises(ValueError, match="Not an S3 URI"):
             parse_s3_uri("https://example.com/file.txt")
 
+    def test_rejects_empty_bucket(self):
+        with pytest.raises(ValueError, match="Not an S3 URI"):
+            parse_s3_uri("s3:///key")
+
 
 class TestBuildS3Uri:
     def test_builds_uri(self):
@@ -41,8 +45,16 @@ class TestBuildS3Uri:
     def test_strips_leading_slash_from_key(self):
         assert build_s3_uri("my-bucket", "/file.txt") == "s3://my-bucket/file.txt"
 
+    def test_omits_trailing_slash_for_empty_key(self):
+        assert build_s3_uri("my-bucket", "") == "s3://my-bucket"
+
     def test_round_trips_with_parse(self):
         uri = "s3://my-bucket/some/prefix/file.txt"
+        bucket, key = parse_s3_uri(uri)
+        assert build_s3_uri(bucket, key) == uri
+
+    def test_round_trips_bucket_only(self):
+        uri = "s3://my-bucket"
         bucket, key = parse_s3_uri(uri)
         assert build_s3_uri(bucket, key) == uri
 
@@ -127,6 +139,25 @@ class TestCopyPrefix:
             result = copy_prefix("source-bucket", "src", "dest-bucket", "dst")
         assert result == CopyResult(files_copied=0, total_bytes=0)
 
+    def test_empty_prefixes_copy_whole_bucket(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "a.parquet", "Size": 100}]}
+        ]
+        with patch("overture_core.s3.boto3.client", return_value=s3):
+            result = copy_prefix("source-bucket", "", "dest-bucket", "")
+
+        assert result == CopyResult(files_copied=1, total_bytes=100)
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="source-bucket", Prefix=""
+        )
+        s3.copy.assert_called_once_with(
+            CopySource={"Bucket": "source-bucket", "Key": "a.parquet"},
+            Bucket="dest-bucket",
+            Key="a.parquet",
+            Config=s3.copy.call_args.kwargs["Config"],
+        )
+
 
 class TestDeletePrefix:
     def test_deletes_all_objects_under_prefix(self):
@@ -150,3 +181,16 @@ class TestDeletePrefix:
             deleted = delete_prefix("bucket", "src")
         assert deleted == 0
         s3.delete_objects.assert_not_called()
+
+    def test_empty_prefix_deletes_whole_bucket(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "a.parquet"}]}
+        ]
+        with patch("overture_core.s3.boto3.client", return_value=s3):
+            deleted = delete_prefix("bucket", "")
+
+        assert deleted == 1
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix=""
+        )
