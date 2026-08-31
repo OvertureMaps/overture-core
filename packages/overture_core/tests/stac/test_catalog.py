@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from overture_core.stac.catalog import (
+    _is_missing_optional_stac_package,
     build_release_catalog,
     list_public_releases,
     mirror_directory_to_s3,
@@ -22,6 +23,32 @@ from overture_core.stac.catalog import (
 
 def _bytes_body(payload: dict | list) -> io.BytesIO:
     return io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+
+# ── _is_missing_optional_stac_package ─────────────────────────────────────────
+
+
+class TestIsMissingOptionalStacPackage:
+    def test_true_for_overture_stac_itself(self):
+        exc = ModuleNotFoundError("No module named 'overture_stac'")
+        exc.name = "overture_stac"
+        assert _is_missing_optional_stac_package(exc) is True
+
+    def test_true_for_overture_stac_submodule(self):
+        exc = ModuleNotFoundError("No module named 'overture_stac.overture_stac'")
+        exc.name = "overture_stac.overture_stac"
+        assert _is_missing_optional_stac_package(exc) is True
+
+    def test_false_for_unrelated_transitive_dependency(self):
+        # e.g. overture_stac is installed but one of *its* deps is missing.
+        exc = ModuleNotFoundError("No module named 'pyarrow'")
+        exc.name = "pyarrow"
+        assert _is_missing_optional_stac_package(exc) is False
+
+    def test_false_when_name_is_none(self):
+        exc = ModuleNotFoundError("some ambiguous failure")
+        exc.name = None
+        assert _is_missing_optional_stac_package(exc) is False
 
 
 # ── read_schema_version_from_rc_bundle ────────────────────────────────────────
@@ -388,6 +415,15 @@ class TestBuildReleaseCatalog:
                 output=tmp_path,
             )
         assert mock_or.call_args.kwargs["schema"] is None
+
+    def test_raises_helpful_error_without_stac_extra(self, tmp_path):
+        with patch("overture_core.stac.catalog.OvertureRelease", None):
+            with pytest.raises(ImportError, match=r"overture-core\[stac\]"):
+                build_release_catalog(
+                    release="2026-05-20.0",
+                    schema_version="v1.18.0",
+                    output=tmp_path,
+                )
 
 
 # ── mirror_directory_to_s3 ────────────────────────────────────────────────────
