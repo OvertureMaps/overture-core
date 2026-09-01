@@ -77,7 +77,7 @@ jobs:
       contents: read # checkout
     services:
       trino:
-        image: trinodb/trino:483
+        image: trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534 # v483
         ports:
           - 8080:8080
     steps:
