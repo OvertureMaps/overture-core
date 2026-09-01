@@ -9,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-from overture_core.docs_release import update_docs_for_release
+from overture_core.docs import update_docs_for_release
 
 
 class _FakeNoSuchKey(Exception):
@@ -58,7 +58,7 @@ def fake_boto3_client(fake_s3, fake_secretsmanager):
             return fake_secretsmanager
         raise AssertionError(f"unexpected boto3 client: {service_name}")
 
-    with mock.patch("overture_core.docs_release.boto3.client", side_effect=_client):
+    with mock.patch("overture_core.docs.boto3.client", side_effect=_client):
         yield
 
 
