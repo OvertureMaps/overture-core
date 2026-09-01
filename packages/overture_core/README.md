@@ -18,9 +18,7 @@ Framework-agnostic helpers, each importable on its own without pulling in the jo
 | `versioning` | Parse a source's version from an ISO 8601 date or an HTTP header into a consistent dated string, for sources with no explicit version metadata. |
 | `iceberg` | Shared enums, dataclasses, and Spark SQL extensions for Iceberg + Sedona catalog configuration across platforms. |
 | `cloud.cloud` | Provider-agnostic helpers for building partition path segments. |
-| `cloud.aws.core` | AWS account, region, and role/assume-role helpers built on boto3. |
-| `cloud.aws.object` | S3 object/prefix helpers built on boto3: URI parsing, existence checks, read/write/copy/delete, prefix listing. |
-| `cloud.aws.codeartifact` | Mint a short-lived CodeArtifact authorization token. |
+| `cloud.aws` | AWS helpers built on boto3: account/region/role helpers (`core`), S3 object/prefix read/write/copy/delete/list (`object`), and a short-lived CodeArtifact token (`codeartifact`). |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
 | `data` | `DataLocation`/`DatasyncSpec` dataclasses describing a data location and its DataSync configuration. |
 | `docs` | `update_docs_for_release()` opens a pull request against a docs repo for a new release, via a GitHub App. |
