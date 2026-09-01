@@ -1,7 +1,7 @@
-"""Open a PR in overturemaps/docs to update release-specific content.
+"""Open a PR in a docs repo to update release-specific content.
 
-Updates the attribution page and the fallback release version in
-docusaurus.config.js as part of the release publish pipeline.
+Updates an attribution page and a fallback release version string in a
+docusaurus config as part of a release publish pipeline.
 """
 
 import logging
@@ -11,12 +11,6 @@ import boto3
 
 log = logging.getLogger(__name__)
 
-DOCS_REPO = "OvertureMaps/docs"
-BASE_BRANCH = "main"
-
-ATTRIBUTION_PATH = "docs/_generated_attribution.mdx"
-
-CONFIG_PATH = "docusaurus.config.js"
 # Matches e.g. `const fallback = '2024-07-22.0';` — capture groups preserve the
 # quoted wrapper so re.sub can swap just the version string.
 FALLBACK_PATTERN = re.compile(r"(const fallback = ')[^']+(')")
@@ -27,6 +21,10 @@ def update_docs_for_release(
     s3_key: str,
     release_version: str,
     *,
+    docs_repo: str,
+    base_branch: str,
+    attribution_path: str,
+    config_path: str,
     app_slug: str,
     app_client_id: str,
     app_installation_id: int,
@@ -35,8 +33,8 @@ def update_docs_for_release(
 ) -> str:
     """Update docs repo with new attribution content and release version.
 
-    Overwrites _generated_attribution.mdx with the attribution body from S3 and
-    bumps the fallback version in docusaurus.config.js. Opens a single PR with
+    Overwrites the attribution page with the rendered body from S3 and bumps
+    the fallback version in the docusaurus config. Opens a single PR with
     both changes. Authenticates as a GitHub App via a JWT signed with a PEM
     fetched from AWS Secrets Manager.
 
@@ -44,10 +42,19 @@ def update_docs_for_release(
         s3_bucket: Bucket holding the rendered attribution body.
         s3_key: Key of the rendered attribution body within `s3_bucket`.
         release_version: Version string to write into the fallback config.
+        docs_repo: The `owner/repo` docs repository to open the PR against
+            (e.g. "OvertureMaps/docs").
+        base_branch: Branch in `docs_repo` to branch from and target with
+            the PR (e.g. "main").
+        attribution_path: Path within `docs_repo` to overwrite with the
+            rendered attribution body (e.g. "docs/_generated_attribution.mdx").
+        config_path: Path within `docs_repo` to a docusaurus config
+            containing a `const fallback = '...'` version string to bump
+            (e.g. "docusaurus.config.js").
         app_slug: The GitHub App's slug (e.g. "overture-pull-requester"),
             used to resolve its bot user identity for commit authorship.
         app_client_id: The GitHub App's client ID.
-        app_installation_id: The App's installation ID on `DOCS_REPO`.
+        app_installation_id: The App's installation ID on `docs_repo`.
         pem_secret_name: AWS Secrets Manager secret name holding the App's
             private key PEM.
         secrets_region: AWS region `pem_secret_name` lives in.
@@ -80,7 +87,7 @@ def update_docs_for_release(
         app_installation_id
     )
     gh = Github(auth=installation_auth)
-    repo = gh.get_repo(DOCS_REPO)
+    repo = gh.get_repo(docs_repo)
 
     # Identity for commit author + DCO Signed-off-by trailer. cncf/dco2 fails
     # the PR if the trailer email doesn't match the commit author email, so we
@@ -91,17 +98,17 @@ def update_docs_for_release(
     author = InputGitAuthor(bot_name, bot_email)
     signoff = f"Signed-off-by: {bot_name} <{bot_email}>"
 
-    # Overwrite _generated_attribution.mdx with the S3 body.
-    attr_contents = repo.get_contents(ATTRIBUTION_PATH, ref=BASE_BRANCH)
+    # Overwrite the attribution page with the S3 body.
+    attr_contents = repo.get_contents(attribution_path, ref=base_branch)
     attr_current = attr_contents.decoded_content.decode("utf-8")
     attr_changed = attribution_body.rstrip() != attr_current.rstrip()
 
-    # edits to docusaurus.config.js
-    config_contents = repo.get_contents(CONFIG_PATH, ref=BASE_BRANCH)
+    # Edits to the docusaurus config.
+    config_contents = repo.get_contents(config_path, ref=base_branch)
     config_current = config_contents.decoded_content.decode("utf-8")
 
     if not FALLBACK_PATTERN.search(config_current):
-        raise ValueError(f"Could not find fallback version pattern in {CONFIG_PATH}.")
+        raise ValueError(f"Could not find fallback version pattern in {config_path}.")
 
     config_updated = FALLBACK_PATTERN.sub(rf"\g<1>{release_version}\2", config_current)
     config_changed = config_updated != config_current
@@ -125,12 +132,12 @@ def update_docs_for_release(
 
     repo.create_git_ref(
         ref=f"refs/heads/{branch_name}",
-        sha=repo.get_branch(BASE_BRANCH).commit.sha,
+        sha=repo.get_branch(base_branch).commit.sha,
     )
 
     if attr_changed:
         repo.update_file(
-            path=ATTRIBUTION_PATH,
+            path=attribution_path,
             message=f"update attribution for {release_version}\n\n{signoff}",
             content=attribution_body,
             sha=attr_contents.sha,
@@ -141,7 +148,7 @@ def update_docs_for_release(
 
     if config_changed:
         repo.update_file(
-            path=CONFIG_PATH,
+            path=config_path,
             message=f"update fallback release version to {release_version}\n\n{signoff}",
             content=config_updated,
             sha=config_contents.sha,
@@ -160,7 +167,7 @@ def update_docs_for_release(
             + ("- Updated fallback release version\n" if config_changed else "")
         ),
         head=branch_name,
-        base=BASE_BRANCH,
+        base=base_branch,
     )
     log.info("Created PR: %s", pr.html_url)
     return f"PR created: {pr.html_url}"

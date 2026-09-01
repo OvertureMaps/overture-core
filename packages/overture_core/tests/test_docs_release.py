@@ -23,6 +23,10 @@ class _FakeGithubException(Exception):
 
 
 _DEFAULT_KWARGS = dict(
+    docs_repo="OvertureMaps/docs",
+    base_branch="main",
+    attribution_path="docs/_generated_attribution.mdx",
+    config_path="docusaurus.config.js",
     app_slug="test-app",
     app_client_id="client-id-123",
     app_installation_id=42,

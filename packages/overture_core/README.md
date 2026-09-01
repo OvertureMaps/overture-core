@@ -23,7 +23,7 @@ Framework-agnostic helpers, each importable on its own without pulling in the jo
 | `cloud.aws.codeartifact` | Mint a short-lived CodeArtifact authorization token. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
 | `data` | `DataLocation`/`DatasyncSpec` dataclasses describing a data location and its DataSync configuration. |
-| `docs_release` | `update_docs_for_release()` opens a pull request against `OvertureMaps/docs` for a new release, via a GitHub App. |
+| `docs_release` | `update_docs_for_release()` opens a pull request against a docs repo for a new release, via a GitHub App. |
 | `artifacts` | `MetadataArtifact`/`LicenseArtifact`/`AttributionArtifact` classes plus tree-search and S3 JSON/Markdown I/O helpers for release artifacts. |
 | `dataset` | `Dataset` class parsing a provider/resource JSON config into collection/ingestion/matching sections. |
 | `dataset_schema` | Pydantic schema validating dataset provider/resource JSON configs; also runnable as a script for CI validation. |
