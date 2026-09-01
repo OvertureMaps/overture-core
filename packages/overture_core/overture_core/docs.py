@@ -8,6 +8,7 @@ import logging
 import re
 
 import boto3
+import botocore.exceptions
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +71,9 @@ def update_docs_for_release(
     s3 = boto3.client("s3")
     try:
         obj = s3.get_object(Bucket=s3_bucket, Key=s3_key)
-    except s3.exceptions.NoSuchKey as e:
+    except botocore.exceptions.ClientError as e:
+        if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
+            raise
         raise RuntimeError(
             f"Attribution artifact missing for release {release_version}: "
             f"s3://{s3_bucket}/{s3_key} does not exist."

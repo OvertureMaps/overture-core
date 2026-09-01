@@ -160,8 +160,11 @@ def validate_file(path: str | Path) -> DatasetFile:
     path = Path(path)
     if not re.fullmatch(LABEL_PATTERN, path.stem):
         raise ValueError(f"file name must be snake_case: {path.name}")
-    with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except OSError as e:
+        raise ValueError(f"could not read {path}: {e}") from e
     parsed = DatasetFile.model_validate(data)
     if parsed.provider.label != path.stem:
         raise ValueError(

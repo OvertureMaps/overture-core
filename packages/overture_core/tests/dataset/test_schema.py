@@ -289,6 +289,19 @@ def test_rejects_invalid_json(tmp_path):
         validate_file(bad)
 
 
+def test_rejects_missing_file(tmp_path):
+    with pytest.raises(ValueError, match="could not read"):
+        validate_file(tmp_path / "acme.json")
+
+
+def test_validate_all_reports_missing_file_as_error(tmp_path):
+    missing = tmp_path / "acme.json"
+    errors = validate_all([missing])
+    assert len(errors) == 1
+    assert errors[0][0] == missing
+    assert "could not read" in str(errors[0][1])
+
+
 def test_rejects_duplicate_provider_labels_across_files(tmp_path):
     dir_a = tmp_path / "a"
     dir_b = tmp_path / "b"

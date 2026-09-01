@@ -8,18 +8,27 @@ tests patch the real `github` module's attributes directly.
 from unittest import mock
 
 import pytest
+from botocore.exceptions import ClientError
 
 from overture_core.docs import update_docs_for_release
-
-
-class _FakeNoSuchKey(Exception):
-    pass
 
 
 class _FakeGithubException(Exception):
     def __init__(self, status, data=None):
         super().__init__(data)
         self.status = status
+
+
+def _no_such_key_error() -> ClientError:
+    return ClientError(
+        {
+            "Error": {
+                "Code": "NoSuchKey",
+                "Message": "The specified key does not exist.",
+            }
+        },
+        "GetObject",
+    )
 
 
 _DEFAULT_KWARGS = dict(
@@ -38,7 +47,6 @@ _DEFAULT_KWARGS = dict(
 @pytest.fixture
 def fake_s3():
     client = mock.MagicMock()
-    client.exceptions.NoSuchKey = _FakeNoSuchKey
     return client
 
 
@@ -100,8 +108,15 @@ class TestMissingArtifact:
     def test_raises_runtime_error_when_s3_object_missing(
         self, fake_boto3_client, fake_s3
     ):
-        fake_s3.get_object.side_effect = fake_s3.exceptions.NoSuchKey()
+        fake_s3.get_object.side_effect = _no_such_key_error()
         with pytest.raises(RuntimeError, match="Attribution artifact missing"):
+            update_docs_for_release("bucket", "key", "2024-08-01.0", **_DEFAULT_KWARGS)
+
+    def test_reraises_other_client_errors(self, fake_boto3_client, fake_s3):
+        fake_s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject"
+        )
+        with pytest.raises(ClientError):
             update_docs_for_release("bucket", "key", "2024-08-01.0", **_DEFAULT_KWARGS)
 
 
