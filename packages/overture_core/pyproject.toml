@@ -45,10 +45,23 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 stac = [
     "overture-stac",
 ]
+# Kept out of `dev`: these need a real JVM (pyspark) or a running Trino
+# coordinator (trino), so only the "sql-engines" CI workflow installs them,
+# not a routine local `pytest` run.
+sql-spark = [
+    "pyspark>=3.5",
+]
+sql-trino = [
+    "trino>=0.328",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
     "overture-core[stac]",
+    # Stand-in ANSI-SQL engine for the uuids_sql Spark-dialect parity tests:
+    # its md5()/sha1() return lowercase hex strings directly, like Spark's,
+    # so it validates the generated SQL without needing a JVM.
+    "duckdb>=1.0.0",
 ]
 
 [build-system]
@@ -73,6 +86,10 @@ overture-serverless = { path = "../overture_serverless" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "spark: requires a real Spark session (overture-core[sql-spark]); run via the sql-engines CI workflow, not routine local pytest.",
+    "trino: requires a running Trino coordinator (overture-core[sql-trino]); run via the sql-engines CI workflow, not routine local pytest.",
+]
 
 [tool.coverage.run]
 source = ["overture_core"]

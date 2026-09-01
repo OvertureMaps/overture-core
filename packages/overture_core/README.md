@@ -5,7 +5,7 @@
 
 Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
 
-`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids` modules too.
+`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql` modules too.
 
 ## Modules
 
@@ -14,6 +14,7 @@ Framework-agnostic helpers, each importable on its own without pulling in the jo
 | Module | What it's for |
 | --- | --- |
 | `uuids` | Pure Python `generate_uuid3`/`generate_uuid4`/`generate_uuid5` (no Spark dependency, wrap in `@F.udf`/`@udf` yourself). `generate_uuid6`/`7`/`8` wrap the RFC 9562 stdlib generators added in Python 3.14, raising `NotImplementedError` on older interpreters. |
+| `uuids_sql` | `generate_uuid3_sql`/`generate_uuid4_sql`/`generate_uuid5_sql` build the equivalent SQL expression for Spark or Trino (`engine="spark"`/`"trino"`), so a UUID column can be computed server-side instead of through a Python UDF. |
 | `versioning` | Parse a source's version from an ISO 8601 date or an HTTP `Last-Modified` header into a nodash (`YYYYMMDD`) string, for sources with no explicit version metadata. |
 | `iceberg` | `Platform`/`CatalogKind` enums, `CatalogSpec`/`CatalogBinding` dataclasses, and the Iceberg + Sedona Spark SQL extensions constant shared by every platform's catalog config. |
 | `cloud.cloud` | `CloudProvider` enum and a `Partition` dataclass for building Hive-style (`key=value`) or plain partition path segments. |
