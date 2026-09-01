@@ -118,8 +118,8 @@ def update_docs_for_release(
         return "No docs changes detected, skipping PR."
 
     branch_name = f"release-update-{release_version}"
-    # Make the task idempotent across DAG retries: if a previous run created
-    # the branch and then failed before opening the PR, delete it and start
+    # Make this idempotent across retries: if a previous run created the
+    # branch and then failed before opening the PR, delete it and start
     # fresh from main.
     try:
         existing_ref = repo.get_git_ref(f"heads/{branch_name}")
