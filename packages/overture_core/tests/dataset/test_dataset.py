@@ -1,10 +1,13 @@
-"""Tests for the Dataset class."""
+"""Tests for the Dataset class.
+
+See ``test_schema.py`` for the strict pydantic validator's tests.
+"""
 
 import json
 
 import pytest
 
-from overture_core.dataset import Dataset
+from overture_core.dataset.dataset import Dataset
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 

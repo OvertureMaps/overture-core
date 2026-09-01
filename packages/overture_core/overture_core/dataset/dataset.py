@@ -16,11 +16,15 @@ assumption about where that directory lives).  Each JSON file contains a
 ``provider`` section and a ``resources`` array.  Every resource entry
 carries its own ``collection``, ``ingestion``, and ``matching`` sections.
 
+``Dataset`` loads a file permissively for runtime use: missing sections
+default to ``{}``. See ``overture_core.dataset.schema`` for a strict
+pydantic validator over that same JSON shape, used by CI instead.
+
 Usage
 -----
 ::
 
-    from overture_core.dataset import Dataset
+    from overture_core.dataset.dataset import Dataset
 
     ds = Dataset.from_name("osm", "planet", datasets_dir="configs/datasets")
 

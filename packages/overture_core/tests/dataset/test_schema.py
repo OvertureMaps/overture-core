@@ -1,7 +1,7 @@
 """Validate the pydantic dataset config schema.
 
 Unlike tf-data-platform's copy, this module has no baked-in default
-directory to scan (see ``overture_core.dataset_schema``'s module docstring),
+directory to scan (see ``overture_core.dataset.schema``'s module docstring),
 so there is no "validate every repository config file" test here -- that
 belongs to whichever repository owns the actual `configs/datasets/*.json`
 files and calls `validate_all()` with an explicit file list.
@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from overture_core.dataset_schema import DataDownload, main, validate_all, validate_file
+from overture_core.dataset.schema import DataDownload, main, validate_all, validate_file
 
 
 def _valid_doc() -> dict:

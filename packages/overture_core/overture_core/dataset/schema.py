@@ -4,13 +4,14 @@ Field-by-field documentation belongs alongside the actual config files a
 caller validates. Unknown keys are rejected, so adding a new field to a
 config file requires extending the models here in the same change.
 
-This module makes no assumption about where dataset config files live —
+This module makes no assumption about where dataset config files live --
 callers pass explicit paths (or a directory to glob) rather than relying on
-a baked-in default location.
+a baked-in default location. See ``overture_core.dataset.dataset`` for the
+permissive runtime loader over that same JSON shape.
 
 Run as a script to validate specific files (used by CI):
 
-    python -m overture_core.dataset_schema path/to/provider.json ...
+    python -m overture_core.dataset.schema path/to/provider.json ...
 """
 
 from __future__ import annotations
@@ -205,12 +206,12 @@ def main(argv: list[str] | None = None) -> int:
     fall back to when no arguments are given — callers (e.g. a CI step) pass
     the files or a shell glob explicitly, e.g.:
 
-        python -m overture_core.dataset_schema configs/datasets/*.json
+        python -m overture_core.dataset.schema configs/datasets/*.json
     """
     args = sys.argv[1:] if argv is None else argv
     if not args:
         print(
-            "usage: python -m overture_core.dataset_schema <path/to/provider.json> ...",
+            "usage: python -m overture_core.dataset.schema <path/to/provider.json> ...",
             file=sys.stderr,
         )
         return 2
