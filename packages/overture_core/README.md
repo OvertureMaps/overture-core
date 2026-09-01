@@ -14,7 +14,7 @@ Framework-agnostic helpers, each importable on its own without pulling in the jo
 | Module | What it's for |
 | --- | --- |
 | `uuids` | Pure Python `generate_uuid3`/`generate_uuid4`/`generate_uuid5` (no Spark dependency, wrap in `@F.udf`/`@udf` yourself). `generate_uuid6`/`7`/`8` wrap the RFC 9562 stdlib generators added in Python 3.14, raising `NotImplementedError` on older interpreters. |
-| `uuids_sql` | `generate_uuid3_sql`/`generate_uuid4_sql`/`generate_uuid5_sql` build the equivalent SQL expression for Spark or Trino (`engine="spark"`/`"trino"`), so a UUID column can be computed server-side instead of through a Python UDF. `generate_uuid3_sql_legacy_spark_bug` is a deprecated, Spark-only variant that reproduces a known bug in `tf-data-platform`'s `uuid_v3_sql`, for a caller that needs its exact byte-for-byte output while it plans a migration (see OvertureMaps/tf-data-platform#5051). |
+| `uuids_sql` | `generate_uuid3_sql`/`generate_uuid4_sql`/`generate_uuid5_sql` build the equivalent SQL expression for Spark or Trino (`engine="spark"`/`"trino"`), so a UUID column can be computed server-side instead of through a Python UDF. |
 | `versioning` | Parse a source's version from an ISO 8601 date or an HTTP `Last-Modified` header into a nodash (`YYYYMMDD`) string, for sources with no explicit version metadata. |
 | `iceberg` | `Platform`/`CatalogKind` enums, `CatalogSpec`/`CatalogBinding` dataclasses, and the Iceberg + Sedona Spark SQL extensions constant shared by every platform's catalog config. |
 | `cloud.cloud` | `CloudProvider` enum and a `Partition` dataclass for building Hive-style (`key=value`) or plain partition path segments. |

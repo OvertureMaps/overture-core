@@ -79,10 +79,9 @@ def generate_uuid3_sql(
 
     `namespace` is embedded as a literal; `name_sql` is any SQL expression
     (column reference, literal, `concat(...)`, etc.) producing the string to
-    hash. Raises ValueError for an unsupported `engine`.
-
-    >>> generate_uuid3_sql(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "name")
-    "concat_ws('-', substring(lower(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8'))), 1, 8), substring(lower(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8'))), 9, 4), concat('3', substring(lower(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8'))), 14, 3)), concat((CASE substring(lower(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8'))), 17, 1) WHEN '0' THEN '8' WHEN '4' THEN '8' WHEN '8' THEN '8' WHEN 'c' THEN '8' WHEN '1' THEN '9' WHEN '5' THEN '9' WHEN '9' THEN '9' WHEN 'd' THEN '9' WHEN '2' THEN 'a' WHEN '6' THEN 'a' WHEN 'a' THEN 'a' WHEN 'e' THEN 'a' WHEN '3' THEN 'b' WHEN '7' THEN 'b' WHEN 'b' THEN 'b' WHEN 'f' THEN 'b' END), substring(lower(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8'))), 18, 3)), substring(lower(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8'))), 21, 12))"
+    hash. Raises ValueError for an unsupported `engine`. See
+    `TestSparkDialectMatchesPython` in `tests/test_uuids_sql.py` for a
+    DuckDB-executed check against `generate_uuid3`'s actual output.
     """
     _check_engine(engine)
     return _uuid_from_digest_hex_sql(
@@ -135,10 +134,11 @@ def generate_uuid3_sql_legacy_spark_bug(namespace: uuid.UUID, name_sql: str) -> 
     migration off this function.
 
     Spark-only: the reference implementation this mirrors never had a Trino
-    equivalent, so there's no `engine` parameter here.
-
-    >>> generate_uuid3_sql_legacy_spark_bug(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "name")
-    "concat_ws('-', substring(lower(hex(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8')))), 1, 8), substring(lower(hex(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8')))), 9, 4), concat('3', substring(lower(hex(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8')))), 14, 3)), concat((CASE substring(lower(hex(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8')))), 17, 1) WHEN '0' THEN '8' WHEN '4' THEN '8' WHEN '8' THEN '8' WHEN 'c' THEN '8' WHEN '1' THEN '9' WHEN '5' THEN '9' WHEN '9' THEN '9' WHEN 'd' THEN '9' WHEN '2' THEN 'a' WHEN '6' THEN 'a' WHEN 'a' THEN 'a' WHEN 'e' THEN 'a' WHEN '3' THEN 'b' WHEN '7' THEN 'b' WHEN 'b' THEN 'b' WHEN 'f' THEN 'b' END), substring(lower(hex(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8')))), 18, 3)), substring(lower(hex(md5(unhex('6ba7b8109dad11d180b400c04fd430c8') || encode(name, 'UTF-8')))), 21, 12))"
+    equivalent, so there's no `engine` parameter here. See
+    `TestSparkDialectMatchesPython.test_legacy_matches_known_buggy_value` in
+    `tests/test_uuids_sql.py` for a DuckDB-executed check that this
+    reproduces the known-buggy value from
+    OvertureMaps/tf-data-platform#5047's before/after example.
     """
     namespace_hex = namespace.hex
     digest_hex_sql = (
