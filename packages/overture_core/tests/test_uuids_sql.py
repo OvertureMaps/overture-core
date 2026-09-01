@@ -18,6 +18,7 @@ import pytest
 from overture_core.uuids import generate_uuid3, generate_uuid5
 from overture_core.uuids_sql import (
     generate_uuid3_sql,
+    generate_uuid3_sql_legacy_spark_bug,
     generate_uuid4_sql,
     generate_uuid5_sql,
 )
@@ -101,6 +102,37 @@ class TestGenerateUuid4Sql:
             generate_uuid4_sql(engine="postgres")
 
 
+class TestGenerateUuid3SqlLegacySparkBug:
+    """Covers the deprecated bug-for-bug-compatible variant.
+
+    See `TestSparkDialectMatchesPython.test_legacy_matches_known_buggy_value`
+    for the DuckDB-executed proof that this reproduces
+    `tf-data-platform`'s actual `uuid_v3_sql` output.
+    """
+
+    def test_returns_str(self):
+        assert isinstance(
+            generate_uuid3_sql_legacy_spark_bug(NAMESPACE_DNS, "name"), str
+        )
+
+    def test_wraps_md5_in_extra_hex(self):
+        sql = generate_uuid3_sql_legacy_spark_bug(NAMESPACE_DNS, "name")
+        assert "hex(md5(" in sql
+
+    def test_differs_from_correct_generate_uuid3_sql(self):
+        assert generate_uuid3_sql(
+            NAMESPACE_DNS, "name"
+        ) != generate_uuid3_sql_legacy_spark_bug(NAMESPACE_DNS, "name")
+
+    def test_embeds_namespace_as_hex_literal(self):
+        sql = generate_uuid3_sql_legacy_spark_bug(NAMESPACE_DNS, "name")
+        assert NAMESPACE_DNS.hex in sql
+
+    def test_embeds_name_sql_verbatim(self):
+        sql = generate_uuid3_sql_legacy_spark_bug(NAMESPACE_DNS, "concat(a, b)")
+        assert "concat(a, b)" in sql
+
+
 class TestSparkDialectMatchesPython:
     """Executes the generated Spark-dialect SQL against DuckDB.
 
@@ -148,3 +180,15 @@ class TestSparkDialectMatchesPython:
             f"select {sql} from (select ? as name_col)", ["example.com"]
         ).fetchone()[0]
         assert got == expected
+
+    def test_legacy_matches_known_buggy_value(self, con):
+        # Value from OvertureMaps/tf-data-platform#5047's before/after example:
+        # `uuid_v3_sql` for NAMESPACE_DNS + "example.com" produces this, not a
+        # valid v3 UUID, instead of the correct `9073926b-929f-31c2-...`.
+        sql = generate_uuid3_sql_legacy_spark_bug(NAMESPACE_DNS, "name_col").replace(
+            ", 'UTF-8')", ")"
+        )
+        got = con.execute(
+            f"select {sql} from (select ? as name_col)", ["example.com"]
+        ).fetchone()[0]
+        assert got == "39303733-3932-3662-b932-396664316332"
