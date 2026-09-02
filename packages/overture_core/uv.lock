@@ -929,10 +929,8 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-databricks = [
-    { name = "databricks-sdk" },
-]
 dev = [
+    { name = "databricks-sdk" },
     { name = "duckdb" },
     { name = "overture-stac" },
     { name = "pytest" },
@@ -951,7 +949,7 @@ stac = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
-    { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.20" },
+    { name = "databricks-sdk", marker = "extra == 'dev'", specifier = ">=0.20" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "overture-core", extras = ["stac"], marker = "extra == 'dev'" },
     { name = "overture-serverless", directory = "../overture_serverless" },
@@ -966,7 +964,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
-provides-extras = ["stac", "databricks", "sql-spark", "sql-trino", "dev"]
+provides-extras = ["stac", "sql-spark", "sql-trino", "dev"]
 
 [[package]]
 name = "overture-serverless"

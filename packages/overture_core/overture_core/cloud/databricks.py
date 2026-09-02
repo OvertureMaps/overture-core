@@ -2,17 +2,17 @@
 
 import logging
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from databricks.sdk import WorkspaceClient
 
 
 class DBFSUploader:
     """Uploads a local directory tree to DBFS, preserving its relative layout."""
 
-    def __init__(self):
-        from databricks.sdk import (
-            WorkspaceClient,
-        )  # optional dep (overture-core[databricks])
-
-        self.client = WorkspaceClient()
+    def __init__(self, client: "WorkspaceClient"):
+        self.client = client
 
     def upload_directory(self, local_directory: str, dbfs_directory: str) -> list[str]:
         """Upload directory contents to DBFS. Returns list of DBFS paths."""

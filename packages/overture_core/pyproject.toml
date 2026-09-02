@@ -49,11 +49,6 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 stac = [
     "overture-stac",
 ]
-# cloud/databricks.py's DBFSUploader lazily imports the Databricks SDK at
-# call time, so consumers who don't upload to DBFS don't need it installed.
-databricks = [
-    "databricks-sdk>=0.20",
-]
 # Kept out of `dev`: these need a real JVM (pyspark) or a running Trino
 # coordinator (trino), so only the "sql-engines" CI workflow installs them,
 # not a routine local `pytest` run.
@@ -71,6 +66,11 @@ dev = [
     # its md5()/sha1() return lowercase hex strings directly, like Spark's,
     # so it validates the generated SQL without needing a JVM.
     "duckdb>=1.0.0",
+    # Not a runtime dep of overture_core (DBFSUploader takes a WorkspaceClient
+    # as a constructor argument, so the caller owns this dependency). Only
+    # needed here so tests can spec MagicMock(spec=WorkspaceClient) against
+    # the real class shape instead of a hand-maintained duck-typed stub.
+    "databricks-sdk>=0.20",
 ]
 
 [build-system]

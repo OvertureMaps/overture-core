@@ -1,22 +1,16 @@
 """Unit tests for the DBFSUploader Databricks helper."""
 
-import sys
-import types
 from unittest.mock import MagicMock
 
 import pytest
+from databricks.sdk import WorkspaceClient
 
 from overture_core.cloud.databricks import DBFSUploader
 
 
 @pytest.fixture()
-def workspace_client(monkeypatch):
-    mock_client = MagicMock()
-    fake_module = types.ModuleType("databricks.sdk")
-    fake_module.WorkspaceClient = MagicMock(return_value=mock_client)
-    monkeypatch.setitem(sys.modules, "databricks", types.ModuleType("databricks"))
-    monkeypatch.setitem(sys.modules, "databricks.sdk", fake_module)
-    return mock_client
+def workspace_client():
+    return MagicMock(spec=WorkspaceClient)
 
 
 class TestDBFSUploader:
@@ -25,7 +19,7 @@ class TestDBFSUploader:
         (tmp_path / "a.txt").write_text("a")
         (tmp_path / "sub" / "b.txt").write_text("b")
 
-        uploader = DBFSUploader()
+        uploader = DBFSUploader(workspace_client)
         result = uploader.upload_directory(str(tmp_path), "/dbfs/target")
 
         assert sorted(result) == ["/dbfs/target/a.txt", "/dbfs/target/sub/b.txt"]
@@ -35,6 +29,6 @@ class TestDBFSUploader:
         (tmp_path / "a.txt").write_text("a")
         workspace_client.dbfs.upload.side_effect = RuntimeError("boom")
 
-        uploader = DBFSUploader()
+        uploader = DBFSUploader(workspace_client)
         with pytest.raises(RuntimeError, match="boom"):
             uploader.upload_directory(str(tmp_path), "/dbfs/target")
