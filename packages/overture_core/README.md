@@ -18,10 +18,10 @@ Framework-agnostic helpers, each importable on its own without pulling in the jo
 | `versioning` | Parse a source's version from an ISO 8601 date or an HTTP header into a consistent dated string, for sources with no explicit version metadata. |
 | `iceberg` | Shared enums, dataclasses, and Spark SQL extensions for Iceberg + Sedona catalog configuration across platforms. |
 | `cloud.cloud` | Provider-agnostic helpers for building partition path segments. |
-| `cloud.aws` | AWS helpers built on boto3: account/region/role helpers, S3 object/prefix read/write/copy/delete/list/upload, and CodeArtifact auth plus package version resolution/download for a PyPI-format repository. |
-| `cloud.databricks` | Uploads a local directory tree to DBFS given a caller-supplied Databricks SDK workspace client, so this module has no runtime dependency on `databricks-sdk`. |
-| `pypi` | Plain HTTPS package downloads, plus downloading a package set via `pip download` against a CodeArtifact PyPI index. |
-| `urls` | Redacts the password segment of a credential-bearing URL before it's logged or raised. |
+| `cloud.aws` | boto3-backed AWS integrations: account/region/role identity, S3 object I/O, and CodeArtifact auth/package access. The home for any AWS-specific helper. |
+| `cloud.databricks` | Databricks integrations, taking a caller-supplied SDK client rather than constructing one, so this module never pulls in `databricks-sdk` at runtime. The home for any Databricks-specific helper. |
+| `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index (CodeArtifact, public PyPI, etc.). |
+| `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
 | `data` | `DataLocation`/`DatasyncSpec` dataclasses describing a data location and its DataSync configuration. |
 | `docs` | `update_docs_for_release()` opens a pull request against a docs repo for a new release, via a GitHub App. |
