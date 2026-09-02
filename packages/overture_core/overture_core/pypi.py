@@ -71,7 +71,7 @@ class PyPiDownloader:
         pip_env = {**os.environ, "PIP_INDEX_URL": self.client.get_url()}
 
         try:
-            import sh  # optional dep (overture-core[codeartifact]); lazy so importing
+            import sh  # optional dep (overture-core[pypi]); lazy so importing
             # this module doesn't require it on platforms sh doesn't support
             # (e.g. Windows) unless this method is called.
 

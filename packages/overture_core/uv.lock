@@ -929,15 +929,17 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-codeartifact = [
+databricks = [
     { name = "databricks-sdk" },
-    { name = "sh" },
 ]
 dev = [
     { name = "duckdb" },
     { name = "overture-stac" },
     { name = "pytest" },
     { name = "pytest-cov" },
+]
+pypi = [
+    { name = "sh" },
 ]
 sql-spark = [
     { name = "pyspark" },
@@ -952,7 +954,7 @@ stac = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
-    { name = "databricks-sdk", marker = "extra == 'codeartifact'", specifier = ">=0.20" },
+    { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.20" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "overture-core", extras = ["stac"], marker = "extra == 'dev'" },
     { name = "overture-serverless", directory = "../overture_serverless" },
@@ -965,10 +967,10 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "requests", specifier = ">=2.31" },
-    { name = "sh", marker = "extra == 'codeartifact'", specifier = ">=2.0" },
+    { name = "sh", marker = "extra == 'pypi'", specifier = ">=2.0" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
-provides-extras = ["stac", "codeartifact", "sql-spark", "sql-trino", "dev"]
+provides-extras = ["stac", "pypi", "databricks", "sql-spark", "sql-trino", "dev"]
 
 [[package]]
 name = "overture-serverless"

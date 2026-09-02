@@ -10,7 +10,7 @@ class DBFSUploader:
     def __init__(self):
         from databricks.sdk import (
             WorkspaceClient,
-        )  # optional dep (overture-core[codeartifact])
+        )  # optional dep (overture-core[databricks])
 
         self.client = WorkspaceClient()
 
