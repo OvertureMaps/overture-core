@@ -18,10 +18,10 @@ Framework-agnostic helpers, each importable on its own without pulling in the jo
 | `versioning` | Parse a source's version from an ISO 8601 date or an HTTP header into a consistent dated string, for sources with no explicit version metadata. |
 | `iceberg` | Shared enums, dataclasses, and Spark SQL extensions for Iceberg + Sedona catalog configuration across platforms. |
 | `cloud.cloud` | Provider-agnostic helpers for building partition path segments. |
-| `cloud.aws` | AWS helpers built on boto3: account/region/role helpers (`core`), S3 object/prefix read/write/copy/delete/list/upload (`object`), and CodeArtifact auth tokens plus a PyPI client for resolving/downloading package versions from a CodeArtifact repository (`codeartifact`). |
-| `cloud.databricks` | `DBFSUploader`, uploads a local directory tree to DBFS given a `databricks.sdk.WorkspaceClient` (the caller constructs and owns the client, so this module has no runtime dependency on `databricks-sdk`). |
-| `pypi` | `HttpDownloader` for plain HTTPS downloads, `PyPiDownloader` for downloading a package set via `pip download` against a `cloud.aws.codeartifact.CodeArtifactPyPiClient` index. |
-| `urls` | `mask_url_credentials()`, redacts the password segment of a `user:password@` URL before it's logged or raised. |
+| `cloud.aws` | AWS helpers built on boto3: account/region/role helpers, S3 object/prefix read/write/copy/delete/list/upload, and CodeArtifact auth plus package version resolution/download for a PyPI-format repository. |
+| `cloud.databricks` | Uploads a local directory tree to DBFS given a caller-supplied Databricks SDK workspace client, so this module has no runtime dependency on `databricks-sdk`. |
+| `pypi` | Plain HTTPS package downloads, plus downloading a package set via `pip download` against a CodeArtifact PyPI index. |
+| `urls` | Redacts the password segment of a credential-bearing URL before it's logged or raised. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
 | `data` | `DataLocation`/`DatasyncSpec` dataclasses describing a data location and its DataSync configuration. |
 | `docs` | `update_docs_for_release()` opens a pull request against a docs repo for a new release, via a GitHub App. |
