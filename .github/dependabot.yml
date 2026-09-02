@@ -21,3 +21,27 @@ updates:
     commit-message:
       prefix: "[CHORE](deps)"
       include: "scope"
+
+  # Maintain uv-managed Python package dependencies (all public PyPI, no
+  # CodeArtifact registry needed here).
+  - package-ecosystem: "uv"
+    directories:
+      - "/"
+      - "/packages/overture_core"
+      - "/packages/overture_serverless"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      python-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "bot"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "[CHORE](py-deps)"
+      include: "scope"
