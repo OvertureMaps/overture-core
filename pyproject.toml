@@ -7,10 +7,10 @@ requires-python = ">=3.11"
 package = false
 
 [dependency-groups]
-dev = ["ruff==0.16.3"]  # Keep in sync with .pre-commit-config.yaml
+dev = ["ruff==0.16.4"]  # pre-commit and CI (ruff-action version-file) both read this; keep required-version below in sync
 
 [tool.ruff]
-required-version = "0.16.3" # Ensures local executions of ruff use a consistent version/installation
+required-version = "0.16.4" # Ensures local executions of ruff use a consistent version/installation
 
 [tool.ruff.format]
 # ruff format is Black-compatible by default.
