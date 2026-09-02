@@ -8,6 +8,7 @@ appears in process arguments or subprocess error messages.
 import logging
 import os
 import subprocess
+import sys
 from urllib.parse import urlparse
 
 import requests
@@ -49,6 +50,8 @@ class PyPiDownloader:
         # (avoids duplicate/conflicting versions when transitive deps overlap
         # with explicitly requested packages).
         pip_command = [
+            sys.executable,
+            "-m",
             "pip",
             "download",
             "--python-version",
@@ -80,6 +83,6 @@ class PyPiDownloader:
             logging.error(
                 "Error downloading pypi packages %s: %s",
                 packages,
-                mask_url_credentials(exc.stderr.decode()),
+                mask_url_credentials(exc.stderr.decode(errors="replace")),
             )
             raise

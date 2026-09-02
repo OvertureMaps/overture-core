@@ -406,3 +406,10 @@ class TestUploadDirectory:
 
         with pytest.raises(RuntimeError, match="boom"):
             upload_directory(str(tmp_path), "my-bucket")
+
+    def test_raises_on_missing_directory(self, tmp_path, s3_client):
+        missing = tmp_path / "does-not-exist"
+
+        with pytest.raises(NotADirectoryError, match="Not a directory"):
+            upload_directory(str(missing), "my-bucket")
+        s3_client.upload_file.assert_not_called()

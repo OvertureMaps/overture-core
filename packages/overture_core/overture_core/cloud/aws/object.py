@@ -276,7 +276,13 @@ def upload_directory(
 
     Returns:
         List of resulting ``s3://`` URLs, one per uploaded file.
+
+    Raises:
+        NotADirectoryError: If ``directory_path`` doesn't exist or isn't a directory.
     """
+    if not os.path.isdir(directory_path):
+        raise NotADirectoryError(f"Not a directory: {directory_path}")
+
     s3 = boto3.client("s3")
     transfer_config = TransferConfig(
         multipart_threshold=_MULTIPART_CHUNK_BYTES,

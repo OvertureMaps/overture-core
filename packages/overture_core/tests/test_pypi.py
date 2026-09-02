@@ -1,6 +1,7 @@
 """Unit tests for overture_core.pypi: HTTP/PyPI downloaders."""
 
 import subprocess
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -76,7 +77,7 @@ class TestPyPiDownloader:
         _make_downloader(tmp_path).download_packages(["numba"], python_version="3.11")
 
         cmd = mock_run.call_args.args[0]
-        assert cmd[0] == "pip"
+        assert cmd[:3] == [sys.executable, "-m", "pip"]
         assert "download" in cmd
         assert "--python-version" in cmd
         assert "3.11" in cmd
@@ -118,3 +119,18 @@ class TestPyPiDownloader:
 
         assert _TOKEN not in caplog.text
         assert "***@" in caplog.text
+
+    def test_error_message_survives_non_utf8_stderr(self, tmp_path, monkeypatch):
+        """A pip failure with non-UTF8 stderr bytes must still log/raise
+        cleanly instead of masking the real error with a UnicodeDecodeError."""
+        error = subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["pip", "download"],
+            stderr=b"ERROR: invalid byte \xff in output",
+        )
+        mock_run = MagicMock(side_effect=error)
+        monkeypatch.setattr("overture_core.pypi.subprocess.run", mock_run)
+
+        downloader = _make_downloader(tmp_path)
+        with pytest.raises(subprocess.CalledProcessError):
+            downloader.download_packages(["mypkg"], "3.11")

@@ -15,7 +15,14 @@ class DBFSUploader:
         self.client = client
 
     def upload_directory(self, local_directory: str, dbfs_directory: str) -> list[str]:
-        """Upload directory contents to DBFS. Returns list of DBFS paths."""
+        """Upload directory contents to DBFS. Returns list of DBFS paths.
+
+        Raises:
+            NotADirectoryError: If ``local_directory`` doesn't exist or isn't a directory.
+        """
+        if not os.path.isdir(local_directory):
+            raise NotADirectoryError(f"Not a directory: {local_directory}")
+
         result: list[str] = []
         for root, _, files in os.walk(local_directory):
             for file in files:

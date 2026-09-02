@@ -81,17 +81,40 @@ class TestResolvePackageVersion:
             )
         assert result == "0.0.1.dev0+mybranch.1"
 
-    def test_latest_in_branch_no_match_returns_none_str(self, client):
+    def test_latest_in_branch_no_match_returns_none(self, client):
         versions = [Version("1.0.0")]
         with patch.object(client, "get_package_versions", return_value=versions):
             result = client.resolve_package_version(
                 "pkg", PackageVersionStrategy.LATEST_IN_BRANCH, branch="missing"
             )
-        assert result == "None"
+        assert result is None
+
+    def test_latest_in_branch_without_branch_raises(self, client):
+        with pytest.raises(ValueError, match="branch must be specified"):
+            client.resolve_package_version(
+                "pkg", PackageVersionStrategy.LATEST_IN_BRANCH
+            )
+
+    def test_latest_stable_no_match_returns_none(self, client):
+        with patch.object(
+            client, "get_package_versions", return_value=[Version("1.1.0a1")]
+        ):
+            result = client.resolve_package_version(
+                "pkg", PackageVersionStrategy.LATEST_STABLE
+            )
+        assert result is None
 
     def test_unknown_strategy_raises(self, client):
         with pytest.raises(ValueError, match="Unknown version resolution strategy"):
             client.resolve_package_version("pkg", "not-a-real-strategy")
+
+
+class TestGetLatestPackageVersion:
+    def test_returns_first_version_as_str(self, client):
+        with patch.object(
+            client, "get_package_versions", return_value=[Version("2.0.0")]
+        ):
+            assert client.get_latest_package_version("pkg") == "2.0.0"
 
 
 class TestGetPackageVersions:

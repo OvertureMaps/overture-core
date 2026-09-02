@@ -32,3 +32,13 @@ class TestDBFSUploader:
         uploader = DBFSUploader(workspace_client)
         with pytest.raises(RuntimeError, match="boom"):
             uploader.upload_directory(str(tmp_path), "/dbfs/target")
+
+    def test_upload_directory_raises_on_missing_directory(
+        self, tmp_path, workspace_client
+    ):
+        missing = tmp_path / "does-not-exist"
+
+        uploader = DBFSUploader(workspace_client)
+        with pytest.raises(NotADirectoryError, match="Not a directory"):
+            uploader.upload_directory(str(missing), "/dbfs/target")
+        workspace_client.dbfs.upload.assert_not_called()

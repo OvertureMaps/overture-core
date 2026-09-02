@@ -59,7 +59,7 @@ class CodeArtifactPyPiClient:
         strategy: PackageVersionStrategy,
         custom_version: str | None = None,
         branch: str | None = None,
-    ) -> str:
+    ) -> str | None:
         """Resolve a package version per the requested strategy.
 
         Args:
@@ -73,29 +73,34 @@ class CodeArtifactPyPiClient:
             branch: Required when strategy is ``LATEST_IN_BRANCH``.
         """
         if strategy == PackageVersionStrategy.LATEST_IN_BRANCH:
+            if not branch:
+                raise ValueError(
+                    "branch must be specified when using "
+                    "PackageVersionStrategy.LATEST_IN_BRANCH"
+                )
             return self.get_latest_package_version_in_branch(package_name, branch)
         if strategy == PackageVersionStrategy.LATEST_STABLE:
             return self.get_latest_stable_package_version(package_name)
         if strategy == PackageVersionStrategy.CUSTOM:
             if not custom_version:
                 raise ValueError(
-                    "custom_version must be specified when using VersionStrategy.CUSTOM!"
+                    "custom_version must be specified when using "
+                    "PackageVersionStrategy.CUSTOM"
                 )
             return custom_version
         raise ValueError(f"Unknown version resolution strategy: {strategy}")
 
-    def get_latest_stable_package_version(self, package_name: str) -> str:
-        """Latest version that is not a pre-release or dev-release."""
-        return str(
-            self.get_latest_package_using_filter(
-                package_name, lambda v: not v.is_prerelease and not v.is_devrelease
-            )
+    def get_latest_stable_package_version(self, package_name: str) -> str | None:
+        """Latest version that is not a pre-release or dev-release, or ``None``."""
+        version = self.get_latest_package_using_filter(
+            package_name, lambda v: not v.is_prerelease and not v.is_devrelease
         )
+        return str(version) if version is not None else None
 
     def get_latest_package_version_in_branch(
         self, package_name: str, branch_name: str
-    ) -> str:
-        """Latest version in ``branch_name``.
+    ) -> str | None:
+        """Latest version in ``branch_name``, or ``None`` if none match.
 
         Assumes the package uses poetry-dynamic-versioning and the branch is
         encoded in the local version (e.g. ``0.0.1.dev0+mybranch.2996.20250622165115``).
@@ -106,7 +111,8 @@ class CodeArtifactPyPiClient:
                 return version.local.split(".")[0] == branch_name.replace("-", "")
             return False
 
-        return str(self.get_latest_package_using_filter(package_name, matches_branch))
+        version = self.get_latest_package_using_filter(package_name, matches_branch)
+        return str(version) if version is not None else None
 
     def get_latest_package_version(self, package_name: str) -> str:
         """Latest available version (may be a prerelease from any branch)."""
