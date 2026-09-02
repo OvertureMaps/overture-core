@@ -32,6 +32,8 @@ dependencies = [
     "boto3>=1.35",
     "pydantic>=2.0",
     "PyGithub>=2.3",
+    "requests>=2.31",
+    "packaging>=23.0",
 ]
 
 [project.urls]
@@ -64,6 +66,11 @@ dev = [
     # its md5()/sha1() return lowercase hex strings directly, like Spark's,
     # so it validates the generated SQL without needing a JVM.
     "duckdb>=1.0.0",
+    # Not a runtime dep of overture_core (DBFSUploader takes a WorkspaceClient
+    # as a constructor argument, so the caller owns this dependency). Only
+    # needed here so tests can spec MagicMock(spec=WorkspaceClient) against
+    # the real class shape instead of a hand-maintained duck-typed stub.
+    "databricks-sdk>=0.20",
 ]
 
 [build-system]

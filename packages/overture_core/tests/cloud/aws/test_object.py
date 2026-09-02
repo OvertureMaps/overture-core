@@ -18,6 +18,7 @@ from overture_core.cloud.aws.object import (
     parse_s3_uri,
     prefix_exists,
     put_object,
+    upload_directory,
     write_marker,
 )
 
@@ -375,3 +376,40 @@ class TestListCommonPrefixes:
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             names = list_common_prefixes("bucket", "root/")
         assert names == ["real"]
+
+
+class TestUploadDirectory:
+    @pytest.fixture()
+    def s3_client(self):
+        mock_client = MagicMock()
+        with patch(
+            "overture_core.cloud.aws.object.boto3.client", return_value=mock_client
+        ):
+            yield mock_client
+
+    def test_uploads_all_files(self, tmp_path, s3_client):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "a.txt").write_text("a")
+        (tmp_path / "sub" / "b.txt").write_text("b")
+
+        result = upload_directory(str(tmp_path), "my-bucket", prefix="prefix")
+
+        assert sorted(result) == [
+            "s3://my-bucket/prefix/a.txt",
+            "s3://my-bucket/prefix/sub/b.txt",
+        ]
+        assert s3_client.upload_file.call_count == 2
+
+    def test_raises_on_failure(self, tmp_path, s3_client):
+        (tmp_path / "a.txt").write_text("a")
+        s3_client.upload_file.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            upload_directory(str(tmp_path), "my-bucket")
+
+    def test_raises_on_missing_directory(self, tmp_path, s3_client):
+        missing = tmp_path / "does-not-exist"
+
+        with pytest.raises(NotADirectoryError, match="Not a directory"):
+            upload_directory(str(missing), "my-bucket")
+        s3_client.upload_file.assert_not_called()

@@ -11,20 +11,31 @@ Shared, framework-agnostic business logic — portable job classes built on [`ov
 
 Framework-agnostic helpers, each importable on its own without pulling in the job classes below.
 
-| Module | What it's for |
+<!--
+When adding or editing a row: describe the module's scope/boundary (what kind of
+helper belongs here), not an inventory of its current classes/functions. This
+table should stay accurate as the module grows without needing an edit every
+time something is added to it. Put new code in the module whose scope already
+covers it; only add a new row/module when nothing existing fits.
+-->
+
+| Module | Scope |
 | --- | --- |
-| `uuids` | Pure Python UUID v3/v4/v5 generators, no Spark dependency; wrap them in a UDF yourself. Also includes the newer RFC 9562 v6/v7/v8 generators, unavailable before Python 3.14. |
-| `uuids_sql` | SQL-string equivalents of the `uuids` generators for Spark or Trino, so a UUID column can be computed server-side instead of round-tripping through a Python UDF. |
-| `versioning` | Parse a source's version from an ISO 8601 date or an HTTP header into a consistent dated string, for sources with no explicit version metadata. |
-| `iceberg` | Shared enums, dataclasses, and Spark SQL extensions for Iceberg + Sedona catalog configuration across platforms. |
-| `cloud.cloud` | Provider-agnostic helpers for building partition path segments. |
-| `cloud.aws` | AWS helpers built on boto3: account/region/role helpers (`core`), S3 object/prefix read/write/copy/delete/list (`object`), and a short-lived CodeArtifact token (`codeartifact`). |
+| `uuids` | Pure Python, Spark-free UUID generation for any UUID version, current or future RFC. |
+| `uuids_sql` | SQL-string equivalents of `uuids`, for computing UUID columns server-side in Spark or Trino instead of round-tripping through a Python UDF. |
+| `versioning` | Deriving a consistent dated version string for sources that don't publish explicit version metadata. |
+| `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
+| `cloud.cloud` | Provider-agnostic cloud helpers that don't belong to one specific vendor. |
+| `cloud.aws` | The home for any AWS-specific helper, built on boto3. |
+| `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
+| `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
+| `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
-| `data` | `DataLocation`/`DatasyncSpec` dataclasses describing a data location and its DataSync configuration. |
-| `docs` | `update_docs_for_release()` opens a pull request against a docs repo for a new release, via a GitHub App. |
-| `artifacts` | `MetadataArtifact`/`LicenseArtifact`/`AttributionArtifact` classes plus tree-search and S3 JSON/Markdown I/O helpers for release artifacts. |
-| `dataset.dataset` | `Dataset` class parsing a provider/resource JSON config into collection/ingestion/matching sections. |
-| `dataset.schema` | Pydantic schema validating dataset provider/resource JSON configs; also runnable as a script for CI validation. |
+| `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
+| `docs` | Automating docs-repo updates for a release, via a GitHub App. |
+| `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
+| `dataset.dataset` | Parsing a provider/resource JSON config into its collection/ingestion/matching sections. |
+| `dataset.schema` | Validating provider/resource JSON configs, including as a standalone CI check. |
 
 ## Jobs
 
