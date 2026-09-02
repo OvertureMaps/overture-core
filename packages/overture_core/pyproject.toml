@@ -32,6 +32,8 @@ dependencies = [
     "boto3>=1.35",
     "pydantic>=2.0",
     "PyGithub>=2.3",
+    "requests>=2.31",
+    "packaging>=23.0",
 ]
 
 [project.urls]
@@ -46,6 +48,14 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 # pyarrow==14.0.2 for Airflow 2.11 compat).
 stac = [
     "overture-stac",
+]
+# pypi.py's PyPiDownloader and cloud/databricks.py's DBFSUploader lazily
+# import these at call time (not at module import time), so consumers who
+# only need CodeArtifactPyPiClient/HttpDownloader/upload_directory don't need
+# either installed.
+codeartifact = [
+    "sh>=2.0",
+    "databricks-sdk>=0.20",
 ]
 # Kept out of `dev`: these need a real JVM (pyspark) or a running Trino
 # coordinator (trino), so only the "sql-engines" CI workflow installs them,
