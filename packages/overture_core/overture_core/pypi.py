@@ -7,6 +7,7 @@ appears in process arguments or subprocess error messages.
 
 import logging
 import os
+import subprocess
 from urllib.parse import urlparse
 
 import requests
@@ -48,6 +49,7 @@ class PyPiDownloader:
         # (avoids duplicate/conflicting versions when transitive deps overlap
         # with explicitly requested packages).
         pip_command = [
+            "pip",
             "download",
             "--python-version",
             python_version,
@@ -71,13 +73,9 @@ class PyPiDownloader:
         pip_env = {**os.environ, "PIP_INDEX_URL": self.client.get_url()}
 
         try:
-            import sh  # optional dep (overture-core[pypi]); lazy so importing
-            # this module doesn't require it on platforms sh doesn't support
-            # (e.g. Windows) unless this method is called.
-
-            sh.pip(*pip_command, _env=pip_env)
+            subprocess.run(pip_command, env=pip_env, check=True, capture_output=True)
             logging.info("Successfully downloaded %s and dependencies.", packages)
-        except sh.ErrorReturnCode as exc:
+        except subprocess.CalledProcessError as exc:
             # Mask credentials in case pip echoed the index URL into stderr.
             logging.error(
                 "Error downloading pypi packages %s: %s",

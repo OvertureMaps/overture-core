@@ -49,13 +49,6 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 stac = [
     "overture-stac",
 ]
-# pypi.py's PyPiDownloader lazily imports sh at call time (not at module
-# import time), so consumers who only need CodeArtifactPyPiClient/
-# HttpDownloader/upload_directory don't need it installed. sh also doesn't
-# reliably support Windows, so it can't be a base dependency.
-pypi = [
-    "sh>=2.0",
-]
 # cloud/databricks.py's DBFSUploader lazily imports the Databricks SDK at
 # call time, so consumers who don't upload to DBFS don't need it installed.
 databricks = [

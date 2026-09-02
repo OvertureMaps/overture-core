@@ -1,7 +1,6 @@
 """Unit tests for overture_core.pypi: HTTP/PyPI downloaders."""
 
-import sys
-import types
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,20 +9,6 @@ from overture_core.pypi import HttpDownloader, PyPiDownloader
 
 _TOKEN = "SUPERSECRETAUTHTOKEN"
 _INDEX_URL = f"https://aws:{_TOKEN}@domain-123.d.codeartifact.us-east-1.amazonaws.com/pypi/repo/simple/"
-
-
-def _make_fake_sh(pip_impl):
-    """Build a fake ``sh`` module exposing ``pip`` and ``ErrorReturnCode``."""
-    fake_sh = types.ModuleType("sh")
-
-    class ErrorReturnCode(Exception):
-        def __init__(self, stderr: bytes = b""):
-            super().__init__("pip failed")
-            self.stderr = stderr
-
-    fake_sh.pip = pip_impl
-    fake_sh.ErrorReturnCode = ErrorReturnCode
-    return fake_sh
 
 
 def _make_downloader(tmp_path):
@@ -67,80 +52,68 @@ class TestPyPiDownloader:
         """Downloading multiple packages should use a single pip call so pip
         resolves a consistent dependency tree and avoids duplicate/conflicting
         transitive dependency versions."""
-        captured = {}
-
-        def fake_pip(*args, **kwargs):
-            captured["args"] = args
-
-        monkeypatch.setitem(sys.modules, "sh", _make_fake_sh(fake_pip))
+        mock_run = MagicMock()
+        monkeypatch.setattr("overture_core.pypi.subprocess.run", mock_run)
 
         packages = ["overture_transportation==1.0.0", "numba", "llvmlite", "rapidfuzz"]
         _make_downloader(tmp_path).download_packages(packages, python_version="3.11")
 
+        cmd = mock_run.call_args.args[0]
         for pkg in packages:
-            assert pkg in captured["args"]
+            assert pkg in cmd
 
     def test_empty_packages_skips_pip(self, tmp_path, monkeypatch):
-        called = {"pip": False}
-
-        def fake_pip(*args, **kwargs):
-            called["pip"] = True
-
-        monkeypatch.setitem(sys.modules, "sh", _make_fake_sh(fake_pip))
+        mock_run = MagicMock()
+        monkeypatch.setattr("overture_core.pypi.subprocess.run", mock_run)
 
         _make_downloader(tmp_path).download_packages([], python_version="3.11")
-        assert called["pip"] is False
+        mock_run.assert_not_called()
 
     def test_pip_flags_are_passed(self, tmp_path, monkeypatch):
-        captured = {}
-
-        def fake_pip(*args, **kwargs):
-            captured["args"] = args
-
-        monkeypatch.setitem(sys.modules, "sh", _make_fake_sh(fake_pip))
+        mock_run = MagicMock()
+        monkeypatch.setattr("overture_core.pypi.subprocess.run", mock_run)
 
         _make_downloader(tmp_path).download_packages(["numba"], python_version="3.11")
 
-        args = captured["args"]
-        assert "download" in args
-        assert "--python-version" in args
-        assert "3.11" in args
-        assert "--only-binary" in args
-        assert ":all:" in args
-        assert "numba" in args
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "pip"
+        assert "download" in cmd
+        assert "--python-version" in cmd
+        assert "3.11" in cmd
+        assert "--only-binary" in cmd
+        assert ":all:" in cmd
+        assert "numba" in cmd
 
     def test_token_passed_via_env_not_argv(self, tmp_path, monkeypatch):
-        captured = {}
-
-        def fake_pip(*args, **kwargs):
-            captured["args"] = args
-            captured["env"] = kwargs.get("_env")
-
-        monkeypatch.setitem(sys.modules, "sh", _make_fake_sh(fake_pip))
+        mock_run = MagicMock()
+        monkeypatch.setattr("overture_core.pypi.subprocess.run", mock_run)
 
         _make_downloader(tmp_path).download_packages(["mypkg"], "3.11")
 
+        cmd = mock_run.call_args.args[0]
+        env = mock_run.call_args.kwargs["env"]
         # Token must never appear in the command-line arguments.
-        assert all(_TOKEN not in str(arg) for arg in captured["args"])
-        assert "--index-url" not in captured["args"]
+        assert all(_TOKEN not in str(arg) for arg in cmd)
+        assert "--index-url" not in cmd
         # Token is delivered to pip via the environment instead.
-        assert captured["env"]["PIP_INDEX_URL"] == _INDEX_URL
+        assert env["PIP_INDEX_URL"] == _INDEX_URL
 
     def test_error_message_masks_token(self, tmp_path, monkeypatch, caplog):
         import logging
 
-        fake_sh = _make_fake_sh(None)
-
-        def fake_pip(*args, **kwargs):
-            raise fake_sh.ErrorReturnCode(
-                stderr=f"ERROR: failed fetching {_INDEX_URL}".encode()
-            )
-
-        fake_sh.pip = fake_pip
-        monkeypatch.setitem(sys.modules, "sh", fake_sh)
+        error = subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["pip", "download"],
+            stderr=f"ERROR: failed fetching {_INDEX_URL}".encode(),
+        )
+        mock_run = MagicMock(side_effect=error)
+        monkeypatch.setattr("overture_core.pypi.subprocess.run", mock_run)
 
         downloader = _make_downloader(tmp_path)
-        with caplog.at_level(logging.ERROR), pytest.raises(fake_sh.ErrorReturnCode):
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(subprocess.CalledProcessError),
+        ):
             downloader.download_packages(["mypkg"], "3.11")
 
         assert _TOKEN not in caplog.text
