@@ -30,6 +30,10 @@ dependencies = [
     "overture-serverless>=0.0.0",
     "pystac>=1.8.4",
     "boto3>=1.35",
+    "pydantic>=2.0",
+    "PyGithub>=2.3",
+    "requests>=2.31",
+    "packaging>=23.0",
 ]
 
 [project.urls]
@@ -45,10 +49,28 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 stac = [
     "overture-stac",
 ]
+# Kept out of `dev`: these need a real JVM (pyspark) or a running Trino
+# coordinator (trino), so only the "sql-engines" CI workflow installs them,
+# not a routine local `pytest` run.
+sql-spark = [
+    "pyspark>=3.5",
+]
+sql-trino = [
+    "trino>=0.328",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
     "overture-core[stac]",
+    # Stand-in ANSI-SQL engine for the uuids_sql Spark-dialect parity tests:
+    # its md5()/sha1() return lowercase hex strings directly, like Spark's,
+    # so it validates the generated SQL without needing a JVM.
+    "duckdb>=1.0.0",
+    # Not a runtime dep of overture_core (DBFSUploader takes a WorkspaceClient
+    # as a constructor argument, so the caller owns this dependency). Only
+    # needed here so tests can spec MagicMock(spec=WorkspaceClient) against
+    # the real class shape instead of a hand-maintained duck-typed stub.
+    "databricks-sdk>=0.20",
 ]
 
 [build-system]
@@ -73,6 +95,10 @@ overture-serverless = { path = "../overture_serverless" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "spark: requires a real Spark session (overture-core[sql-spark]); run via the sql-engines CI workflow, not routine local pytest.",
+    "trino: requires a running Trino coordinator (overture-core[sql-trino]); run via the sql-engines CI workflow, not routine local pytest.",
+]
 
 [tool.coverage.run]
 source = ["overture_core"]

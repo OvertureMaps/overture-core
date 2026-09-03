@@ -1,3 +1,5 @@
+"""Cloud provider and data-location-partition primitives shared across platforms."""
+
 from dataclasses import dataclass
 from enum import Enum
 
