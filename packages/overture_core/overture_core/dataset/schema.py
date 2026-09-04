@@ -124,7 +124,7 @@ class DataDownload(_StrictModel):
 class Collection(_StrictModel):
     data_location: UrlPair
     data_download: DataDownload | None = None
-    license: License | None = None
+    license: License | None
     coverage: Coverage
     refresh_schedule: RefreshSchedule | None = None
     known_issues: str | None = None
