@@ -448,7 +448,9 @@ code. It:
 3. Either path resolves and submits a **separate** shaded Maven JAR:
 
    ```python
-   matcher_path = f"org/overturemaps/matching/{matcher_version}/matching-{matcher_version}-shaded.jar"
+   matcher_path = (
+       f"org/overturemaps/matching/{matcher_version}/matching-{matcher_version}-shaded.jar"
+   )
    ```
    (`matching_utils.py:463`, inside `get_matcher_jar_paths_task`)
 

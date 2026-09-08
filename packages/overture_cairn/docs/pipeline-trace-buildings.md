@@ -110,11 +110,16 @@ input_df = (
 )
 ...
 source[source_name]["df"] = (
-    input_df
-    .withColumn("rank", F.row_number().over(
-        Window.partitionBy(["id"]).orderBy(F.col("sources")[0].getField("record_id").asc())
-    ))
-    .filter(F.col("rank") == 1).drop("rank")
+    input_df.withColumn(
+        "rank",
+        F.row_number().over(
+            Window.partitionBy(["id"]).orderBy(
+                F.col("sources")[0].getField("record_id").asc()
+            )
+        ),
+    )
+    .filter(F.col("rank") == 1)
+    .drop("rank")
 )
 ```
 (`building_spatial_merge.py:26-50`)
@@ -160,11 +165,15 @@ height, and USGS LiDAR — picking the first non-outlier value in priority
 order (`input`, `esri`, `lidar`, `ms`):
 
 ```python
-best_expr = when(col("input.height").isNotNull(), col("input.height")) \
-    .when(col("esri.height").isNotNull() & ~col("esri_is_outlier"), col("esri.height")) \
-    .when(col("lidar.height").isNotNull() & ~col("lidar_is_outlier"), col("lidar.height")) \
-    .when(col("ms.height").isNotNull() & ~col("ms_is_outlier"), col("ms.height")) \
+best_expr = (
+    when(col("input.height").isNotNull(), col("input.height"))
+    .when(col("esri.height").isNotNull() & ~col("esri_is_outlier"), col("esri.height"))
+    .when(
+        col("lidar.height").isNotNull() & ~col("lidar_is_outlier"), col("lidar.height")
+    )
+    .when(col("ms.height").isNotNull() & ~col("ms_is_outlier"), col("ms.height"))
     .otherwise(lit(None))
+)
 ```
 (`building_tag_merge.py:162-175`, condensed)
 
@@ -382,7 +391,10 @@ corpus match per feed `id` survives:
 ```python
 match_df = (
     match_df.where("iou > 0.5")
-    .withColumn("id_rank", F.row_number().over(Window.partitionBy(["id"]).orderBy(F.col("iou").desc())))
+    .withColumn(
+        "id_rank",
+        F.row_number().over(Window.partitionBy(["id"]).orderBy(F.col("iou").desc())),
+    )
     .filter(F.col("id_rank") == 1)
 )
 ```

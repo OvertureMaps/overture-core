@@ -176,9 +176,9 @@ FeatureServer:
 # source_us_dot_hpms_collect_dag.py:45-49 (comment) and :236-245
 # Source: https://geo.dot.gov/server/rest/services/Hosted/HPMS_FULL_{state}_{year}
 ...
-{"name": "BASE_URL", "value": BASE_URL},
-{"name": "DATASET_NAME", "value": f"HPMS_FULL_{state}_{{{{ params.year }}}}"},
-{"name": "S3_OUTPUT_PATH", "value": f"{RUN_OUTPUT}/data/state={state}/{state}.jsonl"},
+({"name": "BASE_URL", "value": BASE_URL},)
+({"name": "DATASET_NAME", "value": f"HPMS_FULL_{state}_{{{{ params.year }}}}"},)
+({"name": "S3_OUTPUT_PATH", "value": f"{RUN_OUTPUT}/data/state={state}/{state}.jsonl"},)
 ```
 
 Raw GeoJSON per state, one row per HPMS "section" (a route subdivided every
@@ -296,13 +296,15 @@ ORBIS_PREFIX = "theme_stage/theme=transportation"
 hpms_match = spark_agnostic_task_group(
     module_name="overture_transportation.match_layer_to_network_v2",
     class_name="MatchLayerToNetworkV2",
-    parameters=json.dumps({
-        "input_layer_path": output_bundle.data_uri,
-        "input_network_path": ORBIS_RUN + "/orbis_segments/",
-        "spatial_only": "true",
-        "spatial_buffer_m": "15.0",
-        "passthrough_columns": "speed_limits,road_flags,routes,road_surface",
-    }),
+    parameters=json.dumps(
+        {
+            "input_layer_path": output_bundle.data_uri,
+            "input_network_path": ORBIS_RUN + "/orbis_segments/",
+            "spatial_only": "true",
+            "spatial_buffer_m": "15.0",
+            "passthrough_columns": "speed_limits,road_flags,routes,road_surface",
+        }
+    ),
 )
 ```
 
@@ -367,16 +369,18 @@ Key stages:
 osm_match_segments = spark_agnostic_task_group(
     module_name="overture_transportation.osm_match_segments",
     class_name="OSMMatchSegments",
-    parameters=json.dumps({
-        "input_path_new_segments": osm_merge_segments_path,
-        "input_path_prod_segments": f"s3://overturemaps-us-west-2/release/{OVERTURE_RELEASE_DATE}/theme=transportation/type=segment/*.parquet",
-        "output_path_match_new_buffered": ...,
-        "output_path_match_prod_buffered": ...,
-        "output_path_match_join": ...,
-        "output_path_match_score": ...,
-        "output_path_match_rank": ...,
-        "output_path_match": osm_match_segments_path,
-    }),
+    parameters=json.dumps(
+        {
+            "input_path_new_segments": osm_merge_segments_path,
+            "input_path_prod_segments": f"s3://overturemaps-us-west-2/release/{OVERTURE_RELEASE_DATE}/theme=transportation/type=segment/*.parquet",
+            "output_path_match_new_buffered": ...,
+            "output_path_match_prod_buffered": ...,
+            "output_path_match_join": ...,
+            "output_path_match_score": ...,
+            "output_path_match_rank": ...,
+            "output_path_match": osm_match_segments_path,
+        }
+    ),
 )
 ```
 
@@ -426,12 +430,14 @@ third-party binary" and "queryable rows."
 orbis_ways_to_segments = spark_agnostic_task_group(
     module_name="overture_transportation.orbis_ways_to_segments",
     class_name="OrbisWaysToSegments",
-    parameters=json.dumps({
-        "input_path_orbis": ot_wrl_parquet_path,
-        "output_path": orbis_segments_path,
-        "output_path_geometry": orbis_ways_with_geometry_path,
-        "source_dataset": "orbis",
-    }),
+    parameters=json.dumps(
+        {
+            "input_path_orbis": ot_wrl_parquet_path,
+            "output_path": orbis_segments_path,
+            "output_path_geometry": orbis_ways_with_geometry_path,
+            "source_dataset": "orbis",
+        }
+    ),
 )
 ```
 
@@ -462,24 +468,28 @@ Three-step tag transplant, all using the shared matcher
 adjudicated_tags_match = spark_agnostic_task_group(
     module_name="overture_transportation.match_layer_to_network_v2",
     class_name="MatchLayerToNetworkV2",
-    parameters=json.dumps({
-        "input_layer_path": adjudicated_tags_normalized_path,
-        "input_network_path": orbis_segments_path,
-        "geometry_column": "geometry",
-        "enable_gap_fill": "true",
-    }),
+    parameters=json.dumps(
+        {
+            "input_layer_path": adjudicated_tags_normalized_path,
+            "input_network_path": orbis_segments_path,
+            "geometry_column": "geometry",
+            "enable_gap_fill": "true",
+        }
+    ),
 )
 ...
 adjudicated_tags_apply = spark_agnostic_task_group(
     module_name="overture_transportation.adjudicated_tags_apply",
     class_name="AdjudicatedTagsApply",
-    parameters=json.dumps({
-        "input_path_network_segments": orbis_segments_path,
-        "input_path_adjudicated_matches": adjudicated_tags_matched_path,
-        "input_path_adjudicated_normalized": adjudicated_tags_normalized_path,
-        "confidence_threshold": "0.95",
-        "gap_fill_confidence_threshold": "0.80",
-    }),
+    parameters=json.dumps(
+        {
+            "input_path_network_segments": orbis_segments_path,
+            "input_path_adjudicated_matches": adjudicated_tags_matched_path,
+            "input_path_adjudicated_normalized": adjudicated_tags_normalized_path,
+            "confidence_threshold": "0.95",
+            "gap_fill_confidence_threshold": "0.80",
+        }
+    ),
 )
 ```
 
@@ -507,17 +517,19 @@ turn restrictions**, so uniqueness is redefined for this call:
 relations_match_to_network = spark_agnostic_task_group(
     module_name="overture_transportation.match_layer_to_network_v2",
     class_name="MatchLayerToNetworkV2",
-    parameters=json.dumps({
-        "input_layer_path": relations_normalized_path,
-        "input_network_path": orbis_segments_path,
-        "input_network_connectors_path": orbis_connectors_path,
-        "geometry_column": "member_geometry",
-        "ignore_inconsistent_layer_geometries": "true",
-        "passthrough_columns": "relation_id,relation_version,relation_type,member_idx,member_type,member_ref,member_role,relation_tags",
-        # Additional columns beyond record_id to define unique records
-        # (same way can appear in multiple turn restrictions)
-        "additional_unique_columns": "relation_id,member_idx",
-    }),
+    parameters=json.dumps(
+        {
+            "input_layer_path": relations_normalized_path,
+            "input_network_path": orbis_segments_path,
+            "input_network_connectors_path": orbis_connectors_path,
+            "geometry_column": "member_geometry",
+            "ignore_inconsistent_layer_geometries": "true",
+            "passthrough_columns": "relation_id,relation_version,relation_type,member_idx,member_type,member_ref,member_role,relation_tags",
+            # Additional columns beyond record_id to define unique records
+            # (same way can appear in multiple turn restrictions)
+            "additional_unique_columns": "relation_id,member_idx",
+        }
+    ),
 )
 ```
 
@@ -534,14 +546,16 @@ its own confidence threshold (0.9 / n/a / 0.8).
 orbis_combobulate = spark_agnostic_task_group(
     module_name="overture_transportation.combobulate_segments",
     class_name="CombobulateSegments",
-    parameters=json.dumps({
-        "input_segments_path": orbis_precombobulated_segments_path,
-        "input_relations_path": relations_routes_path,
-        "input_destinations_path": relations_destinations_path,
-        "input_turn_restrictions_path": relations_turn_restrictions_path,
-        "output_path": orbis_combobulated_segments_path,
-        "mode": "full",
-    }),
+    parameters=json.dumps(
+        {
+            "input_segments_path": orbis_precombobulated_segments_path,
+            "input_relations_path": relations_routes_path,
+            "input_destinations_path": relations_destinations_path,
+            "input_turn_restrictions_path": relations_turn_restrictions_path,
+            "output_path": orbis_combobulated_segments_path,
+            "mode": "full",
+        }
+    ),
 )
 ```
 
@@ -558,14 +572,16 @@ etc. (see appendix for `CombobulateSegments`/`combobulation_driver` detail).
 merge_attributes = spark_agnostic_task_group(
     module_name="overture_transportation.merge_attributes",
     class_name="MergeAttributes",
-    parameters=json.dumps({
-        "match_results_path": hpms_bundle.sub_directory("matched"),
-        "combobulated_segments_path": orbis_combobulated_segments_path,
-        "output_path": orbis_enriched_segments_path,
-        "confidence_threshold": "0.9",
-        "attributes": "speed_limits,road_surface",
-        "changed_only": "true",
-    }),
+    parameters=json.dumps(
+        {
+            "match_results_path": hpms_bundle.sub_directory("matched"),
+            "combobulated_segments_path": orbis_combobulated_segments_path,
+            "output_path": orbis_enriched_segments_path,
+            "confidence_threshold": "0.9",
+            "attributes": "speed_limits,road_surface",
+            "changed_only": "true",
+        }
+    ),
 )
 # comment in DAG: "HPMS ATTRIBUTE MERGE (post-combobulation gap-fill)"
 chain([orbis_combobulate, resolve_hpms], merge_attributes)
@@ -587,9 +603,13 @@ alone would wrongly assume HPMS is a contributing source.
 segments_issue_detail = spark_agnostic_task_group(
     module_name="overture_transportation.transportation_qa",
     class_name="TransportationQA",
-    parameters=json.dumps({"input_path": orbis_combobulated_segments_path,
-                            "output_path": segments_issue_detail_path,
-                            "output_type": "detail"}),
+    parameters=json.dumps(
+        {
+            "input_path": orbis_combobulated_segments_path,
+            "output_path": segments_issue_detail_path,
+            "output_type": "detail",
+        }
+    ),
 )
 ```
 
@@ -682,9 +702,11 @@ No raw SQL, no violation writes, no ML libraries.
 **2. `orbis_nodes_to_connectors.py` — `OrbisNodesToConnectors`**
 
 ```python
-connecting_nodes = referenced_nodes.groupBy("nd", "is_start_node", "is_end_node") \
-    .agg(F.count("*").alias("degree")) \
+connecting_nodes = (
+    referenced_nodes.groupBy("nd", "is_start_node", "is_end_node")
+    .agg(F.count("*").alias("degree"))
     .filter((F.col("degree") > 1) | F.col("is_start_node") | F.col("is_end_node"))
+)
 ```
 
 Explodes way `nds` to compute node degree and endpoint-ness; keeps nodes
@@ -702,11 +724,19 @@ SQL, no violation writes, no ML libraries.
 
 ```python
 osm_way_count = F.size(osm_way_sources)
-validated_df = adjudicated_df.withColumn("_validation", F.when(
-    osm_way_count > 1,
-    F.raise_error(F.concat(F.lit("Adjudicated segment has "), osm_way_count.cast("string"),
-                            F.lit(" OSM way sources, expected exactly 1 (1:1 relationship)"))),
-))
+validated_df = adjudicated_df.withColumn(
+    "_validation",
+    F.when(
+        osm_way_count > 1,
+        F.raise_error(
+            F.concat(
+                F.lit("Adjudicated segment has "),
+                osm_way_count.cast("string"),
+                F.lit(" OSM way sources, expected exactly 1 (1:1 relationship)"),
+            )
+        ),
+    ),
+)
 ```
 
 Strips the `@version` suffix from each adjudicated segment's OSM way
@@ -733,12 +763,19 @@ Three-phase pipeline inherited/overridden from the base class:
   **baked-in pre-trained XGBoost model**:
 
 ```python
-booster = xgb.Booster(); booster.load_model(bytearray(model_json.encode("utf-8")))
+booster = xgb.Booster()
+booster.load_model(bytearray(model_json.encode("utf-8")))
+
+
 @F.pandas_udf(DoubleType())
 def _predict_proba(*feature_cols):
     ...
     return pd.Series(bst.predict(xgb.DMatrix(X, feature_names=features)))
-sufficient_matches = scored.filter(F.col("ml_confidence") >= MIN_MATCH_CONFIDENCE)  # 0.4
+
+
+sufficient_matches = scored.filter(
+    F.col("ml_confidence") >= MIN_MATCH_CONFIDENCE
+)  # 0.4
 ```
 
   Per-sequence confidence is the **average ML confidence** across matched
@@ -763,9 +800,12 @@ cross-source identity/tag join)
 
 ```python
 regular_matches = matches_df.filter(
-    (F.col("match_type") != "gap_fill") & (F.col("confidence") >= confidence_threshold))  # 0.95
+    (F.col("match_type") != "gap_fill") & (F.col("confidence") >= confidence_threshold)
+)  # 0.95
 gap_fill_matches = matches_df.filter(
-    (F.col("match_type") == "gap_fill") & (F.col("confidence") >= gap_fill_confidence_threshold))  # 0.60
+    (F.col("match_type") == "gap_fill")
+    & (F.col("confidence") >= gap_fill_confidence_threshold)
+)  # 0.60
 ```
 
 Joins network segments to match results and to normalized adjudicated
@@ -826,11 +866,15 @@ inline in `ext_debug` (not a separate violation-store write). No raw SQL.
 **8. `relations_normalize.py` — `RelationsNormalize`**
 
 ```python
-return df.withColumn("record_id", F.concat(
-    F.when(F.col("member_type") == "way", F.lit("w"))
-     .when(F.col("member_type") == "node", F.lit("n")).otherwise(F.lit("unknown")),
-    F.col("member_ref").cast(StringType()),
-))
+return df.withColumn(
+    "record_id",
+    F.concat(
+        F.when(F.col("member_type") == "way", F.lit("w"))
+        .when(F.col("member_type") == "node", F.lit("n"))
+        .otherwise(F.lit("unknown")),
+        F.col("member_ref").cast(StringType()),
+    ),
+)
 ```
 
 Re-filters/tags each relation by type, `posexplode`s members again into
@@ -870,11 +914,19 @@ actual tag→property conversion to a Python UDF wrapping
 `combobulator/combobulation_driver.py`)
 
 ```python
-df = df.withColumn("combobulated", pyspark_udf.combobulate_segment_tags_udf(
-    F.col("id"), F.col("subtype"), F.col("ext_tomtom_tags"),
-    F.col("ext_length_cm") / 100.0, F.col("geometry"),
-    F.col("relations"), F.col("ext_source_ids"), F.col("destination_candidates"),
-))
+df = df.withColumn(
+    "combobulated",
+    pyspark_udf.combobulate_segment_tags_udf(
+        F.col("id"),
+        F.col("subtype"),
+        F.col("ext_tomtom_tags"),
+        F.col("ext_length_cm") / 100.0,
+        F.col("geometry"),
+        F.col("relations"),
+        F.col("ext_source_ids"),
+        F.col("destination_candidates"),
+    ),
+)
 ```
 
 Reads segments filtered to `subtype in (road, water, rail)`, with a **hard
@@ -976,8 +1028,18 @@ overview/detail outputs from job #12, and renders a Markdown run summary
 transformed_df = df.select(
     F.expr("uuid()").alias("id"),
     F.col("geometry"),
-    F.array(F.struct(..., F.concat(F.lit("n"), F.col("id").cast("string"),
-                                    F.lit("@"), F.col("version").cast("string")).alias("record_id"), ...)),
+    F.array(
+        F.struct(
+            ...,
+            F.concat(
+                F.lit("n"),
+                F.col("id").cast("string"),
+                F.lit("@"),
+                F.col("version").cast("string"),
+            ).alias("record_id"),
+            ...,
+        )
+    ),
     F.col("id").alias("ext_osm_id"),
 )
 ```
@@ -1031,9 +1093,12 @@ to reduce shuffle size is called out in comments as deliberate.
 **18. `osm_segment_split_points.py` — `OSMSegmentSplitPoints`**
 
 ```python
-multi_way_splits = node_1.join(node_2,
-    (F.col("node_1.node_id") == F.col("node_2.node_id")) & (F.col("node_1.way_id") < F.col("node_2.way_id")),
-    "inner")
+multi_way_splits = node_1.join(
+    node_2,
+    (F.col("node_1.node_id") == F.col("node_2.node_id"))
+    & (F.col("node_1.way_id") < F.col("node_2.way_id")),
+    "inner",
+)
 ```
 
 Finds candidate split points via a self-join of the LR output on
@@ -1053,12 +1118,16 @@ whole pipeline:
 ```python
 processed_pairs = exploded_pairs_df.withColumn(
     "both_original_endpoints",
-    F.col("start_connector.is_endpoint") & F.col("end_connector.is_endpoint")
-    & ~F.col("start_connector.is_splitting_connector") & ~F.col("end_connector.is_splitting_connector"),
+    F.col("start_connector.is_endpoint")
+    & F.col("end_connector.is_endpoint")
+    & ~F.col("start_connector.is_splitting_connector")
+    & ~F.col("end_connector.is_splitting_connector"),
 )
 result_df = processed_pairs.withColumn(
     "new_segment_id",
-    F.when(F.col("both_original_endpoints"), F.col("original_segment_id")).otherwise(F.expr("uuid()")),
+    F.when(F.col("both_original_endpoints"), F.col("original_segment_id")).otherwise(
+        F.expr("uuid()")
+    ),
 )
 ```
 
@@ -1092,8 +1161,13 @@ black-box: **GraphFrames connected components.**
 
 ```python
 jvm_graph = graph._impl._jvm_graph
-jdf = (jvm_graph.connectedComponents()
-       .setAlgorithm("graphframes").setCheckpointInterval(2).setBroadcastThreshold(1000000).run())
+jdf = (
+    jvm_graph.connectedComponents()
+    .setAlgorithm("graphframes")
+    .setCheckpointInterval(2)
+    .setBroadcastThreshold(1000000)
+    .run()
+)
 ```
 
 Builds a graph (vertices = candidate segments, edges = merge-point pairs
@@ -1109,13 +1183,17 @@ Requires a Spark checkpoint directory (raises without one), since
 OOM risk pattern**:
 
 ```python
-component_groups_df = segments_with_groups_df.groupBy("component").agg(
-    F.collect_list("id").alias("segment_ids"),
-    F.collect_list("geometry").alias("geometries"),
-    F.collect_list("sources").alias("sources_list"),
-    F.collect_list("connectors").alias("connectors_list"),
-    ...
-).join(merge_points_by_component_df, "component", "left")
+component_groups_df = (
+    segments_with_groups_df.groupBy("component")
+    .agg(
+        F.collect_list("id").alias("segment_ids"),
+        F.collect_list("geometry").alias("geometries"),
+        F.collect_list("sources").alias("sources_list"),
+        F.collect_list("connectors").alias("connectors_list"),
+        ...,
+    )
+    .join(merge_points_by_component_df, "component", "left")
+)
 merged_components_raw_df = component_groups_df.withColumn(
     "merged_segments_array",
     merge_component_udf(F.col("segment_ids"), F.col("sources_list"), ...),
@@ -1148,12 +1226,16 @@ reconciliation step, and the payoff for all the identity churn above:
 ```python
 initial_candidates = new_with_bbox_df.alias("new").join(
     prod_with_bbox_df.alias("prod"),
-    ST_Intersects(F.col("new.buffered_envelope"), F.col("prod.buffered_envelope")), "inner")
+    ST_Intersects(F.col("new.buffered_envelope"), F.col("prod.buffered_envelope")),
+    "inner",
+)
 ...
-result_df = new_segments_df.join(id_mapping, F.col("id") == F.col("new_segment_id"), "left").select(
+result_df = new_segments_df.join(
+    id_mapping, F.col("id") == F.col("new_segment_id"), "left"
+).select(
     F.coalesce(F.col("matched_prod_id"), F.col("id")).alias("id"),
     F.col("id").alias("old_id"),
-    ...
+    ...,
 )
 ```
 

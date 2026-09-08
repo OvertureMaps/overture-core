@@ -1,14 +1,14 @@
-"""The rules a cairn record has to satisfy.
+"""The rules a Cairn has to satisfy.
 
-Operation rules run here, over objects, because a run has few operations.
+Operation rules run here, over objects, because one run holds few operations.
 
-Every edge rule holds or fails for one edge on its own, so an adapter can express
-the whole set as a filter over its table and never gather or count anything.
-:func:`check_edge_row` is the reference semantics, written against a plain mapping
-so an adapter can either port it to column expressions or call it directly on a
-small set. Whether a set of edges is a merge, a split, or a many-to-many is read
-off by grouping them, and since nobody declares those shapes nobody can declare
-them wrongly.
+Every row detail rule holds or fails for one entry on its own, so an adapter can
+express the whole set as a filter over its table without gathering or counting
+anything. :func:`check_row_detail_row` is the reference semantics, written against
+a plain mapping so an adapter can either port it to column expressions or call it
+directly on a small set. Whether a group of entries is a merge, a split, or a
+many-to-many is read off by grouping them, and since nobody declares those shapes,
+nobody can declare them wrongly.
 
 Keeping the checks out of the dataclasses lets one code path raise in a test run
 and report in a production one.
@@ -21,69 +21,93 @@ from typing import Any, Collection, Iterable, List, Mapping, Optional
 from overture_cairn.core.errors import Problems
 from overture_cairn.core.model import (
     ENDPOINTS,
-    VALUE_MOVING,
+    SAME_ID_KINDS,
+    WHOLE_RECORD_KINDS,
     ColumnChange,
-    EdgeKind,
+    Kind,
     Op,
-    RecordsCaptured,
+    OpType,
+    op_type_of,
 )
 
 
-def check_op(op: Op, problems: Problems) -> None:
-    """Check one operation.
+def check_operation(op: Op, problems: Problems) -> None:
+    """Check one operation on its own.
 
-    An operation needs a reason, including one that touches no identities. A method
-    is present exactly when something was captured. Nothing is its own parent.
+    Every operation needs a description, since an entry nobody can read is not
+    lineage. The rest of these tie an operation's shape to its inputs: a read
+    starts a branch and so consumes no operation, while a write or a copy carries
+    exactly the one input whose output it is putting somewhere.
     """
-    if not op.reason or not op.reason.strip():
+    if not op.description or not op.description.strip():
         problems.report(
-            "op.reason",
-            "every operation needs a reason, including one that touches no identities",
+            "op.description",
+            "every operation needs a description, including one that touches no records",
             op.op_id,
         )
-    method = op.recording_method
-    if op.records_captured is RecordsCaptured.NOT_APPLICABLE and method is not None:
+
+    shape = op_type_of(op)
+    if shape is OpType.READ and op.input_op_ids:
         problems.report(
-            "op.recording_method",
-            f"no records were captured, so there is no account for {method.value} to describe",
+            "op.input_op_ids",
+            "a read draws from a location, so it consumes no operation",
             op.op_id,
         )
-    if op.records_captured is not RecordsCaptured.NOT_APPLICABLE and method is None:
+    if shape in (OpType.WRITE, OpType.COPY) and len(op.input_op_ids) != 1:
         problems.report(
-            "op.recording_method",
-            f"a {op.records_captured.value} operation must say where its account came from",
+            "op.input_op_ids",
+            f"a {shape.value} puts one operation's output somewhere, so it takes"
+            f" exactly one input, not {len(op.input_op_ids)}",
             op.op_id,
         )
-    if op.op_id in op.parent_op_ids:
+    if shape is not OpType.TRANSFORM and op.has_row_detail:
         problems.report(
-            "op.parent_op_ids", "an operation cannot be its own parent", op.op_id
+            "op.has_row_detail",
+            f"a {shape.value} moves records without touching their contents, so it"
+            " has no row detail",
+            op.op_id,
         )
 
 
-def check_run(ops: Iterable[Op], problems: Problems) -> Problems:
-    """Check a whole run: every operation on its own, distinct names, and parents
-    that point at operations the run actually contains.
+def check_operations(ops: Iterable[Op], problems: Problems) -> Problems:
+    """Check a whole operations table.
 
-    Cycles are not checked here. See :func:`check_acyclic`.
+    Beyond the per-operation rules, this covers the three that need the rest of the
+    table: ids are unique, every input names an operation the table holds, and an
+    operation that wrote somewhere is a leaf. That last one is what makes a
+    materialized handoff visible. Anything downstream of a write reaches it by
+    reading the same location back, which is the same move a Cairn in another
+    bundle makes, so one rule covers a round trip inside a run and a handoff
+    between runs.
+
+    Cycles are checked separately by :func:`check_acyclic`.
     """
     ops = list(ops)
     known = set()
     for op in ops:
         if op.op_id in known:
             problems.report(
-                "run.name",
-                f"another operation is already called {op.name!r}; names are the id",
+                "op.op_id",
+                f"another operation is already keyed {op.op_key!r}; the key is the id",
                 op.op_id,
             )
         known.add(op.op_id)
 
+    wrote = {op.op_id for op in ops if op.physical_dest is not None}
     for op in ops:
-        check_op(op, problems)
-        for parent in op.parent_op_ids:
+        check_operation(op, problems)
+        for parent in op.input_op_ids:
             if parent not in known:
                 problems.report(
-                    "op.parent_op_ids",
-                    f"parent {parent} is not an operation in this run",
+                    "op.input_op_ids",
+                    f"input {parent} is not an operation in this Cairn",
+                    op.op_id,
+                )
+            elif parent in wrote:
+                problems.report(
+                    "op.input_op_ids",
+                    f"input {parent} wrote to a location, so read that location back"
+                    " instead of consuming the write",
                     op.op_id,
                 )
     return problems
@@ -93,26 +117,25 @@ _WHITE, _GREY, _BLACK = 0, 1, 2
 
 
 def check_acyclic(ops: Iterable[Op], problems: Problems) -> Problems:
-    """Check that the parent links form a DAG.
+    """Check that the input links form a DAG.
 
-    Keyed by name, an operation can name a parent declared after it, so nothing
-    rules a cycle out structurally. Intended for test runs, where a cycle should
-    stop the build.
+    Keyed by op_key, an operation can name an input declared after it, so nothing
+    rules a cycle out structurally. A self-reference is a cycle of one and gets
+    reported here, so this check stands on its own.
 
-    Parents that name an operation outside the run are skipped, since
-    :func:`check_run` reports those. A self-parent is a cycle of one and is
-    reported here too, so this stands on its own.
+    Inputs naming an operation outside the Cairn are skipped, since
+    :func:`check_operations` reports those.
     """
-    parents = {op.op_id: tuple(op.parent_op_ids) for op in ops}
-    state = dict.fromkeys(parents, _WHITE)
+    inputs = {op.op_id: tuple(op.input_op_ids) for op in ops}
+    state = dict.fromkeys(inputs, _WHITE)
     reported: set = set()
 
-    for root in parents:
+    for root in inputs:
         if state[root] != _WHITE:
             continue
         state[root] = _GREY
         path = [root]
-        walking = [iter(parents[root])]
+        walking = [iter(inputs[root])]
         while walking:
             descended = False
             for parent in walking[-1]:
@@ -123,7 +146,7 @@ def check_acyclic(ops: Iterable[Op], problems: Problems) -> Problems:
                 elif state[parent] == _WHITE:
                     state[parent] = _GREY
                     path.append(parent)
-                    walking.append(iter(parents[parent]))
+                    walking.append(iter(inputs[parent]))
                     descended = True
                     break
             if not descended:
@@ -145,72 +168,102 @@ def _report_cycle(cycle: List[str], problems: Problems, reported: set) -> None:
     reported.add(canonical)
     trail = " -> ".join(canonical + (canonical[0],))
     problems.report(
-        "op.parent_op_ids", f"parent links form a cycle: {trail}", canonical[0]
+        "op.input_op_ids", f"input links form a cycle: {trail}", canonical[0]
     )
 
 
-def check_edge_row(
-    row: Mapping[str, Any], parent_op_ids: Optional[Collection[str]] = None
+def check_row_detail_row(
+    row: Mapping[str, Any], input_op_ids: Optional[Collection[str]] = None
 ) -> List[str]:
-    """Return the names of the row rules a single edge breaks.
+    """Return the names of the rules one row detail entry breaks.
 
-    Reference semantics for the row rules, over one edge as a mapping keyed the way
-    ``EDGE_COLUMNS`` names things. An empty list means the edge is well formed.
+    Reference semantics for the row rules, over one entry as a mapping keyed the
+    way ``ROW_DETAIL_COLUMNS`` names things. An empty list means the entry is well
+    formed.
 
-    Pass ``parent_op_ids`` from the edge's operation to also check that the edge
-    came in on a stream that operation actually consumed. It is a handful of values,
-    so an adapter can broadcast it and keep this a row rule.
+    Pass ``input_op_ids`` from the entry's operation to also check that the entry
+    came in on a stream that operation consumed. It is a handful of values, so an
+    adapter can broadcast it and keep this a row rule.
     """
     broken: List[str] = []
 
     kind = _as_kind(row.get("kind"))
     if kind is None:
-        return ["edge.kind"]
-
-    input_op_id = row.get("input_op_id")
-    if parent_op_ids is not None and input_op_id is not None:
-        if input_op_id not in parent_op_ids:
-            broken.append("edge.input_op_id")
+        return ["row.kind"]
 
     input_id, output_id = row.get("input_id"), row.get("output_id")
     wants_input, wants_output = ENDPOINTS[kind]
     if (input_id is not None) is not wants_input:
-        broken.append("edge.input_id")
+        broken.append("row.input_id")
     if (output_id is not None) is not wants_output:
-        broken.append("edge.output_id")
+        broken.append("row.output_id")
 
     if input_id is not None and output_id is not None:
         same = list(input_id) == list(output_id)
-        if kind in (EdgeKind.CONTENT_CHANGE, EdgeKind.FLAGGED) and not same:
-            broken.append("edge.same_ids")
-        if kind is EdgeKind.DERIVED_FROM and same:
-            broken.append("edge.derived_from_ids")
+        if kind in SAME_ID_KINDS and not same:
+            broken.append("row.same_ids")
+        if kind is Kind.DERIVED_FROM and same:
+            broken.append("row.derived_from_ids")
 
-    columns = row.get("columns")
-    change = row.get("column_change")
-    if kind in VALUE_MOVING and (columns is None) is not (change is None):
-        broken.append("edge.column_change")
-    if kind not in VALUE_MOVING and change is not None:
-        broken.append("edge.column_change")
-    if columns is not None and not columns:
-        broken.append("edge.columns")
-    if change is not None and _as_column_change(change) is None:
-        broken.append("edge.column_change")
-
-    # A content change with nothing named and nothing said asserts that something
-    # moved without saying what, which is not worth a row. A flag with no detail is
-    # a complete statement, because the operation is the finding.
-    if kind is EdgeKind.CONTENT_CHANGE and columns is None and not row.get("detail"):
-        broken.append("edge.empty_content_change")
-
+    broken.extend(_check_input_op_id(row, kind, input_op_ids))
+    broken.extend(_check_columns(row, kind))
     return broken
 
 
-def _as_kind(value: Any) -> Optional[EdgeKind]:
-    if isinstance(value, EdgeKind):
+def _check_input_op_id(
+    row: Mapping[str, Any], kind: Kind, input_op_ids: Optional[Collection[str]]
+) -> List[str]:
+    """Check the pointer that says which input an entry's input_id belongs to.
+
+    A mint has no input side to attribute, so it carries no pointer. Otherwise the
+    pointer is present exactly when the operation had more than one input, since
+    one input needs no disambiguating and several are ambiguous without it.
+    """
+    broken: List[str] = []
+    input_op_id = row.get("input_op_id")
+
+    if kind is Kind.MINTED and input_op_id is not None:
+        broken.append("row.input_op_id")
+        return broken
+
+    if input_op_ids is None:
+        return broken
+
+    if input_op_id is not None and input_op_id not in input_op_ids:
+        broken.append("row.input_op_id")
+        return broken
+
+    if kind is not Kind.MINTED:
+        needed = len(input_op_ids) > 1
+        if (input_op_id is not None) is not needed:
+            broken.append("row.input_op_id")
+    return broken
+
+
+def _check_columns(row: Mapping[str, Any], kind: Kind) -> List[str]:
+    """Check an entry's column scope and the fate of the values in it."""
+    broken: List[str] = []
+    columns = row.get("affected_output_columns")
+    change = row.get("column_change")
+
+    if columns is not None and not columns:
+        broken.append("row.affected_output_columns")
+    if kind in WHOLE_RECORD_KINDS and columns is not None:
+        broken.append("row.affected_output_columns")
+
+    if change is not None:
+        if kind is not Kind.CONTENT_CHANGED:
+            broken.append("row.column_change")
+        elif _as_column_change(change) is None:
+            broken.append("row.column_change")
+    return broken
+
+
+def _as_kind(value: Any) -> Optional[Kind]:
+    if isinstance(value, Kind):
         return value
     try:
-        return EdgeKind(value)
+        return Kind(value)
     except ValueError:
         return None
 

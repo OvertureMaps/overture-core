@@ -123,7 +123,7 @@ These show how common pipeline shapes land in the two tables. The `run_id` prefi
 
 ### A filter
 
-The skeleton of almost every job: read something, transform it, write it out. Here the transform is a validity filter.
+Almost every job has this skeleton, where a read feeds a transform which feeds a write. The transform here is a validity filter.
 
 Operations:
 
@@ -139,17 +139,17 @@ Row detail for `drop_invalid_geometry`:
 | -- | -- | -- | -- |
 | dropped | ["osm/w123"] | null | invalid geometry |
 
-Only the removed rows get entries. A record with no entry passed through untouched; that's what keeps row detail affordable. The read and write ops never have row detail at all.
+Only the removed rows get entries. A record with no entry passed through untouched, which is what keeps row detail affordable. The read and write ops have no row detail of their own.
 
 ### Minting ids
 
-A transform carves records out of raw, unkeyed data (say, land polygons cut from a coastline) and gives each one a fresh id:
+A transform carves records out of unkeyed data (say, land polygons cut from a coastline) and gives each one a fresh id:
 
 | kind | input_id | output_id | detail |
 | -- | -- | -- | -- |
 | minted | null | ["550e8400..."] | new land feature derived from coastline |
 
-The mint belongs to the *transform*, never to a read. Reading a dataset whose records already carry ids is not minting; those identities already existed, and Cairn is just seeing them for the first time. And if the input records already had some id (a provider key, say) and the operation hands out new ones, that's not a mint either. That's the next example.
+Mints come from transforms. A read whose records already carry ids records nothing here, since those identities existed before Cairn saw them. An operation that hands new ids to records which already had one (a provider key, say) records `derived_from` entries, which the next example covers.
 
 ### Changing ids
 
@@ -159,11 +159,11 @@ A matcher assigns final ids: records that match an existing corpus record take i
 | -- | -- | -- | -- |
 | derived_from | ["tmp-8f3e"] | ["gers-04c2"] | matched existing building, IoU 0.87 |
 
-One entry per record whose id actually changed. The unmatched records keep their ids, so they get no entry.
+One entry per record whose id changed. The unmatched records keep their ids, so they get no entry.
 
 ### A split
 
-One record becomes several, each with its own new id. This needs no special kind; it's just multiple `derived_from` entries sharing an input:
+One record becomes several, each with its own new id. Several `derived_from` entries sharing an input cover this:
 
 | kind | input_id | output_id | detail |
 | -- | -- | -- | -- |
@@ -174,7 +174,7 @@ A merge is the same shape with the repetition on the other side (several entries
 
 ### An enrichment
 
-An operation fills in `height` from a reference dataset. Some records had no height, and some had one that gets overridden. The record's id never changes, so these are `content_changed` entries, and `column_change` tells the two situations apart:
+An operation fills in `height` from a reference dataset. Some records arrive with no height, and others arrive with one the operation overrides. The record ids stay the same, so these are `content_changed` entries, and `column_change` separates the two situations:
 
 | kind | input_id | output_id | affected_output_columns | column_change | detail |
 | -- | -- | -- | -- | -- | -- |
@@ -183,13 +183,13 @@ An operation fills in `height` from a reference dataset. Some records had no hei
 
 ### A flag
 
-A QA pass marks records with suspicious phone numbers but changes nothing:
+A QA pass marks records with suspicious phone numbers and leaves their values alone:
 
 | kind | input_id | output_id | affected_output_columns | detail |
 | -- | -- | -- | -- | -- |
 | flagged | ["p9"] | ["p9"] | ["phones"] | matches a known junk-number pattern |
 
-The operation's `description` carries what the check is; `detail` is only needed when there's something record-specific to say.
+The operation's `description` says what the check looks for. A `detail` is worth writing when the entry has something record-specific to add.
 
 ## Addendum: Loose Mapping to W3C PROV
 

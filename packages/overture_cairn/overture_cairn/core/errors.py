@@ -1,8 +1,8 @@
-"""Cairn's exception types and failure points.
+"""Cairn's exception types and its two failure modes.
 
-Cairn watches a pipeline and must never be why one fails, so by default a problem
-cairn finds with its own record is collected and logged. Strict mode raises failures
-for development and tests.
+Cairn watches a pipeline and must never be the reason one fails, so by default a
+problem Cairn finds with its own record is collected and logged. Strict mode raises
+instead, which is what a development run or a test suite wants.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ logger = logging.getLogger("overture_cairn")
 
 
 class CairnError(Exception):
-    """Base for anything cairn raises."""
+    """Base for anything Cairn raises."""
 
 
 class InvariantViolation(CairnError):
-    """A rule about cairn's own record was broken. Only raised under strict mode."""
+    """A rule about Cairn's own record was broken. Raised under strict mode only."""
 
 
 @dataclass
@@ -35,7 +35,7 @@ class Problem:
 
 @dataclass
 class Problems:
-    """Everything cairn found wrong with its own record during a run."""
+    """Everything Cairn found wrong with its own record during a run."""
 
     strict: bool = False
     items: List[Problem] = field(default_factory=list)

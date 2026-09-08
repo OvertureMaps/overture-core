@@ -192,7 +192,7 @@ def to_df(self, spark, input_source_paths):
         self.geometry_col().alias("geometry"),
         self.sources_col().cast(sources_type).alias("sources"),
     )
-    ... # strip whitespace/control chars on street/number/unit/postcode/postal_city
+    ...  # strip whitespace/control chars on street/number/unit/postcode/postal_city
     df = self.postprocess(df)
     return df
 ```
@@ -403,11 +403,13 @@ signed-API TTL, or run date) and bundle initialization
 def execute_job(self) -> None:
     strategy = self.get_param("strategy")
     if strategy == "s3_copy":
-        self._s3_copy_all()          # OA: server-side S3→S3 copy, 16 parallel workers
+        self._s3_copy_all()  # OA: server-side S3→S3 copy, 16 parallel workers
     elif strategy == "http_download":
-        self._http_download(url=self.get_param("url"))   # stream URL -> S3, no disk buffer
+        self._http_download(
+            url=self.get_param("url")
+        )  # stream URL -> S3, no disk buffer
     elif strategy == "http_signed_api":
-        ...                          # GURS: resolve short-lived signed URL, then stream
+        ...  # GURS: resolve short-lived signed URL, then stream
 ```
 
 **What happens to the data**: nothing — this is byte-for-byte replication
@@ -469,8 +471,8 @@ against TIGER counties so per-county OA takes precedence:
 
 ```python
 selected = df.select(
-    F.lit(None).cast("string").alias("id"),   # id is assigned by the match stage
-    ...
+    F.lit(None).cast("string").alias("id"),  # id is assigned by the match stage
+    ...,
 ).filter(
     F.col("geometry").isNotNull()
     & (F.col("street").isNotNull() | F.col("number").isNotNull())
@@ -504,11 +506,13 @@ clipped = clipped.alias("nad").join(
 (`overture_addresses/overture_addresses/ingest/schema.py`):
 
 ```python
-ADDRESS_SCHEMA = StructType([
-    # id is populated by the match stage (post-match UUID); null at ingest.
-    StructField("id", StringType(), True),
-    ...
-])
+ADDRESS_SCHEMA = StructType(
+    [
+        # id is populated by the match stage (post-match UUID); null at ingest.
+        StructField("id", StringType(), True),
+        ...,
+    ]
+)
 ```
 
 **This is the id-assignment boundary.** Unlike the legacy pipeline (which

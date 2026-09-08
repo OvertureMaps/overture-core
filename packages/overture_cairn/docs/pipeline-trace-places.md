@@ -229,8 +229,13 @@ convention, not something enforced here.
 ```python
 properties_to_ignore = {"version", "confidence", "brand", "addresses"}
 
+
 def _merge_row(self, base, lower_ranked):
-    properties = {k: getattr(base, k) for k in base.asDict().keys() if k not in {"id", "lowerRankedFeaturesProperties"}}
+    properties = {
+        k: getattr(base, k)
+        for k in base.asDict().keys()
+        if k not in {"id", "lowerRankedFeaturesProperties"}
+    }
     if lower_ranked is None:
         return Row(id=base.id, **properties)
 
@@ -287,10 +292,14 @@ appended to `sources`, dated to the pipeline run (`base_properties_feeds_merger.
 
 ```python
 self.confidence_source = {
-    "property": "/properties/confidence", "dataset": "Overture",
-    "license": "CDLA-Permissive-2.0", "record_id": None,
-    "update_time": date_from_run_id, "provider": "overture",
-    "resource": "confidence_calculation", "version": confidence_source_version,
+    "property": "/properties/confidence",
+    "dataset": "Overture",
+    "license": "CDLA-Permissive-2.0",
+    "record_id": None,
+    "update_time": date_from_run_id,
+    "provider": "overture",
+    "resource": "confidence_calculation",
+    "version": confidence_source_version,
 }
 ```
 
@@ -304,13 +313,19 @@ It keeps the highest-ranked record's data **wholesale, with no per-field fusion 
 
 ```python
 def _merge_row(self, base, lower_ranked):
-    properties = {k: v for k, v in base.asDict().items() if k not in ("id", "lowerRankedFeaturesProperties")}
+    properties = {
+        k: v
+        for k, v in base.asDict().items()
+        if k not in ("id", "lowerRankedFeaturesProperties")
+    }
     if lower_ranked is None:
         return Row(id=base.id, **properties)
     new_confidence = 1 - properties["confidence"]
     for prop in lower_ranked:
-        new_confidence *= (1 - prop["confidence"])
-    properties["sources"] = SourcesMerger.change_source_prop_to_empty_string(properties["sources"])
+        new_confidence *= 1 - prop["confidence"]
+    properties["sources"] = SourcesMerger.change_source_prop_to_empty_string(
+        properties["sources"]
+    )
     properties["sources"].append(self.confidence_source)
     properties["confidence"] = 1 - new_confidence
     return Row(id=base.id, **properties)
@@ -428,7 +443,9 @@ from the Airflow layer, cannot) inspect.
      # matching_utils.py:226-236
      job_run_id = db_operator.run_now(job_parameters=job_parameters, job_name=self.job_name)
      output = db_operator.get_job_output(
-         task_key_contains="assign", job_run_id=job_run_id, deserialize=True,
+         task_key_contains="assign",
+         job_run_id=job_run_id,
+         deserialize=True,
      )
      output = output["resultDataPaths"]
      ```
@@ -440,7 +457,9 @@ from the Airflow layer, cannot) inspect.
      ```python
      # matching_utils.py:445-465
      matcher_version = Variable.get("matching_scala_version", ...).strip()
-     matcher_path = f"org/overturemaps/matching/{matcher_version}/matching-{matcher_version}-shaded.jar"
+     matcher_path = (
+         f"org/overturemaps/matching/{matcher_version}/matching-{matcher_version}-shaded.jar"
+     )
      matcher_url = f"https://aws:{codeartifact_token}@{DOMAIN}-{ACCOUNT}.d.codeartifact.us-west-2.amazonaws.com/maven/{REPO}/{matcher_path}"
      ```
      ```python
@@ -448,9 +467,9 @@ from the Airflow layer, cannot) inspect.
      matching = spark_agnostic_task_group(
          group_id="matching",
          class_name="org.overturemaps.matching.Main",
-         parameters=matcher_conf,   # --scenario --theme --provider --input --baseline
-                                     # --outputPath --runId --embeddingsCacheTable
-                                     # --matchHistory --outputDebug
+         parameters=matcher_conf,  # --scenario --theme --provider --input --baseline
+         # --outputPath --runId --embeddingsCacheTable
+         # --matchHistory --outputDebug
          spark_cluster_desired_worker_cores="980",  # places-specific
          spark_cluster_desired_workers="31",
      )
@@ -475,8 +494,12 @@ from the Airflow layer, cannot) inspect.
        task_id="load_corpus",
        trigger_dag_id="corpus_data_load_dag",
        conf={
-           "ThemeName": theme, "TableName": table, "BranchName": branch,
-           "InputPath": data_path, "IdField": "id", "Source": provider,
+           "ThemeName": theme,
+           "TableName": table,
+           "BranchName": branch,
+           "InputPath": data_path,
+           "IdField": "id",
+           "Source": provider,
        },
        wait_for_completion=True,
    )
@@ -633,7 +656,7 @@ df = input_df.select(
     expr("ST_AsBinary(ST_Point(longitude, latitude))").alias("geometry"),
     lit(FOURSQUARE_DEFAULT_CONFIDENCE).cast(DoubleType()).alias("confidence"),
     fsq_category.alias(self.source_category),
-    ...
+    ...,
 )
 ```
 
@@ -671,8 +694,10 @@ first and the expensive spatial join last, against only the records that survive
 - **Invalid geometry** — out-of-range lat/lon or exactly `(0, 0)`:
   ```python
   valid_conditions = (
-      expr("x").between(-180, 180) & expr("y").between(-90, 90)
-      & (expr("x") != 0) & (expr("y") != 0)
+      expr("x").between(-180, 180)
+      & expr("y").between(-90, 90)
+      & (expr("x") != 0)
+      & (expr("y") != 0)
   )
   ```
   (`places_filter_chain.py:524`)
@@ -748,13 +773,19 @@ per-filter JSON blob), and `counterpart` (linking a dropped duplicate to the rec
 
 ```python
 # theme_places_ingest_dag.py:544-557
-parameters={
+parameters = {
     "input_path": provider_params["places_invalid_features_repository_uri"],
-    "violations": ",".join([
-        "duplicate_provider_id", "missing_required_fields", "duplicate_by_attributes",
-        "invalid_geometry", "invalid_country_boundary", "invalid_categories",
-        "name_matches_address_component",
-    ]),
+    "violations": ",".join(
+        [
+            "duplicate_provider_id",
+            "missing_required_fields",
+            "duplicate_by_attributes",
+            "invalid_geometry",
+            "invalid_country_boundary",
+            "invalid_categories",
+            "name_matches_address_component",
+        ]
+    ),
     "entity_violations_table": get_entity_violation_table(),
 }
 ```
@@ -845,14 +876,16 @@ record, so there's nothing to cluster/match — it goes straight into corpus.
 Schema (`patches_ingest.py:25-34`):
 
 ```python
-PATCHES_SCHEMA = StructType([
-    StructField("pid", StringType(), True),        # place ID being patched
-    StructField("id", StringType(), True),
-    StructField("type", StringType(), True),
-    StructField("attribute", StringType(), True),   # which field to patch
-    StructField("value", StringType(), True),       # proposed new value
-    StructField("sources", ArrayType(RAW_SOURCE_SCHEMA), True),
-])
+PATCHES_SCHEMA = StructType(
+    [
+        StructField("pid", StringType(), True),  # place ID being patched
+        StructField("id", StringType(), True),
+        StructField("type", StringType(), True),
+        StructField("attribute", StringType(), True),  # which field to patch
+        StructField("value", StringType(), True),  # proposed new value
+        StructField("sources", ArrayType(RAW_SOURCE_SCHEMA), True),
+    ]
+)
 ```
 
 **Input:** `PATCHES_RAW_DATA_URI = s3://3ppp-output-places-omf/` (a third-party "signals"
@@ -884,9 +917,12 @@ corpus_load = TriggerDagRunOperator(
     task_id="trigger_corpus_patch_data_load",
     trigger_dag_id="corpus_data_load_dag",
     conf={
-        "ThemeName": "places", "TableName": "patch", "BranchName": "main",
+        "ThemeName": "places",
+        "TableName": "patch",
+        "BranchName": "main",
         "InputPath": output_bundle.data_uri + "/*.parquet",
-        "IdField": "pid", "Source": "Overture-signals",
+        "IdField": "pid",
+        "Source": "Overture-signals",
     },
 )
 ```

@@ -68,7 +68,9 @@ rearranging it, and every dropped id gets an edge carrying its own number. The
 explicit form is there when the shape does not fit:
 
 ```python
-op = run.declarative_op("drop weak overlaps", "an overlap below 0.5 IOU is not the same building")
+op = run.declarative_op(
+    "drop weak overlaps", "an overlap below 0.5 IOU is not the same building"
+)
 op.drop(match_df.where("iou <= 0.5"), id="id", detail=F.col("iou"))
 match_df = match_df.where("iou > 0.5")
 ```
@@ -110,8 +112,8 @@ run.declarative_op(
     parents=[matched],
 ).derived_from(
     v_mapping,
-    input_id="id",              # the ingest-minted placeholder
-    output_id="release_id",     # the GERS id from the corpus
+    input_id="id",  # the ingest-minted placeholder
+    output_id="release_id",  # the GERS id from the corpus
     input_op=feed,
     detail=F.concat(F.lit("IOU "), F.round("iou", 3)),
 )
@@ -181,7 +183,9 @@ For code nobody has opened at all, the comparison gets a floor under it without
 touching the job:
 
 ```python
-op = run.comparative_op("legacy sql block", "one raw SQL statement, not yet broken apart")
+op = run.comparative_op(
+    "legacy sql block", "one raw SQL statement, not yet broken apart"
+)
 op.compare_ends(before_df, after_df, id="id")
 ```
 

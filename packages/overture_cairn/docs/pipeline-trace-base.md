@@ -130,6 +130,7 @@ def _filter_block_list(self, df: DataFrame) -> DataFrame:
     filtered = df.filter(~F.col("id").isin(BLOCKED_IDS))
     ...
 
+
 df = df.join(changelog_df.select("id", "version", "bbox"), on="id", how="left")
 df = self._filter_by_bbox(df, bbox_str)
 df = self._filter_block_list(df)
@@ -212,14 +213,22 @@ down to the final column set, and dedup on `id`.
 def promote_common_to_primary_name():
     return (
         F.when(F.col("names.primary").isNotNull(), F.col("names"))
-        .when(F.col("names.common").isNotNull(), F.struct(
-            F.map_values(F.col("names.common"))[0].alias("primary"),
-            F.col("names.common"), F.col("names.rules"),
-        ))
-        .when(F.col("names.rules").isNotNull(), F.struct(
-            F.col("names.rules")[0]["value"].alias("primary"),
-            F.col("names.common"), F.col("names.rules"),
-        ))
+        .when(
+            F.col("names.common").isNotNull(),
+            F.struct(
+                F.map_values(F.col("names.common"))[0].alias("primary"),
+                F.col("names.common"),
+                F.col("names.rules"),
+            ),
+        )
+        .when(
+            F.col("names.rules").isNotNull(),
+            F.struct(
+                F.col("names.rules")[0]["value"].alias("primary"),
+                F.col("names.common"),
+                F.col("names.rules"),
+            ),
+        )
         .otherwise(F.lit(None))
     )
 ```
@@ -246,7 +255,12 @@ df = df.withColumn(
         ),
     ),
 )
-df = rebind(df, old="id", new="_new_id", reason="minted a content-derived id because the record didn't already carry a valid one")
+df = rebind(
+    df,
+    old="id",
+    new="_new_id",
+    reason="minted a content-derived id because the record didn't already carry a valid one",
+)
 df = df.drop("id").withColumnRenamed("_new_id", "id")
 ```
 
@@ -261,7 +275,8 @@ this is a no-op; it only fires for malformed/legacy input.
 ```python
 def dedup(df):
     return keep_best(
-        df, per="id",
+        df,
+        per="id",
         by=F.col("sources")[0].getItem("update_time").desc(),
         reason="superseded by a newer duplicate for the same id",
     )
@@ -305,14 +320,20 @@ df = (
     .filter(F.col("geometry").isNotNull())
     .filter(F.expr("ST_ISEmpty(ST_GeomFromWKB(geometry)) = false"))
     .filter(F.expr("ST_ISVALID(ST_GeomFromWKB(geometry)) = true"))
-    .withColumn("sources", F.array(F.struct(
-        F.lit("ESA WorldCover").alias("dataset"),
-        F.lit("CC-BY-4.0").alias("license"),
-        F.lit(update_time).alias("update_time"),
-        F.lit(provider).alias("provider"), F.lit(resource).alias("resource"),
-        F.lit(land_cover_version).cast("string").alias("version"),
-        ...
-    ))),
+    .withColumn(
+        "sources",
+        F.array(
+            F.struct(
+                F.lit("ESA WorldCover").alias("dataset"),
+                F.lit("CC-BY-4.0").alias("license"),
+                F.lit(update_time).alias("update_time"),
+                F.lit(provider).alias("provider"),
+                F.lit(resource).alias("resource"),
+                F.lit(land_cover_version).cast("string").alias("version"),
+                ...,
+            )
+        ),
+    ),
 )
 ```
 
@@ -479,10 +500,12 @@ condition (and optionally a geometry-type constraint) to an Overture
 
 ```python
 WATER_RULES = [
-    TagRule(tag="waterway", equals="stream", subtype="stream", class_from_tag="waterway"),
+    TagRule(
+        tag="waterway", equals="stream", subtype="stream", class_from_tag="waterway"
+    ),
     TagRule(tag="water", equals="stream", subtype="stream", class_from_tag="water"),
     TagRule(tag="waterway", equals="river", subtype="river", class_from_tag="waterway"),
-    ...
+    ...,
 ]
 ```
 
@@ -508,8 +531,15 @@ def uuid_v3_sql(namespace: str, value_expr: str) -> str:
     ns_uuid = OvertureNameSpace[namespace].value
     ...  # md5(namespace_bytes || value_expr), formatted as a v3 UUID
 
-def osm_to_overture_sources_sql(osm_id="id", osm_type="type", osm_version="version",
-                                 updated_at="updated_at", *, pull_date: str) -> str:
+
+def osm_to_overture_sources_sql(
+    osm_id="id",
+    osm_type="type",
+    osm_version="version",
+    updated_at="updated_at",
+    *,
+    pull_date: str,
+) -> str:
     ...
     return f"""
     array(named_struct(

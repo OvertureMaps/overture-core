@@ -1,77 +1,63 @@
-"""The types a cairn record is made of, and the shape of the tables it becomes.
+"""The types a Cairn is made of, and the shape of the two tables it becomes.
 
-Operations are objects because a run has a countable number of them. Edges are
-only a schema, because one operation can produce more edges than fit in a process,
-so whatever materialises them does so as a table inside an adapter.
+Operations are objects, because one run has a countable number of them. Row detail
+is only a schema, because a single operation can describe more records than fit in
+one process, so whatever materializes those entries does so as a table inside an
+adapter.
 
-Nothing here writes anything. A record is two tables named by ``OPS`` and
-``EDGES``, described by ``OP_COLUMNS`` and ``EDGE_COLUMNS``, and an adapter decides
-what they are stored as and where they go.
+Nothing here writes anything. A Cairn is two tables, named by ``OPERATIONS`` and
+``ROW_DETAIL`` and described by ``OPERATION_COLUMNS`` and ``ROW_DETAIL_COLUMNS``. An
+adapter decides what they are stored as and where they go.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-#: The two tables a record is made of. Fixed, because concatenating records from
+#: The two tables a Cairn is made of. Fixed, because collecting Cairns from
 #: different adapters means finding the same two names in each.
-OPS = "ops"
-EDGES = "edges"
+OPERATIONS = "operations"
+ROW_DETAIL = "row_detail"
 
 
-class EdgeKind(str, Enum):
-    """What became of a record's identity.
+class Kind(Enum):
+    """What happened to the ids one operation handled.
 
-    No caller may add to these, so a reader can match on them exhaustively. They
-    say what happened to an identity and nothing about why.
+    The value follows from three questions: is there an input id, is there an
+    output id, and if there are both, are they equal. That makes this set
+    exhaustive over identity outcomes, rather than a taxonomy of the ways a record
+    can be affected.
 
-    ``CONTENT_CHANGE`` is for a record that already existed and whose values moved,
-    so its ``input_id`` equals its ``output_id``. ``DERIVED_FROM`` is for an output
-    that exists because of its input, so the two differ.
-
-    ``FLAGGED`` is the one kind that says nothing about identity. An operation
-    asserted something about a record and left it alone, which is what a check
-    does when it finds a problem without dropping the row. Its ``input_id`` equals
-    its ``output_id`` like a content change, and unlike one, nothing moved. Such an
-    edge needs no ``detail``, because the operation that emitted it is the finding.
-
-    A merge, a split, and a rebind are shapes of a set of ``DERIVED_FROM`` edges,
-    and no single edge carries one, which is why none of them appears here. Within
-    one operation, one input reaching one output is a rebind, several sharing an
-    ``output_id`` are a merge, several sharing an ``input_id`` are a split, and both
-    at once is a many-to-many. Labelling the shape would ask a caller to restate
-    what the edges already show, and a many-to-many edge would answer to two labels
-    at once. That is also the test a new kind has to pass: nothing else in the
-    record implies a flag, so it earns a place here.
+    A merge, a split, and a rebind are all shapes of a set of ``DERIVED_FROM``
+    entries, so none of them appears here. Within one operation, one input
+    reaching one output is a rebind, several sharing an ``output_id`` are a merge,
+    and several sharing an ``input_id`` are a split. Reading the shape off a group
+    saves a caller from naming it, and it lets a many-to-many stay one thing
+    instead of answering to two names at once.
     """
 
-    DROP = "drop"
-    MINT = "mint"
+    DROPPED = "dropped"
+    MINTED = "minted"
     DERIVED_FROM = "derived_from"
-    CONTENT_CHANGE = "content_change"
+    CONTENT_CHANGED = "content_changed"
     FLAGGED = "flagged"
 
 
 class ColumnChange(Enum):
-    """What happened to the columns an edge names.
+    """What happened to the values in an entry's ``affected_output_columns``.
 
-    The three values are the same question asked about each end, which is what
-    tells ``SET`` and ``REPLACED`` apart: they differ in what was there before.
+    This is :class:`Kind` asked one grain down, about a cell instead of a record.
+    ``SET`` is a mint, ``CLEARED`` is a drop, and ``REPLACED`` is a content change.
+    The cell-grain equivalent of ``DERIVED_FROM`` would name which other column a
+    value came from, and that stays in ``detail`` prose, because the logic behind
+    such a choice does not fit a closed schema.
 
-    =================  =============  ==================
-    before / after     after: empty   after: has a value
-    =================  =============  ==================
-    empty              no edge        ``SET``
-    has a value        ``CLEARED``    ``REPLACED``
-    =================  =============  ==================
-
-    ``SET`` fills a gap and is routine. ``REPLACED`` overrides a value somebody
-    supplied, which is the one worth being able to count.
-
-    Identity and value are separate axes, so each gets its own field.
+    Only a ``CONTENT_CHANGED`` entry can carry one, since that is the only kind
+    whose record has both a before and an after.
     """
 
     SET = "set"
@@ -79,70 +65,35 @@ class ColumnChange(Enum):
     CLEARED = "cleared"
 
 
-class RecordsCaptured(Enum):
-    """Whether the edges account for every record identity an operation touched.
+class OpType(Enum):
+    """Which of the four shapes an operation has.
 
-    This is what tells a reader how to take a missing edge. Under ``COMPLETE``, a
-    record with no edge passed through untouched, which is what makes the edges
-    affordable as deltas. Under ``INCOMPLETE``, a missing edge means nobody knows.
-
-    ``NOT_APPLICABLE`` belongs to an operation that handles no records at all, such
-    as checking that a location exists or comparing two schemas. The test is whether
-    records went through it, not whether any identity changed: a write handles every
-    record it persists and a filter that dropped nothing still saw them all, so both
-    are ``COMPLETE`` with no edges. Keeping those apart from the ones that never had
-    records is what makes either group worth querying for.
-
-    Nothing can confirm the claim, because cairn never sees an operation's input.
-    Recording it puts the claim somewhere a reader can find and question it.
+    Read from ``physical_source`` and ``physical_dest`` by :func:`op_type_of`
+    rather than stored, so an operation cannot disagree with itself about what it
+    is. ``TRANSFORM`` covers everything that touches no physical location, which
+    is most of a pipeline.
     """
 
-    COMPLETE = "complete"
-    INCOMPLETE = "incomplete"
-    NOT_APPLICABLE = "not_applicable"
+    READ = "read"
+    WRITE = "write"
+    COPY = "copy"
+    TRANSFORM = "transform"
 
 
-class RecordingMethod(Enum):
-    """Where the account of an operation came from.
+#: Which ends an entry of each kind carries, as ``(input_id, output_id)``.
+ENDPOINTS: Mapping[Kind, Tuple[bool, bool]] = {
+    Kind.DROPPED: (True, False),
+    Kind.MINTED: (False, True),
+    Kind.DERIVED_FROM: (True, True),
+    Kind.CONTENT_CHANGED: (True, True),
+    Kind.FLAGGED: (True, True),
+}
 
-    ``DECLARATIVE`` means the operation said what it did. ``COMPARATIVE`` means
-    something worked it out from the input and the output, which gives what changed
-    and never why. A comparison is also blind to a merge or an id change, because
-    all it sees is old identities disappearing and new ones appearing with nothing
-    linking them.
+#: Kinds whose entry describes one surviving record, so both ids are the same one.
+SAME_ID_KINDS: Tuple[Kind, ...] = (Kind.CONTENT_CHANGED, Kind.FLAGGED)
 
-    Both produce the same edges, so opening up a black box changes this field and
-    leaves the format alone. An operation with nothing to capture has no method.
-    """
-
-    DECLARATIVE = "declarative"
-    COMPARATIVE = "comparative"
-
-
-@dataclass(frozen=True)
-class IdSpec:
-    """The column or columns that together identify a record.
-
-    One spec covers the composite case, so no caller has to special-case a
-    two-column key.
-
-    An operation names the spec for the records it emits. The spec for what it takes
-    in belongs to whichever operation produced those records, so an edge names that
-    operation and reads the columns from there. A step drawing on two sources can be
-    taking in two grains at once, which is what makes the indirection worth it.
-    """
-
-    columns: Tuple[str, ...]
-
-    @classmethod
-    def of(cls, *columns: str) -> "IdSpec":
-        return cls(tuple(columns))
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "columns", tuple(self.columns))
-
-    def __str__(self) -> str:
-        return "+".join(self.columns)
+#: Kinds that concern a whole record, so naming columns would say nothing.
+WHOLE_RECORD_KINDS: Tuple[Kind, ...] = (Kind.DROPPED, Kind.MINTED)
 
 
 def slug(name: str) -> str:
@@ -151,77 +102,69 @@ def slug(name: str) -> str:
     return re.sub(r"-+", "-", "".join(kept)).strip("-")
 
 
-def op_id_for(run_id: str, name: str) -> str:
-    """Build an operation's id from the run it belongs to and its name.
+def op_id_for(run_id: str, op_key: str) -> str:
+    """Build an operation's id from the run it belongs to and its key.
 
-    Both a writer and a reader derive ids the same way, so the rule lives out here
-    where each of them can reach it.
+    Writers and readers both derive ids this way, so the rule lives out here where
+    each of them can reach it.
     """
-    return f"{run_id}.{slug(name)}"
+    return f"{run_id}.{slug(op_key)}"
 
 
 @dataclass(frozen=True)
 class Op:
-    """One operation, registered when the calling code declares it.
+    """One operation, which maps one or more input datasets to a single output.
 
-    Structure comes from ``parent_op_ids``, which makes the operations a DAG. The
-    order two of them ran in is recorded only when one fed the other, which leaves
-    genuinely parallel branches unordered.
+    Structure comes from ``input_op_ids``, which makes the operations table a
+    graph in its own right, with operations as its nodes. Two operations are
+    ordered relative to each other only when one fed the other, so genuinely
+    parallel branches stay unordered.
 
-    The id comes from the name, which holds still when somebody inserts a step
-    upstream. A positional id would shift every operation after the new one, so no
-    id would survive an edit to the pipeline. Comparing an operation across runs
-    goes through ``name``, since ``op_id`` carries ``run_id`` and so differs every
-    run by design.
-
-    ``physical_source`` and ``physical_dest`` name locations an operation read and
-    wrote, one entry per dataset root. They are how intermediate scratch stays
-    visible: something materialised halfway through a job and read back later is an
-    operation with a destination and no effect on any identity. Which of these
-    locations are boundaries is not cairn's to say, since it has no idea what lies
-    outside a run.
+    ``op_id`` derives from ``op_key``, which holds still when somebody inserts a
+    step upstream. Comparing one operation across runs goes through ``op_key``,
+    since ``op_id`` carries ``run_id`` and so differs every run by design.
     """
 
     op_id: str
     run_id: str
-    name: str
-    reason: str
-    records_captured: RecordsCaptured
-    parent_op_ids: Tuple[str, ...] = ()
-    recording_method: Optional[RecordingMethod] = None
-    output_id_cols: Optional[IdSpec] = None
-    physical_source: Optional[Tuple[str, ...]] = None
-    physical_dest: Optional[Tuple[str, ...]] = None
+    op_key: str
+    description: str
+    timestamp: datetime
+    code_ref: Optional[str] = None
+    code_version: Optional[str] = None
+    output_key_columns: Optional[Tuple[str, ...]] = None
+    has_row_detail: bool = False
+    physical_source: Optional[str] = None
+    physical_dest: Optional[str] = None
+    input_op_ids: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "parent_op_ids", tuple(self.parent_op_ids))
-        for name in ("physical_source", "physical_dest"):
-            value = getattr(self, name)
-            if value is not None:
-                object.__setattr__(self, name, tuple(value))
+        object.__setattr__(self, "input_op_ids", tuple(self.input_op_ids))
+        if self.output_key_columns is not None:
+            object.__setattr__(
+                self, "output_key_columns", tuple(self.output_key_columns)
+            )
 
 
-#: Which ends an edge of each kind carries, as ``(input, output)``.
-ENDPOINTS: Mapping[EdgeKind, Tuple[bool, bool]] = {
-    EdgeKind.DROP: (True, False),
-    EdgeKind.MINT: (False, True),
-    EdgeKind.DERIVED_FROM: (True, True),
-    EdgeKind.CONTENT_CHANGE: (True, True),
-    EdgeKind.FLAGGED: (True, True),
-}
-
-#: Kinds that move values, and so must say how in ``column_change`` whenever they
-#: name columns. A flag can name the column it is about without one, because
-#: nothing about that column changed.
-VALUE_MOVING: Tuple[EdgeKind, ...] = (EdgeKind.CONTENT_CHANGE, EdgeKind.DERIVED_FROM)
+def op_type_of(op: Op) -> OpType:
+    """Work out an operation's shape from the locations it touches."""
+    reads = op.physical_source is not None
+    writes = op.physical_dest is not None
+    if reads and writes:
+        return OpType.COPY
+    if reads:
+        return OpType.READ
+    if writes:
+        return OpType.WRITE
+    return OpType.TRANSFORM
 
 
 @dataclass(frozen=True)
 class Column:
-    """One column of one cairn table.
+    """One column of one Cairn table.
 
-    ``type`` is drawn from a small vocabulary, ``string``, ``int``, and
-    ``string[]``, which an adapter maps onto its own type system.
+    ``type`` comes from a small vocabulary, ``string``, ``bool``, ``timestamp``,
+    and ``string[]``, which an adapter maps onto its own type system.
     """
 
     name: str
@@ -230,113 +173,171 @@ class Column:
     doc: str
 
 
-OP_COLUMNS: Tuple[Column, ...] = (
-    Column(
-        "run_id",
-        "string",
-        False,
-        "One writer's execution. Several runs make up a larger unit of work, and"
-        " concatenating their records is how that unit gets assembled.",
-    ),
+OPERATION_COLUMNS: Tuple[Column, ...] = (
     Column(
         "op_id",
         "string",
         False,
-        "Derived from run_id and name, so it is unique across runs and records"
-        " concatenate safely. Compare an operation between runs on name.",
+        "Derived from run_id and op_key, so it stays unique when Cairns from"
+        " different bundles are collected. Compare one operation between runs on"
+        " op_key.",
     ),
     Column(
-        "parent_op_ids",
+        "run_id",
+        "string",
+        False,
+        "The run of the bundle this Cairn lives in. Several runs make up a larger"
+        " unit of work, and collecting their Cairns is how that unit gets"
+        " assembled.",
+    ),
+    Column(
+        "op_key",
+        "string",
+        False,
+        "A descriptive slug for the operation, unique within a run.",
+    ),
+    Column(
+        "code_ref",
+        "string",
+        True,
+        "The fully-qualified module and function holding this operation's logic.",
+    ),
+    Column(
+        "code_version",
+        "string",
+        True,
+        "The revision of the code that ran, which is what tells you whether the"
+        " logic moved between two runs.",
+    ),
+    Column(
+        "output_key_columns",
+        "string[]",
+        True,
+        "The columns this operation's output is keyed on. Row detail ids are read"
+        " positionally against these.",
+    ),
+    Column("description", "string", False, "What this operation did, in prose."),
+    Column(
+        "has_row_detail",
+        "bool",
+        False,
+        "Whether this operation may have entries in the row detail table.",
+    ),
+    Column(
+        "physical_source",
+        "string",
+        True,
+        "The location this operation read. An operation reading several locations"
+        " is split into one read apiece.",
+    ),
+    Column(
+        "physical_dest",
+        "string",
+        True,
+        "The location this operation wrote. An operation writing several locations"
+        " is split into one write apiece.",
+    ),
+    Column(
+        "input_op_ids",
         "string[]",
         True,
         "The operations whose output this one consumed.",
     ),
     Column(
-        "name", "string", False, "What the operation is called. Unique within a run."
-    ),
-    Column("reason", "string", False, "What the operation is for, in prose."),
-    Column(
-        "records_captured",
-        "string",
+        "timestamp",
+        "timestamp",
         False,
-        "Whether the edges account for every identity this operation touched.",
-    ),
-    Column(
-        "recording_method",
-        "string",
-        True,
-        "Where the account came from. Null when there was nothing to capture.",
-    ),
-    Column(
-        "output_id_cols",
-        "string[]",
-        True,
-        "Columns identifying the records this operation emits.",
-    ),
-    Column(
-        "physical_source",
-        "string[]",
-        True,
-        "Locations this operation read, one entry per dataset root and never per"
-        " partition. Which records it took from them is what the edges are for.",
-    ),
-    Column(
-        "physical_dest",
-        "string[]",
-        True,
-        "Locations this operation wrote, one entry per dataset root.",
+        "When this operation was logged, which is not always when it ran.",
     ),
 )
 
-EDGE_COLUMNS: Tuple[Column, ...] = (
-    Column("op_id", "string", False, "The operation this edge belongs to."),
+ROW_DETAIL_COLUMNS: Tuple[Column, ...] = (
+    Column("op_id", "string", False, "The operation this entry belongs to."),
     Column(
         "input_op_id",
         "string",
         True,
-        "The operation that produced this edge's input record. One of the operation's"
-        " parents, and what says how to read input_id.",
+        "Which of the operation's inputs this entry's input_id belongs to, and so"
+        " which output_key_columns to read it against. Null when the operation has"
+        " one input, since there is nothing to disambiguate.",
     ),
-    Column("kind", "string", False, "What became of the identity."),
-    Column("input_id", "string[]", True, "Identity on the way in, absent for a mint."),
+    Column("kind", "string", False, "What happened to the ids."),
     Column(
-        "output_id", "string[]", True, "Identity on the way out, absent for a drop."
-    ),
-    Column(
-        "columns",
+        "input_id",
         "string[]",
         True,
-        "Which columns the edge is about. Null means the whole record, and null is"
-        " right unless more than one donor could have supplied the value.",
+        "Identity on the way in, absent for a mint. Positional against the input"
+        " operation's output_key_columns.",
+    ),
+    Column(
+        "output_id",
+        "string[]",
+        True,
+        "Identity on the way out, absent for a drop. Positional against this"
+        " operation's output_key_columns.",
+    ),
+    Column(
+        "affected_output_columns",
+        "string[]",
+        True,
+        "Which output columns this entry concerns. Null means all of them.",
     ),
     Column(
         "column_change",
         "string",
         True,
-        "How those columns changed. Set with columns for a kind that moves values,"
-        " and null for a flag, which names a column without changing it.",
+        "What happened to those columns' values. Only a content_changed entry can"
+        " carry one, and null there means the fate went unstated.",
     ),
-    Column("detail", "string", True, "Why, for this particular record."),
+    Column("detail", "string", True, "How this particular record was changed."),
 )
 
 
 def op_row(op: Op) -> Dict[str, Any]:
-    """Flatten an operation into the row shape ``OP_COLUMNS`` describes.
+    """Flatten an operation into the row shape ``OPERATION_COLUMNS`` describes.
 
-    An adapter renders every operation through this, so two adapters writing the
+    Every adapter renders operations through this, so two adapters writing the
     same run produce the same rows.
     """
+    row: Dict[str, Any] = {}
+    for column in OPERATION_COLUMNS:
+        value = getattr(op, column.name)
+        row[column.name] = list(value) if isinstance(value, tuple) else value
+    return row
+
+
+def row_detail_row(
+    op_id: str,
+    kind: Kind,
+    *,
+    input_op_id: Optional[str] = None,
+    input_id: Optional[Sequence[str]] = None,
+    output_id: Optional[Sequence[str]] = None,
+    affected_output_columns: Optional[Sequence[str]] = None,
+    column_change: Optional[ColumnChange] = None,
+    detail: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build one row detail entry in the shape ``ROW_DETAIL_COLUMNS`` describes.
+
+    Convenience for tests and for adapters assembling small sets by hand. An
+    adapter working at scale builds these as columns instead, in which case this
+    is the reference for key order and value types.
+    """
     return {
-        "run_id": op.run_id,
-        "op_id": op.op_id,
-        "parent_op_ids": list(op.parent_op_ids),
-        "name": op.name,
-        "reason": op.reason,
-        "records_captured": op.records_captured.value,
-        "recording_method": op.recording_method.value if op.recording_method else None,
-        "output_id_cols": list(op.output_id_cols.columns)
-        if op.output_id_cols
+        "op_id": op_id,
+        "input_op_id": input_op_id,
+        "kind": kind.value if isinstance(kind, Kind) else kind,
+        "input_id": list(input_id) if input_id is not None else None,
+        "output_id": list(output_id) if output_id is not None else None,
+        "affected_output_columns": list(affected_output_columns)
+        if affected_output_columns is not None
         else None,
-        "physical_source": list(op.physical_source) if op.physical_source else None,
-        "physical_dest": list(op.physical_dest) if op.physical_dest else None,
+        "column_change": column_change.value
+        if isinstance(column_change, ColumnChange)
+        else column_change,
+        "detail": detail,
     }
+
+
+#: Every field of :class:`Op`, for checking the type and the schema agree.
+OP_FIELD_NAMES: Tuple[str, ...] = tuple(f.name for f in fields(Op))

@@ -1,126 +1,245 @@
-"""The run: what pipeline code holds while it reports what it is doing.
+"""The run: what pipeline code holds while it records what it is doing.
 
-A run holds operations and nothing else, so its memory cost does not depend on how
-much data passed through it. Edges never reach it, and neither does any writing:
-an adapter reads the finished operations off a run and puts both tables wherever
-it keeps them.
+A run holds operations and nothing else, so its memory cost depends on how many
+steps a job has rather than on how much data went through them. Row detail never
+reaches here, and neither does any writing. An adapter reads the finished
+operations off a run and puts both tables wherever it keeps them.
 
-Outline only. Bodies are not written yet.
+The four recording methods correspond to the four operation shapes, and each one
+accepts only the arguments its shape allows. A read takes a location and no input
+operation, a write takes one input operation and a location, and a transform takes
+inputs and no location. Going through them makes the shape rules in
+:mod:`overture_cairn.core.validate` hard to break by accident, while the table
+itself stays one flat schema.
 """
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence
+import sys
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 from overture_cairn.core.errors import Problems
-from overture_cairn.core.model import IdSpec, Op, RecordingMethod, RecordsCaptured
+from overture_cairn.core.model import Op, op_id_for, op_row
+from overture_cairn.core.validate import check_acyclic, check_operations
 
-#: Tells the difference between a caller saying nothing about parents and a caller
-#: saying this operation has none. The first inherits the previous operation, so a
-#: plain sequence of steps forms a chain without anyone naming anything. The second
-#: starts a branch.
-INHERIT = object()
+#: An input may be given as an operation or as its id.
+InputOp = Union[Op, str]
+
+
+def _op_id(value: InputOp) -> str:
+    return value.op_id if isinstance(value, Op) else value
+
+
+def _caller_code_ref() -> Optional[str]:
+    """Name the function that asked for an operation to be recorded.
+
+    Walks out past Cairn's own frames, so the reference lands on pipeline code
+    whichever recording method it arrived through.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if not module.startswith("overture_cairn"):
+            return f"{module}.{frame.f_code.co_qualname}"
+        frame = frame.f_back
+    return None
 
 
 class Run:
     """One writer's operations, held until the run is finished.
 
-    A run is one execution of one writer, which is finer than whatever unit of work
-    it belongs to. Anything bigger, a bundle or a pipeline, is several runs whose
-    records get concatenated, and their operations link through matching locations
-    because no writer can see another's ids. Scoping a run this way is what makes
-    the name check below sound: every operation in a run passes through this object,
-    so a duplicate name cannot slip past in another process.
+    A run is one execution of one writer, which is finer than the unit of work it
+    belongs to. A bundle or a pipeline is several runs whose Cairns get collected,
+    and their operations line up through matching locations, because no writer can
+    see another's operation ids. Scoping a run this way is what makes the key check
+    below sound: every operation passes through this object, so a duplicate key
+    cannot slip past in another process.
 
-    Operations number in the hundreds at most, so keeping them all costs nothing.
-
-    Three helpers register one, and between them they reach every combination of
-    ``records_captured`` and ``recording_method`` the record allows. An operation
-    that touched no identities goes to :meth:`not_applicable`. The rest go to
-    :meth:`declared` or :meth:`compared`, depending on how you found out what
-    happened. Completeness is an argument on those two, because it varies
-    independently of both.
+    Operations number in the hundreds at most, so keeping all of them costs
+    nothing.
     """
 
     def __init__(
         self,
-        run_id: Optional[str] = None,
+        run_id: str,
         *,
         strict: bool = False,
-        output_id_cols: Optional[IdSpec] = None,
+        code_version: Optional[str] = None,
+        output_key_columns: Optional[Sequence[str]] = None,
     ) -> None:
-        self.run_id: str = run_id or ""
+        self.run_id = run_id
         self.problems = Problems(strict=strict)
-        #: What operations emit unless one names its own grain. Most runs work at
-        #: one grain throughout, so naming it here keeps it off every call.
-        self.output_id_cols = output_id_cols
+        #: The revision recorded on operations that name none of their own. Most
+        #: runs are one deployed commit, so naming it here keeps it off every call.
+        self.code_version = code_version
+        #: What operations are keyed on unless one names its own grain. Most runs
+        #: work at one grain throughout.
+        self.output_key_columns = (
+            tuple(output_key_columns) if output_key_columns is not None else None
+        )
         self.ops: List[Op] = []
+        self._keys: Dict[str, Op] = {}
 
-    def record(
+    def read(
         self,
-        name: str,
-        reason: str,
+        op_key: str,
+        description: str,
+        source: str,
         *,
-        records_captured: RecordsCaptured,
-        recording_method: Optional[RecordingMethod] = None,
-        parents: Any = INHERIT,
-        output_id_cols: Optional[IdSpec] = None,
-        physical_source: Optional[Sequence[str]] = None,
-        physical_dest: Optional[Sequence[str]] = None,
+        output_key_columns: Optional[Sequence[str]] = None,
+        **kwargs: Any,
     ) -> Op:
-        """Register an operation and return it.
+        """Record taking records out of a location.
 
-        Callers go through one of the three helpers below, which is what stops an
-        operation reaching the record without saying how well it is accounted for.
-
-        ``parents`` accepts operations or their ids. Pass it when a step consumes
-        more than one lineage, and pass nothing where a step follows the one before
-        it.
+        A read starts a branch, so it consumes no operation. Reading a dataset
+        whose records already carry ids leaves those identities alone, and the
+        first operation to assert a key over them is what says what they are.
         """
-        raise NotImplementedError
+        return self._record(
+            op_key,
+            description,
+            physical_source=source,
+            output_key_columns=output_key_columns,
+            **kwargs,
+        )
 
-    def declared(
-        self, name: str, reason: str, *, complete: bool = True, **kwargs: Any
+    def write(
+        self,
+        op_key: str,
+        description: str,
+        dest: str,
+        *,
+        input: InputOp,
+        **kwargs: Any,
     ) -> Op:
-        """The operation says what it did to record identities.
+        """Record putting one operation's output in a location.
 
-        ``complete=False`` marks an operation that reported some of what it did and
-        left the rest unaccounted for, which is how a black box gets opened a piece
-        at a time. Finishing it later flips this one argument.
+        Nothing may consume a write. Whatever comes next reaches this data by
+        reading the location back, which is what keeps a materialized handoff
+        visible instead of hidden behind a link.
         """
-        raise NotImplementedError
+        return self._record(
+            op_key,
+            description,
+            inputs=[input],
+            physical_dest=dest,
+            **kwargs,
+        )
 
-    def compared(
-        self, name: str, reason: str, *, complete: bool = True, **kwargs: Any
+    def copy(
+        self,
+        op_key: str,
+        description: str,
+        source: str,
+        dest: str,
+        *,
+        input: InputOp,
+        **kwargs: Any,
     ) -> Op:
-        """Something worked out what the operation did by comparing its ends.
+        """Record moving bytes from one location to another.
 
-        Yields what changed and never why.
+        Mirroring a release to a second bucket is a copy. The grain carries over
+        from the input, since relocating records leaves them as they were.
         """
-        raise NotImplementedError
+        return self._record(
+            op_key,
+            description,
+            inputs=[input],
+            physical_source=source,
+            physical_dest=dest,
+            **kwargs,
+        )
 
-    def not_applicable(self, name: str, reason: str, **kwargs: Any) -> Op:
-        """The operation handles no records at all.
+    def transform(
+        self,
+        op_key: str,
+        description: str,
+        *,
+        inputs: Sequence[InputOp],
+        output_key_columns: Optional[Sequence[str]] = None,
+        has_row_detail: bool = False,
+        **kwargs: Any,
+    ) -> Op:
+        """Record work done on records between a read and a write.
 
-        Checking that a location exists, listing what is in one, comparing a
-        schema. Each of these is a finished statement, and the record should read
-        that way. There is no method to give, because nothing was captured either
-        way.
-
-        The line is whether records passed through, not whether any identity
-        changed. A write handles every record it persists, so it belongs in
-        :meth:`declared` with no edges, and so does a filter that dropped nothing
-        this time. Both of those could have had something to say; these cannot.
+        This covers filters, joins, merges, enrichments, and checks. Set
+        ``has_row_detail`` when the adapter will write entries for this operation,
+        which is how a reader knows to look for them.
         """
-        raise NotImplementedError
+        return self._record(
+            op_key,
+            description,
+            inputs=inputs,
+            output_key_columns=output_key_columns,
+            has_row_detail=has_row_detail,
+            **kwargs,
+        )
+
+    def _record(
+        self,
+        op_key: str,
+        description: str,
+        *,
+        inputs: Sequence[InputOp] = (),
+        output_key_columns: Optional[Sequence[str]] = None,
+        has_row_detail: bool = False,
+        physical_source: Optional[str] = None,
+        physical_dest: Optional[str] = None,
+        code_ref: Optional[str] = None,
+        code_version: Optional[str] = None,
+        timestamp: Optional[datetime] = None,
+    ) -> Op:
+        """Build an operation, register it, and hand it back.
+
+        Registering happens when the calling code says so rather than when a
+        compute engine gets around to the work, so the order operations arrive in
+        is the order the code composed them, whatever the engine does with them
+        later.
+        """
+        op = Op(
+            op_id=op_id_for(self.run_id, op_key),
+            run_id=self.run_id,
+            op_key=op_key,
+            description=description,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            code_ref=code_ref or _caller_code_ref(),
+            code_version=code_version or self.code_version,
+            output_key_columns=(
+                tuple(output_key_columns)
+                if output_key_columns is not None
+                else self.output_key_columns
+            ),
+            has_row_detail=has_row_detail,
+            physical_source=physical_source,
+            physical_dest=physical_dest,
+            input_op_ids=tuple(_op_id(i) for i in inputs),
+        )
+
+        clash = self._keys.get(op.op_id)
+        if clash is not None:
+            self.problems.report(
+                "op.op_key",
+                f"{op_key!r} is already the key of an operation in this run; give"
+                " each one a key that says which invocation it is",
+                op.op_id,
+            )
+        self._keys[op.op_id] = op
+        self.ops.append(op)
+        return op
+
+    def operation_rows(self) -> List[Dict[str, Any]]:
+        """Flatten every operation into rows for an adapter to write."""
+        return [op_row(op) for op in self.ops]
 
     def validate(self) -> Problems:
-        raise NotImplementedError
+        """Check the operations table, including that its links form a DAG."""
+        check_operations(self.ops, self.problems)
+        check_acyclic(self.ops, self.problems)
+        return self.problems
 
-    def finish(self) -> Problems:
-        """Check the record and close it to further operations.
+    def __len__(self) -> int:
+        return len(self.ops)
 
-        Writing is the adapter's job, so this leaves the operations on the run for
-        it to collect.
-        """
-        raise NotImplementedError
+    def __iter__(self) -> Iterable[Op]:
+        return iter(self.ops)
