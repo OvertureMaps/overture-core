@@ -166,6 +166,11 @@ class Run:
         This covers filters, joins, merges, enrichments, and checks. Set
         ``has_row_detail`` when the adapter will write entries for this operation,
         which is how a reader knows to look for them.
+
+        A reader takes a missing entry to mean the record passed through untouched,
+        and no operation can opt out of that. An operation that changes identities
+        it cannot account for should say so in its ``description``, since a partial
+        set of entries would be a set nobody can count.
         """
         return self._record(
             op_key,

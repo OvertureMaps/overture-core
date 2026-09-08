@@ -172,6 +172,59 @@ def _report_cycle(cycle: List[str], problems: Problems, reported: set) -> None:
     )
 
 
+def check_row_detail(
+    rows: Iterable[Mapping[str, Any]], ops: Iterable[Op], problems: Problems
+) -> Problems:
+    """Check row detail entries against the operations they name.
+
+    Three rules need both tables. An entry names an operation the Cairn holds, that
+    operation is a transform, and an operation carrying entries says so in
+    ``has_row_detail``. The per-entry rules run here too, with the operation's
+    inputs passed in so the input pointer gets checked.
+
+    Written for a set small enough to hold. An adapter at scale does this as a join
+    and a filter, and :func:`check_row_detail_row` is the per-entry half it ports.
+    """
+    by_id = {op.op_id: op for op in ops}
+    carrying = set()
+
+    for row in rows:
+        op_id = row.get("op_id")
+        op = by_id.get(op_id)
+        if op is None:
+            problems.report(
+                "row.op_id", f"no operation in this Cairn is {op_id}", str(op_id)
+            )
+            continue
+
+        carrying.add(op.op_id)
+        shape = op_type_of(op)
+        if shape is not OpType.TRANSFORM:
+            problems.report(
+                "row.op_id",
+                f"{op.op_key} is a {shape.value}, which touches no record contents,"
+                " so it has no row detail",
+                op.op_id,
+            )
+        for rule in check_row_detail_row(row, op.input_op_ids):
+            problems.report(
+                rule,
+                f"a {row.get('kind')} entry for {row.get('input_id')} to"
+                f" {row.get('output_id')} breaks this rule",
+                op.op_id,
+            )
+
+    for op_id in sorted(carrying):
+        if not by_id[op_id].has_row_detail:
+            problems.report(
+                "op.has_row_detail",
+                "this operation carries row detail entries, so has_row_detail"
+                " should be true",
+                op_id,
+            )
+    return problems
+
+
 def check_row_detail_row(
     row: Mapping[str, Any], input_op_ids: Optional[Collection[str]] = None
 ) -> List[str]:
@@ -255,6 +308,12 @@ def _check_columns(row: Mapping[str, Any], kind: Kind) -> List[str]:
             broken.append("row.column_change")
         elif _as_column_change(change) is None:
             broken.append("row.column_change")
+
+    # A content change naming no columns and giving no detail claims that something
+    # about the record moved without saying what. A flag needs neither, since the
+    # operation it belongs to is the finding.
+    if kind is Kind.CONTENT_CHANGED and columns is None and not row.get("detail"):
+        broken.append("row.empty_content_change")
     return broken
 
 

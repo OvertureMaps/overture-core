@@ -41,6 +41,7 @@ An operation is essentially *a directed relationship* that transforms one or mul
 * The directed graph formed by joining `op_id`s by `input_op_ids` must be acyclic.
 * Every element of `input_op_ids` is present in the aggregate `op_id`s of the Cairn.
 * Each `op_id` is unique.
+* If `physical_source` or `physical_dest` is not null, `has_row_detail` is `false`. Reads, writes, and copies move records without touching their contents, so they have nothing to report.
 
 Given these requirements, the "type" of operation is actually easily inferrable from the operation's parameters:
 * "Read" operations have non-null `physical_source`.
@@ -58,7 +59,7 @@ These rules also enforce a level of tracking detail: if a job reads from multipl
 | `kind` | The kind of relationship: `dropped`, `minted`, `derived_from`, `content_changed`, or `flagged`. | Justification below. | `"minted" (str)` |
 | `input_id` | The input record ID. | - | `["42", "tomtom"] (array[str])` |
 | `output_id` | The output record ID. | - | `["1337", "meta"] (array[str])` |
-| `affected_output_columns` | This array asks: which columns in the output table does this entry concern? `Null` means 'all of them'. | If `kind=derived_from`, these are the columns the input record supplied. If `kind=content_changed`, these are the columns that changed. If `kind=flagged`, these are the flagged columns. | `["height", "name"] (array[str])` |
+| `affected_output_columns` | This array asks: which columns in the output table does this entry concern? `Null` means 'all of them'. | If `kind=derived_from`, these are the columns the input record supplied. If `kind=content_changed`, these are the columns that changed. If `kind=flagged`, these are the flagged columns (violations, check results). | `["height", "name"] (array[str])` |
 | `column_change` | What happened to the values in `affected_output_columns`: `set` (previously empty), `replaced` (overwritten), or `cleared` (removed). One value per entry. If the answer varies depending on the column, then just write multiple rows to this table. | `affected_output_columns` says which columns were transfered from input to output; this adds detail to that, indicating whether it's a replacement/blanking/removal. It's only meaningful when `kind=content_changed` because that's the only time when a record has a before and an after to compare. Implementers shouldn't normally have to fill this by hand, and the field is generally nullable and optional. | `"set" (str)` |
 | `detail` | How this record was changed. | The "why" lives in the operations table, the "how" lives here. | - |
 
@@ -97,7 +98,7 @@ Merges don't use `column_change` (there's no before-state on the output record t
 | derived_from | [A] | [C] | null | base record, won on confidence |
 | derived_from | [B] | [C] | ["websites"] | higher-confidence website |
 
-"Which record did C get its website from?" is answered by finding the `derived_from` entry into C whose column list names it. Note that the grouping criterion differs by `kind`: `derived_from` entries group columns by donor (one entry per input/output pair), while `content_changed` entries group columns by fate (one entry per `column_change` value). The two never collide, because a `content_changed` entry has exactly one input and a `derived_from` entry has no fate to record.
+"Which record did C get its website from?" is answered by finding the `derived_from` entry into C whose column list names it. Note that entries group their columns differently depending on `kind`: a `derived_from` entry covers one input record, so it lists every column that record supplied, while a `content_changed` entry covers one `column_change` value, so it lists every column that met the same fate. The two never collide, because a `content_changed` entry has exactly one input and a `derived_from` entry has no fate to record.
 
 #### Per-Cairn Row Detail Table Validations
 * Every operation referenced in `row_detail` (via `op_id`) must have null `physical_source` and `physical_dest`.
@@ -110,6 +111,18 @@ Merges don't use `column_change` (there's no before-state on the output record t
 * If `kind=derived_from`, `input_id` must differ from `output_id`.
 * `column_change` must be null unless `kind=content_changed`.
 * If `kind=dropped` or `kind=minted`, `affected_output_columns` must be null.
+* Any operation carrying entries has `has_row_detail=true`.
+* If `kind=content_changed`, at least one of `affected_output_columns` and `detail` is non-null. An entry with neither says something changed without saying what. A `flagged` entry needs neither, since the operation it belongs to is the finding.
+
+#### When to name columns
+
+Column-level detail is only necessary when *more than one input could have supplied the output value*.
+
+Including it at other times is allowed. The thing to avoid is mixing conventions inside one operation: `null` means "all of them", so naming columns on some entries and not others leaves a reader unable to tell which of the two a `null` meant.
+
+#### Grain changes end a trace
+
+A missing entry means a record passed through untouched, and that claim holds only while the output records are the same kind of thing as the input records. An operation whose `output_key_columns` differ from its inputs' has changed grain: an aggregate keyed by category consumes records keyed by id, so nothing passed through it and a reader walking forward has to stop there. Changing grain is a legitimate thing for an operation to do, so no validation forbids it, but both key column sets sit in the operations table and a reader can compare them.
 
 ### Cairn does not support column-level tracking alone
 
@@ -139,7 +152,7 @@ Row detail for `drop_invalid_geometry`:
 | -- | -- | -- | -- |
 | dropped | ["osm/w123"] | null | invalid geometry |
 
-Only the removed rows get entries. A record with no entry passed through untouched, which is what keeps row detail affordable. The read and write ops have no row detail of their own.
+Only the removed rows get entries. A record with no entry passed through untouched, so most records do not need an entry. The read and write ops have no row detail of their own.
 
 ### Minting ids
 
@@ -170,7 +183,7 @@ One record becomes several, each with its own new id. Several `derived_from` ent
 | derived_from | ["w1"] | ["w1-a"] | subdivided for tiling |
 | derived_from | ["w1"] | ["w1-b"] | subdivided for tiling |
 
-A merge is the same shape with the repetition on the other side (several entries sharing an `output_id`). See the column-level provenance section above for a merge that also attributes columns to donors.
+A merge is the same shape with the repetition on the other side (several entries sharing an `output_id`). See the column-level provenance section above for a merge that also records which inputs supplied which columns.
 
 ### An enrichment
 

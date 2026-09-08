@@ -17,6 +17,7 @@ from overture_cairn.core.model import (
     Kind,
     Op,
     OpType,
+    changes_grain,
     op_id_for,
     op_row,
     op_type_of,
@@ -28,6 +29,7 @@ from overture_cairn.core.validate import (
     check_acyclic,
     check_operation,
     check_operations,
+    check_row_detail,
     check_row_detail_row,
 )
 
@@ -51,9 +53,11 @@ __all__ = [
     "Run",
     "SAME_ID_KINDS",
     "WHOLE_RECORD_KINDS",
+    "changes_grain",
     "check_acyclic",
     "check_operation",
     "check_operations",
+    "check_row_detail",
     "check_row_detail_row",
     "op_id_for",
     "op_row",

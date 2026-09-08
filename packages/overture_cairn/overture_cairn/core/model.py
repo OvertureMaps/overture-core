@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, fields
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 #: The two tables a Cairn is made of. Fixed, because collecting Cairns from
 #: different adapters means finding the same two names in each.
@@ -158,6 +158,19 @@ def op_type_of(op: Op) -> OpType:
     return OpType.TRANSFORM
 
 
+def changes_grain(op: Op, inputs: Iterable[Op]) -> bool:
+    """Whether an operation's output is keyed differently from its inputs.
+
+    A missing row detail entry means a record passed through unchanged, and that
+    claim holds only while the output records are the same kind of thing as the
+    input records. An aggregate keyed by category consumes records keyed by id, so
+    nothing passed through it and a reader walking forward has to stop there.
+    Changing grain is a legitimate thing for an operation to do, which is why this
+    reports a fact and no rule forbids it.
+    """
+    return any(i.output_key_columns != op.output_key_columns for i in inputs)
+
+
 @dataclass(frozen=True)
 class Column:
     """One column of one Cairn table.
@@ -220,7 +233,8 @@ OPERATION_COLUMNS: Tuple[Column, ...] = (
         "has_row_detail",
         "bool",
         False,
-        "Whether this operation may have entries in the row detail table.",
+        "Whether this operation may have entries in the row detail table. A cached"
+        " fact, so a validator can confirm it against those entries.",
     ),
     Column(
         "physical_source",
@@ -279,7 +293,11 @@ ROW_DETAIL_COLUMNS: Tuple[Column, ...] = (
         "affected_output_columns",
         "string[]",
         True,
-        "Which output columns this entry concerns. Null means all of them.",
+        "Which output columns this entry concerns, where null means all of them."
+        " Under derived_from these are the columns the input supplied, under"
+        " content_changed the ones whose values changed, and under flagged the ones"
+        " being called out. Only name columns when more than one input could have"
+        " supplied the value.",
     ),
     Column(
         "column_change",

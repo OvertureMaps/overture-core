@@ -21,8 +21,10 @@ from overture_cairn import (
     OpType,
     Problems,
     Run,
+    changes_grain,
     check_acyclic,
     check_operations,
+    check_row_detail,
     check_row_detail_row,
     op_id_for,
     op_row,
@@ -280,8 +282,95 @@ def test_an_empty_column_list_says_nothing():
     assert "row.affected_output_columns" in check_row_detail_row(row)
 
 
+def test_a_content_change_says_what_changed():
+    """Naming no columns and giving no detail claims something moved without saying
+    what."""
+    row = row_detail_row("r1.o", Kind.CONTENT_CHANGED, input_id=["a"], output_id=["a"])
+    assert "row.empty_content_change" in check_row_detail_row(row)
+
+
+@pytest.mark.parametrize(
+    "columns,detail",
+    [
+        (["height"], None),
+        (None, "geometry snapped to grid"),
+        (["height"], "from lidar"),
+    ],
+)
+def test_either_columns_or_detail_satisfies_a_content_change(columns, detail):
+    row = row_detail_row(
+        "r1.o",
+        Kind.CONTENT_CHANGED,
+        input_id=["a"],
+        output_id=["a"],
+        affected_output_columns=columns,
+        detail=detail,
+    )
+    assert check_row_detail_row(row) == []
+
+
+def test_a_flag_needs_neither_columns_nor_detail():
+    """The operation a flag belongs to is the finding, so the entry can be bare."""
+    row = row_detail_row("r1.o", Kind.FLAGGED, input_id=["a"], output_id=["a"])
+    assert check_row_detail_row(row) == []
+
+
 def test_an_unknown_kind_stops_the_check():
     assert check_row_detail_row({"kind": "mangled"}) == ["row.kind"]
+
+
+# Row detail against the operations it names
+
+
+def test_an_entry_must_name_an_operation_that_exists():
+    rows = [row_detail_row("r1.ghost", Kind.DROPPED, input_id=["a"])]
+    problems = check_row_detail(rows, [an_op("o")], Problems())
+    assert any(p.rule == "row.op_id" for p in problems.items)
+
+
+def test_a_physical_operation_carries_no_entries():
+    read = an_op("read", physical_source="s3://in")
+    rows = [row_detail_row(read.op_id, Kind.DROPPED, input_id=["a"])]
+    problems = check_row_detail(rows, [read], Problems())
+    assert any("touches no record contents" in p.message for p in problems.items)
+
+
+def test_an_operation_with_entries_says_so():
+    op = an_op("o", has_row_detail=False)
+    rows = [row_detail_row(op.op_id, Kind.DROPPED, input_id=["a"])]
+    problems = check_row_detail(rows, [op], Problems())
+    assert any(p.rule == "op.has_row_detail" for p in problems.items)
+
+
+def test_the_cross_table_check_runs_the_per_entry_rules():
+    """A malformed entry gets reported through the operation it belongs to, so the
+    two halves of the row rules do not have to be called separately."""
+    op = an_op("o", has_row_detail=True)
+    rows = [row_detail_row(op.op_id, Kind.DROPPED, input_id=["a"], output_id=["a"])]
+    problems = check_row_detail(rows, [op], Problems())
+    assert any(p.rule == "row.output_id" for p in problems.items)
+
+
+def test_sound_row_detail_finds_nothing_to_report():
+    op = an_op("drop_invalid", has_row_detail=True)
+    rows = [
+        row_detail_row(op.op_id, Kind.DROPPED, input_id=["a"], detail="bad geometry"),
+        row_detail_row(op.op_id, Kind.DROPPED, input_id=["b"], detail="bad geometry"),
+    ]
+    assert check_row_detail(rows, [op], Problems()).items == []
+
+
+# Grain
+
+
+def test_a_grain_change_is_visible():
+    """Absence means unchanged, and that claim says nothing once the output records
+    stop being the same kind of thing as the inputs."""
+    records = an_op("records", output_key_columns=["id"])
+    counts = an_op("counts", output_key_columns=["category"])
+    same = an_op("tidy", output_key_columns=["id"])
+    assert changes_grain(counts, [records]) is True
+    assert changes_grain(same, [records]) is False
 
 
 # Which input an entry came in on

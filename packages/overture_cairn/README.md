@@ -13,7 +13,7 @@ A Cairn is two tables:
 
 Row detail entries are deltas. A record an operation did not touch gets no entry,
 and that absence means it passed through unchanged. Writing the untouched case
-explicitly would cost a row per record per step for a fact that is already true by
+explicitly would mean a row per record per step, for something already true by
 default.
 
 Cairns live inside the bundle they describe. Collecting the full lineage chain
