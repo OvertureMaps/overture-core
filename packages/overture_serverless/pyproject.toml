@@ -35,13 +35,13 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 # the job container, not inside Airflow -- never pull in Airflow itself.
 fargate = [
     "apache-airflow>=2.9,<3",
-    "apache-airflow-providers-amazon>=8.13.0,<9",
+    "apache-airflow-providers-amazon>=8.13.0,<10",
 ]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
     "apache-airflow>=2.9,<3",
-    "apache-airflow-providers-amazon>=8.13.0,<9",
+    "apache-airflow-providers-amazon>=8.13.0,<10",
 ]
 
 [build-system]
