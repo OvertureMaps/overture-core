@@ -117,6 +117,79 @@ Cairn does not track columnar lineage in the Operations table. To explain why, c
 
 A structured, dataset-level record of *which* columns fed which would have to describe arbitrary selection logic: confidence comparisons, priority orders, fallback chains, and so on. That logic does not reliably fall into a small, closed schema, and attempting to track it would probably be more trouble than it's worth. Instead, each operation holds a plaintext `description` and a pointer to its associated code.
 
+## Examples
+
+These show how common pipeline shapes land in the two tables. The `run_id` prefix on op ids is omitted for brevity, and each table only shows the columns that matter for the example.
+
+### A filter
+
+The skeleton of almost every job: read something, transform it, write it out. Here the transform is a validity filter.
+
+Operations:
+
+| op_key | description | physical_source | physical_dest | input_op_ids | has_row_detail |
+| -- | -- | -- | -- | -- | -- |
+| read_land | Read staged land features | s3://.../land/ | null | [] | false |
+| drop_invalid_geometry | Remove rows whose geometry fails validity checks | null | null | [read_land] | true |
+| write_land | Write cleaned land features | null | s3://.../land_clean/ | [drop_invalid_geometry] | false |
+
+Row detail for `drop_invalid_geometry`:
+
+| kind | input_id | output_id | detail |
+| -- | -- | -- | -- |
+| dropped | ["osm/w123"] | null | invalid geometry |
+
+Only the removed rows get entries. A record with no entry passed through untouched; that's what keeps row detail affordable. The read and write ops never have row detail at all.
+
+### Minting ids
+
+A transform carves records out of raw, unkeyed data (say, land polygons cut from a coastline) and gives each one a fresh id:
+
+| kind | input_id | output_id | detail |
+| -- | -- | -- | -- |
+| minted | null | ["550e8400..."] | new land feature derived from coastline |
+
+The mint belongs to the *transform*, never to a read. Reading a dataset whose records already carry ids is not minting; those identities already existed, and Cairn is just seeing them for the first time. And if the input records already had some id (a provider key, say) and the operation hands out new ones, that's not a mint either. That's the next example.
+
+### Changing ids
+
+A matcher assigns final ids: records that match an existing corpus record take its id, and unmatched records keep their own.
+
+| kind | input_id | output_id | detail |
+| -- | -- | -- | -- |
+| derived_from | ["tmp-8f3e"] | ["gers-04c2"] | matched existing building, IoU 0.87 |
+
+One entry per record whose id actually changed. The unmatched records keep their ids, so they get no entry.
+
+### A split
+
+One record becomes several, each with its own new id. This needs no special kind; it's just multiple `derived_from` entries sharing an input:
+
+| kind | input_id | output_id | detail |
+| -- | -- | -- | -- |
+| derived_from | ["w1"] | ["w1-a"] | subdivided for tiling |
+| derived_from | ["w1"] | ["w1-b"] | subdivided for tiling |
+
+A merge is the same shape with the repetition on the other side (several entries sharing an `output_id`). See the column-level provenance section above for a merge that also attributes columns to donors.
+
+### An enrichment
+
+An operation fills in `height` from a reference dataset. Some records had no height, and some had one that gets overridden. The record's id never changes, so these are `content_changed` entries, and `column_change` tells the two situations apart:
+
+| kind | input_id | output_id | affected_output_columns | column_change | detail |
+| -- | -- | -- | -- | -- | -- |
+| content_changed | ["b1"] | ["b1"] | ["height"] | set | filled from lidar |
+| content_changed | ["b2"] | ["b2"] | ["height"] | replaced | lidar overrode source-supplied height |
+
+### A flag
+
+A QA pass marks records with suspicious phone numbers but changes nothing:
+
+| kind | input_id | output_id | affected_output_columns | detail |
+| -- | -- | -- | -- | -- |
+| flagged | ["p9"] | ["p9"] | ["phones"] | matches a known junk-number pattern |
+
+The operation's `description` carries what the check is; `detail` is only needed when there's something record-specific to say.
 
 ## Addendum: Loose Mapping to W3C PROV
 
