@@ -43,7 +43,7 @@ jobs:
     name: detect-changes
     permissions:
       contents: read # forwarded to discover-packages.yml's checkout step
-    uses: ./.github/workflows/discover-packages.yml
+    uses: $/.github/workflows/discover-packages.yml
 
   release:
     name: release ${{ matrix.package }}
