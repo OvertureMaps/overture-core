@@ -1,4 +1,6 @@
 
+> This document is outdated. See [cairn_design_spec.md](./cairn_design_spec.md).
+
 # Cairn: Motivation
 
 Hi\! Adam here. I organize my thoughts best while writing, so I’m doing that here – no agents\!

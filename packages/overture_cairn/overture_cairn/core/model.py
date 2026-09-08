@@ -29,15 +29,15 @@ class Kind(Enum):
 
     The value follows from three questions: is there an input id, is there an
     output id, and if there are both, are they equal. That makes this set
-    exhaustive over identity outcomes, rather than a taxonomy of the ways a record
-    can be affected.
+    exhaustive over identity outcomes, which is the whole of what it claims to
+    describe.
 
     A merge, a split, and a rebind are all shapes of a set of ``DERIVED_FROM``
     entries, so none of them appears here. Within one operation, one input
     reaching one output is a rebind, several sharing an ``output_id`` are a merge,
     and several sharing an ``input_id`` are a split. Reading the shape off a group
-    saves a caller from naming it, and it lets a many-to-many stay one thing
-    instead of answering to two names at once.
+    saves a caller from naming it, and it lets a many-to-many stay one thing that
+    answers to one name.
     """
 
     DROPPED = "dropped"
@@ -50,8 +50,8 @@ class Kind(Enum):
 class ColumnChange(Enum):
     """What happened to the values in an entry's ``affected_output_columns``.
 
-    This is :class:`Kind` asked one grain down, about a cell instead of a record.
-    ``SET`` is a mint, ``CLEARED`` is a drop, and ``REPLACED`` is a content change.
+    This is :class:`Kind` asked one grain down, about a single cell. ``SET`` is a
+    mint, ``CLEARED`` is a drop, and ``REPLACED`` is a content change.
     The cell-grain equivalent of ``DERIVED_FROM`` would name which other column a
     value came from, and that stays in ``detail`` prose, because the logic behind
     such a choice does not fit a closed schema.
@@ -68,8 +68,8 @@ class ColumnChange(Enum):
 class OpType(Enum):
     """Which of the four shapes an operation has.
 
-    Read from ``physical_source`` and ``physical_dest`` by :func:`op_type_of`
-    rather than stored, so an operation cannot disagree with itself about what it
+    :func:`op_type_of` reads this off ``physical_source`` and ``physical_dest``.
+    Nothing stores it, so an operation cannot disagree with itself about what it
     is. ``TRANSFORM`` covers everything that touches no physical location, which
     is most of a pipeline.
     """
@@ -147,7 +147,6 @@ class Op:
 
 
 def op_type_of(op: Op) -> OpType:
-    """Work out an operation's shape from the locations it touches."""
     reads = op.physical_source is not None
     writes = op.physical_dest is not None
     if reads and writes:

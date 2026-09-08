@@ -57,7 +57,7 @@ def check_operation(op: Op, problems: Problems) -> None:
         problems.report(
             "op.input_op_ids",
             f"a {shape.value} puts one operation's output somewhere, so it takes"
-            f" exactly one input, not {len(op.input_op_ids)}",
+            f" exactly one input. This one has {len(op.input_op_ids)}.",
             op.op_id,
         )
     if shape is not OpType.TRANSFORM and op.has_row_detail:
@@ -107,7 +107,7 @@ def check_operations(ops: Iterable[Op], problems: Problems) -> Problems:
                 problems.report(
                     "op.input_op_ids",
                     f"input {parent} wrote to a location, so read that location back"
-                    " instead of consuming the write",
+                    " to reach its data",
                     op.op_id,
                 )
     return problems
@@ -241,7 +241,6 @@ def _check_input_op_id(
 
 
 def _check_columns(row: Mapping[str, Any], kind: Kind) -> List[str]:
-    """Check an entry's column scope and the fate of the values in it."""
     broken: List[str] = []
     columns = row.get("affected_output_columns")
     change = row.get("column_change")

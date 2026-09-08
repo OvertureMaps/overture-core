@@ -35,7 +35,6 @@ AT = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
 
 def an_op(op_key: str, **kwargs) -> Op:
-    """One operation with the required fields filled in."""
     return Op(
         op_id=op_id_for("r1", op_key),
         run_id="r1",
@@ -127,7 +126,7 @@ def test_a_write_takes_exactly_one_input():
 
 def test_nothing_may_consume_a_write():
     """A materialized handoff stays visible because the next operation reads the
-    location back rather than linking to the write."""
+    location back."""
     upstream = an_op("t")
     write = an_op("w", physical_dest="s3://out", input_op_ids=[upstream.op_id])
     after = an_op("t2", input_op_ids=[write.op_id])

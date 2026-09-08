@@ -1,9 +1,9 @@
 """The run: what pipeline code holds while it records what it is doing.
 
-A run holds operations and nothing else, so its memory cost depends on how many
-steps a job has rather than on how much data went through them. Row detail never
-reaches here, and neither does any writing. An adapter reads the finished
-operations off a run and puts both tables wherever it keeps them.
+A run holds operations and nothing else, so its memory cost tracks how many steps
+a job has and stays flat as the data grows. Row detail never reaches here, and
+neither does any writing. An adapter reads the finished operations off a run and
+puts both tables wherever it keeps them.
 
 The four recording methods correspond to the four operation shapes, and each one
 accepts only the arguments its shape allows. A read takes a location and no input
@@ -117,7 +117,7 @@ class Run:
 
         Nothing may consume a write. Whatever comes next reaches this data by
         reading the location back, which is what keeps a materialized handoff
-        visible instead of hidden behind a link.
+        visible in the record.
         """
         return self._record(
             op_key,
@@ -192,10 +192,9 @@ class Run:
     ) -> Op:
         """Build an operation, register it, and hand it back.
 
-        Registering happens when the calling code says so rather than when a
-        compute engine gets around to the work, so the order operations arrive in
-        is the order the code composed them, whatever the engine does with them
-        later.
+        Registering happens the moment the calling code says so, so the order
+        operations arrive in is the order the code composed them, whatever a
+        compute engine does with the work later.
         """
         op = Op(
             op_id=op_id_for(self.run_id, op_key),
