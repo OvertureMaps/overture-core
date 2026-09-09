@@ -52,7 +52,7 @@ class Provider(_StrictModel):
 
 class License(_StrictModel):
     url: UrlPair
-    type: str
+    type: str | None = None
     requires_attribution: bool
     text: str
     attribution: str
