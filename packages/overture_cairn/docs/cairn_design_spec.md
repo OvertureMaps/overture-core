@@ -32,16 +32,23 @@ An operation is essentially *a directed relationship* that transforms one or mul
 | `physical_source` | What physical location this operation reads from, if any. If the operation reads from multiple physical locations, it should be split into smaller operations. | This lets the bundle-entrypoint operations specify what sources they draw information from. | `"s3://overture-stuff/data.json" (str)` |
 | `physical_dest` | What physical location this operation writes to, if any. If an operation writes to multiple locations, it should be split into multiple operations. | This lets bundle-exit point operations specify what they end up materializing. | `"s3://overture-stuff/output.parquet" (str)` |
 | `input_op_ids` | The IDs of the operations that feed into this one, if any. | This is, perhaps, initially counterintuitive: if operations are edges in the data transformation graph, why are we associating edges with one another? But recall: some operations *never materialize their data*. Thanks to Spark's Catalyst optimizer, an intermediate function that accepts a PySpark `DataFrame` and outputs another is *never even guaranteed to have the output of that function in memory*. Because of this, in most of Overture's use cases, ops link *directly to other ops*. In other words, the operations table is its own graph, with operations as nodes and `input_op_ids` as its edges; this sits one level above the finer graph that `row_detail` builds, where records are the nodes and `kind` names the edges between them. | `["20260903XXXX.reduce_precision", "20260903XXXX.simplify_geometry"] (array[str])` |
+| `passthrough_input_op_ids` | Which of `input_op_ids` a reader may take an absent `row_detail` entry to speak for. A record of one of these inputs with no entry survived this operation under the same identity. A record of any other input has no row-level relationship to the output established by its absence. | Absence carries a claim, and for a multi-input operation nothing else says which input that claim covers. Two tables keyed by `id` routinely play different roles in one join, so matching `output_key_columns` cannot answer this: key columns say how to identify a record, not whether that record belongs in the output. An empty list authorizes no inference, which is different from saying no records contributed, since explicit entries still record what they did. | `["20260903XXXX.read_feed"] (array[str])` |
 | `timestamp` | When this operation was logged. | This column does not necessarily indicate when the operation *happened* (in some cases this may be an unanswerable question) -- it just captures when the operation record was added to Cairn. | `2026-09-07 13:01:00 (timestamp)` |
 
 #### Per-Cairn Operations Table Validations
-* If `physical_source` is not null, `input_op_ids` must be empty.
-* If `physical_dest` is not null, `input_op_ids` has exactly one entry.
+* If `physical_source` is not null and `physical_dest` is null, `input_op_ids` must be empty. A read draws from a location, so it consumes no operation.
+* If `physical_dest` is not null, `input_op_ids` has exactly one entry. This covers writes and copies, which both put one operation's output somewhere.
 * If an operation's `physical_dest` is not null, no other operation is allowed to reference it in its `input_op_ids`.
 * The directed graph formed by joining `op_id`s by `input_op_ids` must be acyclic.
 * Every element of `input_op_ids` is present in the aggregate `op_id`s of the Cairn.
 * Each `op_id` is unique.
 * If `physical_source` or `physical_dest` is not null, `has_row_detail` is `false`. Reads, writes, and copies move records without touching their contents, so they have nothing to report.
+* If `output_key_columns` is not null, it names at least one column, no column twice, and nothing blank. Row detail ids are read positionally against it, so a repeated name would make an id ambiguous.
+* If `has_row_detail` is `true`, `output_key_columns` is not null. Entries whose ids have no key to be read against cannot be interpreted.
+* `run_id` is unique across every Cairn that will ever be collected together, not only within a theme. `op_id` uniqueness rests entirely on this.
+* Every element of `passthrough_input_op_ids` appears in `input_op_ids`, and none appears twice.
+* If `physical_dest` is not null, `passthrough_input_op_ids` equals `input_op_ids`. A write and a copy carry every record they handle to a location and can hold no row detail, so absence is the only available reading.
+* If `physical_source` is not null and `physical_dest` is null, `passthrough_input_op_ids` is empty. A read consumes no operation, so it has no input to pass records through from.
 
 Given these requirements, the "type" of operation is actually easily inferrable from the operation's parameters:
 * "Read" operations have non-null `physical_source`.
@@ -113,6 +120,9 @@ Merges don't use `column_change` (there's no before-state on the output record t
 * If `kind=dropped` or `kind=minted`, `affected_output_columns` must be null.
 * Any operation carrying entries has `has_row_detail=true`.
 * If `kind=content_changed`, at least one of `affected_output_columns` and `detail` is non-null. An entry with neither says something changed without saying what. A `flagged` entry needs neither, since the operation it belongs to is the finding.
+* `output_id` has as many parts as the operation's own `output_key_columns`.
+* `input_id` has as many parts as the `output_key_columns` of the operation that produced that record, which is `input_op_id` when the entry names one and the operation's sole input otherwise.
+* If the operation's `input_op_ids` is empty, `input_id` must be null. An operation consuming nothing has no input records, so an id on the way in would name a row from no dataset. Such an operation can still write `minted` entries.
 
 #### When to name columns
 
@@ -120,9 +130,27 @@ Column-level detail is only necessary when *more than one input could have suppl
 
 Including it at other times is allowed. The thing to avoid is mixing conventions inside one operation: `null` means "all of them", so naming columns on some entries and not others leaves a reader unable to tell which of the two a `null` meant.
 
-#### Grain changes end a trace
+#### What an absent entry means
 
-A missing entry means a record passed through untouched, and that claim holds only while the output records are the same kind of thing as the input records. An operation whose `output_key_columns` differ from its inputs' has changed grain: an aggregate keyed by category consumes records keyed by id, so nothing passed through it and a reader walking forward has to stop there. Changing grain is a legitimate thing for an operation to do, so no validation forbids it, but both key column sets sit in the operations table and a reader can compare them.
+Row detail entries are deltas, so absence carries a claim rather than saying nothing. The claim is scoped by `passthrough_input_op_ids`:
+
+> For a declared pass-through input, a record with no row detail entry survived under the same identity. For any other input, absence establishes no row-level relationship to the output.
+
+"Same identity" rather than "unchanged", because an operation is allowed to rewrite values by a uniform rule without writing an entry per record. A whitespace strip changes every name it touches and records nothing, and its records still passed through.
+
+Which inputs qualify, by shape of operation:
+
+| Operation | Inputs eligible for implicit pass-through |
+| -- | -- |
+| Identity-preserving filter or normalization | Its one input |
+| Base-table enrichment | The base input only |
+| Feed matched against a corpus | The feed input only |
+| Union with a valid output key | Both inputs |
+| Aggregate, or a fully explicit derivation | None |
+
+An empty list authorizes no inference. That is different from claiming no records contributed, since explicit entries still say what they did. In particular, an unmentioned record of a non-declared input should not be read as unused, because nothing guarantees every contribution was recorded.
+
+Matching `output_key_columns` is a compatibility check and never a substitute for the declaration. A declaration naming an input keyed differently from the output is worth questioning, but two tables keyed by `id` routinely play different roles in one join, and a rename that leaves identity alone or a group-by on the same column both make key comparison misleading.
 
 ### Cairn does not support column-level tracking alone
 
