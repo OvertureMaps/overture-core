@@ -37,7 +37,8 @@ Early. The schema, the four operation shapes, the validations, and the run that
 registers operations are implemented. Nothing writes a table yet.
 
 `docs/` carries the design: `cairn_motivation.md` for why it exists,
-`cairn_design_spec.md` for the schema and its rules, `call-sites.md` for what
-calling it is meant to look like, and the `pipeline-trace-*` and
-`pipeline-mechanics-*` pairs for the survey of existing pipelines that the design
-was drawn against.
+`cairn_design_spec.md` for the schema and its rules,
+`cairn_recording_guide.md` for a decision procedure that turns a piece of pipeline
+code into rows, `call-sites.md` for what calling it is meant to look like, and the
+`pipeline-trace-*` and `pipeline-mechanics-*` pairs for the survey of existing
+pipelines that the design was drawn against.
