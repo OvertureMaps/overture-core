@@ -23,6 +23,10 @@
 # before any upload, catching bad PyPI metadata (broken README rendering,
 # missing/invalid classifiers, etc.) as a CI failure instead of a broken
 # PyPI project page.
+#
+# If a run tags/releases a package but then fails to publish it, a re-run
+# resumes the build/publish instead of no-oping (see "Check for a
+# tagged-but-unpublished release" below).
 
 name: Publish Python Packages
 
@@ -107,14 +111,40 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           semantic-release -v version --no-commit --tag --push --no-changelog --vcs-release --skip-build
 
+      # A prior run may have tagged/released this package but failed before
+      # publishing. semantic-release would then see no new commits and
+      # report released=false, so detect that stuck state directly instead.
+      - name: Check for a tagged-but-unpublished release
+        id: resume
+        if: github.event_name == 'push' && steps.release.outputs.released != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          tag_format=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['semantic_release']['tag_format'])")
+          tag_prefix="${tag_format%%\{version\}*}"
+          tag=$(git describe --tags --exact-match --match "${tag_prefix}*" HEAD 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "HEAD has no release tag for this package; nothing to resume."
+            echo "unpublished=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="${tag#$tag_prefix}"
+          pkg_name=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          if curl -sf "https://pypi.org/pypi/${pkg_name}/${version}/json" > /dev/null; then
+            echo "$tag ($pkg_name==$version) is already on PyPI; nothing to resume."
+            echo "unpublished=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$tag ($pkg_name==$version) is tagged/released but missing from PyPI; resuming publish."
+            echo "unpublished=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install uv
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: false # this job publishes a runtime artifact; don't risk a poisoned cache
 
       - name: Build package
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uv build
 
@@ -123,12 +153,12 @@ jobs:
       # upload time; running it here fails the build early instead of
       # silently rejecting or mangling the package's PyPI page.
       - name: Check package metadata
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uvx twine check --strict dist/*
 
       - name: Publish to PyPI
-        if: github.event_name == 'push' && steps.release.outputs.released == 'true'
+        if: github.event_name == 'push' && (steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true')
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: packages/${{ matrix.package }}/dist
