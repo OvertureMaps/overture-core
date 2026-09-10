@@ -195,11 +195,6 @@ INVALID_CASES = [
         "requires_attribution",
         id="requires-attribution-wrong-type",
     ),
-    pytest.param(
-        _del("resources", 0, "collection", "license", "type"),
-        "type",
-        id="license-type-missing",
-    ),
     # refresh_schedule enums and month bounds
     pytest.param(
         _col("refresh_schedule", "frequency", "Quarterly"),
@@ -262,6 +257,22 @@ def test_rejects_invalid_documents(tmp_path, mutate, match):
     mutate(doc)
     with pytest.raises(ValueError, match=match):
         validate_file(_write(tmp_path, doc))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(_col("license", "type", None), id="license-type-null"),
+        pytest.param(
+            _del("resources", 0, "collection", "license", "type"),
+            id="license-type-missing",
+        ),
+    ],
+)
+def test_accepts_license_without_type(tmp_path, mutate):
+    doc = _valid_doc()
+    mutate(doc)
+    validate_file(_write(tmp_path, doc))
 
 
 def test_rejects_data_download_scheme_mismatch_direct():
