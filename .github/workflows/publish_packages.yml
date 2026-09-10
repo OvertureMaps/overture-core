@@ -120,7 +120,7 @@ jobs:
         working-directory: packages/${{ matrix.package }}
         run: |
           tag_format=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['semantic_release']['tag_format'])")
-          tag_prefix="${tag_format%%\{version\}*}"
+          tag_prefix=$(printf '%s' "$tag_format" | sed 's/{version}.*//')
           tag=$(git describe --tags --exact-match --match "${tag_prefix}*" HEAD 2>/dev/null || true)
           if [ -z "$tag" ]; then
             echo "HEAD has no release tag for this package; nothing to resume."
@@ -129,13 +129,21 @@ jobs:
           fi
           version="${tag#$tag_prefix}"
           pkg_name=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-          if curl -sf "https://pypi.org/pypi/${pkg_name}/${version}/json" > /dev/null; then
-            echo "$tag ($pkg_name==$version) is already on PyPI; nothing to resume."
-            echo "unpublished=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$tag ($pkg_name==$version) is tagged/released but missing from PyPI; resuming publish."
-            echo "unpublished=true" >> "$GITHUB_OUTPUT"
-          fi
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/${pkg_name}/${version}/json")
+          case "$status" in
+            200)
+              echo "$tag ($pkg_name==$version) is already on PyPI; nothing to resume."
+              echo "unpublished=false" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "$tag ($pkg_name==$version) is tagged/released but missing from PyPI; resuming publish."
+              echo "unpublished=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unexpected HTTP $status checking PyPI for $pkg_name==$version; refusing to guess publish state."
+              exit 1
+              ;;
+          esac
 
       - name: Install uv
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
