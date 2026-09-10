@@ -89,6 +89,41 @@ jobs:
           pipx install "python-semantic-release==10.6.1"
           pipx inject --force python-semantic-release "gitpython<3.1.60"
 
+      # GITHUB_TOKEN can never be granted the `workflows` permission, so PSR's
+      # tag push is rejected the moment the pushed history contains any
+      # `.github/workflows/*` change since the last successful push (hit
+      # this releasing overture_core-v0.7.0: run 34383462097).
+      # overture-pull-requester already has contents:write + workflows:write,
+      # so mint a token from it instead (same pattern as
+      # tf-places-matcher-model's reusable-maven-deploy.yml).
+      - name: Configure AWS credentials for pull-requester PEM
+        # Narrow OIDC role (omf-github-terraform's oidc-aws.tf) that can only
+        # read this secret.
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::816069134238:role/gha-pull-requester-secrets-reader
+          aws-region: us-west-2
+
+      - name: Fetch pull-requester PEM from Secrets Manager
+        if: github.event_name == 'push'
+        uses: aws-actions/aws-secretsmanager-get-secrets@2cb1a461cbd4865ac4299648312e4704c646cd53 # v3.0.1
+        with:
+          secret-ids: |
+            PULL_REQUESTER_APP_PEM, omf-github-terraform/pull-requester/pem
+
+      - name: Generate release push token
+        if: github.event_name == 'push'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: Iv23liiN80WEARreTV7m # https://github.com/apps/overture-pull-requester
+          private-key: ${{ env.PULL_REQUESTER_APP_PEM }} # zizmor: ignore[secrets-outside-env]
+          owner: OvertureMaps
+          repositories: overture-core
+          permission-contents: write
+          permission-workflows: write
+
       # Computes the next version from the commits since this package's last
       # release tag, attributing each commit to the package by its changed
       # files (see path_filters in the package's pyproject.toml), and, if a
@@ -105,7 +140,7 @@ jobs:
         if: github.event_name == 'push'
         working-directory: packages/${{ matrix.package }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
