@@ -948,7 +948,7 @@ stac = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", specifier = ">=1.28,<1.35" },
+    { name = "boto3", specifier = ">=1.28" },
     { name = "databricks-sdk", marker = "extra == 'dev'", specifier = ">=0.20" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "overture-core", extras = ["stac"], marker = "extra == 'dev'" },
