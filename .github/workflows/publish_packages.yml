@@ -129,7 +129,7 @@ jobs:
           fi
           version="${tag#$tag_prefix}"
           pkg_name=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-          status=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/${pkg_name}/${version}/json")
+          status=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 "https://pypi.org/pypi/${pkg_name}/${version}/json")
           case "$status" in
             200)
               echo "$tag ($pkg_name==$version) is already on PyPI; nothing to resume."
