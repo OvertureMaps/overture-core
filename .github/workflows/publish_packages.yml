@@ -62,12 +62,6 @@ jobs:
     permissions:
       contents: write # push the release tag (push event only)
       id-token: write # PyPI/TestPyPI trusted publishing
-      # The tagged commit's tree can include changes to files under
-      # .github/workflows/ (e.g. a PR that touched this very workflow).
-      # GitHub rejects a GITHUB_TOKEN push of any ref pointing at such a
-      # commit unless the token also has `workflows` permission, even for a
-      # tag pointing at a commit already on main.
-      workflows: write
     strategy:
       fail-fast: false
       matrix:
