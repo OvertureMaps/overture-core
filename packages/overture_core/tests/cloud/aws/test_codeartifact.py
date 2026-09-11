@@ -257,9 +257,11 @@ class _Head:
         self.present = present
         self.status = status
         self.urls = []
+        self.auths = []
 
-    def __call__(self, url, **_):
+    def __call__(self, url, **kwargs):
         self.urls.append(url)
+        self.auths.append(kwargs.get("auth"))
         found = any(url.endswith(p) for p in self.present)
         response = MagicMock()
         response.status_code = 200 if found else self.status
@@ -295,6 +297,7 @@ class TestCodeArtifactMavenClient:
         assert head.urls == [
             "https://dom-123.d.codeartifact.us-east-1.amazonaws.com/maven/mvn/x/a.jar"
         ]
+        assert head.auths == [("aws", "tok")]
 
     def test_exists_raises_on_non_404_error(self, maven, monkeypatch):
         response = MagicMock(status_code=500)
@@ -320,6 +323,7 @@ class TestCodeArtifactMavenClient:
         assert "domain dom" in message and "repository mvn" in message
         assert "s3cr3t" not in message
         assert "s3cr3t" not in head.urls[0]
+        assert head.auths == [("aws", "s3cr3t-token-value")]
 
     def test_prefers_platform_line(self, maven, monkeypatch):
         url, head = _resolve(
