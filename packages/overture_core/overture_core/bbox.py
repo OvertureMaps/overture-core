@@ -1,12 +1,17 @@
-"""Shared bbox parameter validation helpers for Airflow DAGs."""
+"""Shared validation helpers for an optional 'bbox' string parameter.
 
-# JSON-schema pattern for the DAGs' optional 'bbox' param: empty (full
-# planet) or exactly four comma-separated plain numbers. Param validation
-# runs at trigger time — including on conf forwarded by
-# dataset_osm_orchestrator_dag — and guards the SQL/WKT interpolation
-# sites (see BBOX_WKT_JINJA) against malformed or quote-bearing input.
-# Job-side, overture_spark.bbox.parse_bbox stays the semantic gate
-# (ranges, min < max).
+The bbox format is "min_lon,min_lat,max_lon,max_lat", with the empty
+string meaning full planet. Consumers (Airflow DAGs, jobs, CLIs) share
+these helpers so the same contract is enforced wherever a bbox enters
+the system.
+"""
+
+# JSON-schema pattern for an optional 'bbox' param: empty (full planet)
+# or exactly four comma-separated plain numbers. Intended for entry-point
+# validation (e.g. Airflow trigger-time param schemas — including conf
+# forwarded between DAGs) so SQL/WKT interpolation sites (see
+# BBOX_WKT_JINJA) never see malformed or quote-bearing input.
+# validate_bbox is the semantic gate (ranges, min < max).
 BBOX_PARAM_PATTERN = (
     r"^(?:|-?[0-9]+(?:\.[0-9]+)?(?:,-?[0-9]+(?:\.[0-9]+)?){3})$(?![\s\S])"
 )
@@ -15,11 +20,10 @@ BBOX_PARAM_PATTERN = (
 def validate_bbox(bbox: str) -> None:
     """Semantic validation of an optional bbox param ('' = full planet).
 
-    BBOX_PARAM_PATTERN only constrains the shape at trigger time; this
-    enforces the contract (lon/lat ranges, min < max). It is the DAG-side
-    equivalent of overture_spark.bbox.parse_bbox for fail-fast validation
-    where no Spark job runs — the Athena-only queries interpolate
-    BBOX_WKT_JINJA directly and would otherwise execute with a
+    BBOX_PARAM_PATTERN only constrains the shape; this enforces the
+    contract (lon/lat ranges, min < max). Call it for fail-fast
+    validation before a bbox is used — e.g. before interpolating
+    BBOX_WKT_JINJA into a query, which would otherwise execute with a
     contract-invalid box.
     """
     if not bbox:
@@ -41,12 +45,12 @@ def validate_bbox(bbox: str) -> None:
         raise ValueError(f"bbox min must be < max on both axes, got: {bbox!r}")
 
 
-# Jinja template expression rendering the DAG's optional 'bbox' param
-# ("min_lon,min_lat,max_lon,max_lat") as an Athena/Trino POLYGON WKT literal.
-# Only valid inside a `{% if params.bbox %}` guard. The `float` filter
-# guarantees each rendered component is a numeric literal even if a value
-# sidesteps BBOX_PARAM_PATTERN validation, so the WKT string cannot be
-# broken out of.
+# Jinja template expression rendering an optional 'bbox' param
+# ("min_lon,min_lat,max_lon,max_lat") as a SQL POLYGON WKT literal
+# (Athena/Trino-compatible). Only valid inside a `{% if params.bbox %}`
+# guard. The `float` filter guarantees each rendered component is a
+# numeric literal even if a value sidesteps BBOX_PARAM_PATTERN
+# validation, so the WKT string cannot be broken out of.
 BBOX_WKT_JINJA = (
     "{% set _b = params.bbox.split(',') %}"
     "POLYGON(({{ _b[0] | float }} {{ _b[1] | float }}, "
