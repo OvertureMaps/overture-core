@@ -225,12 +225,23 @@ class CodeArtifactMavenClient(CodeArtifactClient):
         return f"https://{self.host}/maven/{self.repository}/"
 
     def exists(self, path: str) -> bool:
-        """Whether ``path`` (repository-relative) is present, via an authenticated HEAD."""
+        """Whether ``path`` (repository-relative) is present, via an authenticated HEAD.
+
+        The token travels in the Authorization header, not the URL, so neither this
+        method's exceptions nor ``requests``' own carry it.
+        """
         response = requests.head(
             f"{self.get_url()}{path}", auth=("aws", self.get_auth_token()), timeout=30
         )
         if response.status_code == 404:
             return False
+        if response.status_code in (401, 403):
+            raise PermissionError(
+                f"CodeArtifact rejected the token for domain {self.domain} "
+                f"(owner {self.domain_owner}), repository {self.repository}: "
+                f"HTTP {response.status_code}. Check the caller's role and the "
+                "domain owner; this is not a missing artifact."
+            )
         response.raise_for_status()
         return True
 

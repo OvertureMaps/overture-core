@@ -306,6 +306,21 @@ class TestCodeArtifactMavenClient:
         with pytest.raises(RuntimeError, match="boom"):
             maven.exists("x/a.jar")
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_exists_raises_permission_error_without_token(
+        self, maven, monkeypatch, status
+    ):
+        head = _Head(set(), status)
+        monkeypatch.setattr("overture_core.cloud.aws.codeartifact.requests.head", head)
+        monkeypatch.setattr(maven, "get_auth_token", lambda: "s3cr3t-token-value")
+        with pytest.raises(PermissionError) as exc:
+            maven.exists("x/a.jar")
+        message = str(exc.value)
+        assert f"HTTP {status}" in message
+        assert "domain dom" in message and "repository mvn" in message
+        assert "s3cr3t" not in message
+        assert "s3cr3t" not in head.urls[0]
+
     def test_prefers_platform_line(self, maven, monkeypatch):
         url, head = _resolve(
             monkeypatch, maven, "3.5.4", "2.12", "v1", {"corpus-spark-3.5_2.12-v1.jar"}
