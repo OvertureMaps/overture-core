@@ -35,6 +35,13 @@ class VerifyMode(str, Enum):
     NONE = "NONE"
 
 
+class ObjectTagsMode(str, Enum):
+    """DataSync ``ObjectTags`` option: whether to copy object tags to the destination."""
+
+    PRESERVE = "PRESERVE"
+    NONE = "NONE"
+
+
 def s3_task_options(
     preserve_deleted_files: PreserveDeletedFilesMode = PreserveDeletedFilesMode.REMOVE,
     verify_mode: VerifyMode = VerifyMode.ONLY_FILES_TRANSFERRED,
@@ -65,7 +72,7 @@ def azure_blob_task_options(
     return {
         "PreserveDeletedFiles": PreserveDeletedFilesMode.PRESERVE.value,
         "VerifyMode": verify_mode.value,
-        "ObjectTags": "NONE",
+        "ObjectTags": ObjectTagsMode.NONE.value,
     }
 
 

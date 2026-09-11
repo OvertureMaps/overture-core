@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from botocore.exceptions import ClientError
 
 from overture_core.cloud.aws.datasync import (
+    ObjectTagsMode,
     PreserveDeletedFilesMode,
     TaskExecutionSummary,
     VerifyMode,
@@ -42,6 +43,22 @@ class TestTaskOptions:
             "VerifyMode": "POINT_IN_TIME_CONSISTENT",
             "ObjectTags": "NONE",
         }
+
+    def test_enum_values_match_botocore_service_model(self):
+        """The SDK ships no enums, only model strings; keep ours in lockstep."""
+        import botocore.session
+
+        options = (
+            botocore.session.get_session()
+            .get_service_model("datasync")
+            .shape_for("Options")
+        )
+        for name, enum in (
+            ("VerifyMode", VerifyMode),
+            ("PreserveDeletedFiles", PreserveDeletedFilesMode),
+            ("ObjectTags", ObjectTagsMode),
+        ):
+            assert {m.value for m in enum} == set(options.members[name].enum)
 
 
 class TestBuildAzureBlobLocationUri:
