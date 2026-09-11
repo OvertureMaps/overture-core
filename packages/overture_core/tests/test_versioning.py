@@ -20,7 +20,10 @@ class TestDateToYyww:
         assert date_to_yyww(datetime(2024, 12, 30)) == "2501"
 
     def test_defaults_to_now(self):
-        assert date_to_yyww() == datetime.now().strftime("%g%V")
+        fixed = datetime(2025, 1, 10)
+        with patch("overture_core.versioning.datetime") as dt:
+            dt.now.return_value = fixed
+            assert date_to_yyww() == "2502"
 
 
 class TestVersionParsers:

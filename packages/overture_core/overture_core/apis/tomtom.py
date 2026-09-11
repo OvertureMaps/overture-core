@@ -102,14 +102,20 @@ class McapiClient:
             logger.warning("MCAPI: invalid YYWW in version %r", version)
             return None
         release_id = latest.get("id")
-        if release_id is None:
-            logger.warning("MCAPI: missing release id for version %r", version)
+        try:
+            release_id = int(release_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "MCAPI: missing or non-numeric release id %r for version %r",
+                release_id,
+                version,
+            )
             return None
 
         logger.info(
             "MCAPI: latest release id=%s version=%s yyww=%s", release_id, version, yyww
         )
-        return McapiRelease(release_id=int(release_id), version=version, yyww=yyww)
+        return McapiRelease(release_id=release_id, version=version, yyww=yyww)
 
 
 def get_latest_orbis_release(

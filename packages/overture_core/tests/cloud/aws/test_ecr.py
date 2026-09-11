@@ -32,6 +32,19 @@ class TestIsEcrImageUri:
     def test_false_for_docker_hub(self):
         assert is_ecr_image_uri("alpine:latest") is False
 
+    def test_false_when_marker_only_in_repo_path(self):
+        assert (
+            is_ecr_image_uri(
+                "docker.io/team/123456789012.dkr.ecr.us-west-2.amazonaws.com/repo:tag"
+            )
+            is False
+        )
+
+    def test_true_for_china_partition(self):
+        assert is_ecr_image_uri(
+            "123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/repo:tag"
+        )
+
 
 class TestParseEcrImageUri:
     def test_tagged(self):

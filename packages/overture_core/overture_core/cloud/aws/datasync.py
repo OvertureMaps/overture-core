@@ -220,8 +220,9 @@ def refresh_azure_blob_location(
 
     Looks for an existing location whose URI matches the (account, container,
     subdirectory) tuple. If found, its SAS is refreshed with *sas_token*; if the
-    update fails (a stale or broken location), the location is deleted and
-    recreated. Otherwise a new location is created.
+    update fails with ``InvalidRequestException`` (a stale or broken location),
+    the location is deleted and recreated; any other error propagates.
+    Otherwise a new location is created.
 
     Args:
         storage_account: Azure Storage account name.
@@ -248,6 +249,12 @@ def refresh_azure_blob_location(
             logger.info("Refreshed SAS on Azure location %s", existing_arn)
             return existing_arn
         except ClientError as exc:
+            # DataSync surfaces a stale/broken location as InvalidRequestException.
+            # Anything else (throttling, access denied, internal) says nothing
+            # about the location's health, so don't destroy it on that evidence.
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code != "InvalidRequestException":
+                raise
             logger.warning(
                 "update_location_azure_blob failed for %s (%s); recreating",
                 existing_arn,

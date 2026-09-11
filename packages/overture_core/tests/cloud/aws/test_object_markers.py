@@ -113,6 +113,13 @@ class TestValidateLocation:
         with patch(PATCH_CLIENT, return_value=s3):
             validate_location("bucket", "prefix", check_exists=False)
 
+    def test_list_error_becomes_value_error(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.side_effect = _client_error("AccessDenied", "ListObjectsV2")
+        with patch(PATCH_CLIENT, return_value=s3):
+            with pytest.raises(ValueError, match="Failed to validate source"):
+                validate_location("bucket", "prefix", label="source")
+
     def test_not_writable(self):
         s3 = MagicMock()
         s3.put_object.side_effect = _client_error("AccessDenied", "PutObject")
@@ -145,6 +152,10 @@ class TestConsoleUrl:
     def test_defaults_region(self, monkeypatch):
         monkeypatch.setenv("AWS_REGION", "ap-south-1")
         assert console_url("s3://bucket/a").startswith("https://ap-south-1.")
+
+    def test_bucket_root_uses_empty_prefix(self):
+        assert console_url("s3://bucket", region="us-west-2").endswith("&prefix=")
+        assert console_url("s3://bucket/", region="us-west-2").endswith("&prefix=")
 
 
 def _parquet_bytes(rows: list[dict]) -> bytes:
@@ -186,3 +197,11 @@ class TestReadParquetPrefix:
         s3 = self._s3({"out/_SUCCESS": b""})
         with patch(PATCH_CLIENT, return_value=s3):
             assert read_parquet_prefix("s3://bucket/out/") is None
+
+    def test_bucket_root_lists_empty_prefix(self):
+        s3 = self._s3({"part-0.parquet": _parquet_bytes([{"id": 1}])})
+        with patch(PATCH_CLIENT, return_value=s3):
+            assert read_parquet_prefix("s3://bucket") == [{"id": 1}]
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix=""
+        )

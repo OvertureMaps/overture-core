@@ -192,13 +192,14 @@ def validate_location(
     uri = build_s3_uri(bucket, prefix)
     try:
         boto3.client("s3").head_bucket(Bucket=bucket)
+        exists = not check_exists or prefix_exists(bucket, prefix)
     except botocore.exceptions.ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         if code in ("NoSuchBucket", "404"):
             raise ValueError(f"{label} bucket does not exist: {bucket}") from exc
         raise ValueError(f"Failed to validate {label} {uri}: {exc}") from exc
 
-    if check_exists and not prefix_exists(bucket, prefix):
+    if not exists:
         raise ValueError(f"{label} path does not exist or is empty: {uri}")
     if check_writable and not bucket_writable(bucket):
         raise ValueError(f"{label} bucket is not writable: {bucket}")
@@ -224,9 +225,11 @@ def console_url(
             f"https://{region}.console.aws.amazon.com/s3/object/{bucket}"
             f"?region={region}&prefix={encoded}"
         )
+    # The bucket root is the empty prefix, not "/".
+    prefix = f"{encoded}/" if encoded else ""
     return (
         f"https://{region}.console.aws.amazon.com/s3/buckets/{bucket}"
-        f"?region={region}&prefix={encoded}/"
+        f"?region={region}&prefix={prefix}"
     )
 
 
@@ -248,7 +251,8 @@ def read_parquet_prefix(
     import pyarrow.parquet as pq
 
     bucket, prefix = parse_s3_uri(s3_uri)
-    list_prefix = (prefix or "").rstrip("/") + "/"
+    prefix = prefix.strip("/")
+    list_prefix = f"{prefix}/" if prefix else ""
     s3 = boto3.client("s3")
 
     keys = [

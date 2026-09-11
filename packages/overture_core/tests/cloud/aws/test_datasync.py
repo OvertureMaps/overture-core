@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from botocore.exceptions import ClientError
 
 from overture_core.cloud.aws.datasync import (
@@ -227,3 +228,14 @@ class TestRefreshAzureBlobLocation:
         assert self._refresh(ds) == "arn:new"
         ds.delete_location.assert_called_once_with(LocationArn="arn:loc:0")
         ds.create_location_azure_blob.assert_called_once()
+
+    def test_other_update_errors_propagate_without_delete(self):
+        ds = _datasync_with_locations(AZURE_URI)
+        ds.update_location_azure_blob.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+            "UpdateLocationAzureBlob",
+        )
+        with pytest.raises(ClientError):
+            self._refresh(ds)
+        ds.delete_location.assert_not_called()
+        ds.create_location_azure_blob.assert_not_called()

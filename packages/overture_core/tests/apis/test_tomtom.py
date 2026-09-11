@@ -97,6 +97,13 @@ class TestLatestRelease:
         ):
             assert McapiClient("key").latest_release() is None
 
+    def test_non_numeric_release_id(self):
+        with patch(
+            PATCH_GET,
+            side_effect=_mcapi(releases=[_released("2502.000", release_id="abc")]),
+        ):
+            assert McapiClient("key").latest_release() is None
+
     def test_http_error_propagates(self):
         resp = MagicMock()
         resp.raise_for_status.side_effect = requests.HTTPError("401")
