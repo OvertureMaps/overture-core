@@ -5,14 +5,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from overture_core.tomtom import (
+from overture_core.apis.tomtom import (
     McapiClient,
     McapiRelease,
     get_latest_orbis_release,
     get_latest_orbis_version,
 )
 
-PATCH_GET = "overture_core.tomtom.requests.get"
+PATCH_GET = "overture_core.apis.tomtom.requests.get"
 
 
 def _response(content):

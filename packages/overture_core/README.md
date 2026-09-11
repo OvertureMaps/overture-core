@@ -30,7 +30,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `cloud.azure` | The home for any Azure-specific helper. Imports `azure-storage-blob` lazily; install `overture-core[azure]` to use it. |
 | `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
-| `tomtom` | Client for TomTom's Map Content API (MCAPI), for discovering the latest released version of a product such as Orbis WRL. |
+| `apis` | Clients for third-party HTTP APIs, one module per vendor (e.g. `apis.tomtom` for TomTom's Map Content API). Anything that's not a cloud platform but still an external service belongs here. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
