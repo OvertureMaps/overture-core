@@ -7,4 +7,4 @@
 # sites (see BBOX_WKT_JINJA) against malformed or quote-bearing input.
 # Job-side, overture_spark.bbox.parse_bbox stays the semantic gate
 # (ranges, min < max).
-BBOX_PARAM_PATTERN = r"^$|^-?\d+(\.\d+)?(,-?\d+(\.\d+)?){3}$"
+BBOX_PARAM_PATTERN = r"^(?:|-?[0-9]+(?:\.[0-9]+)?(?:,-?[0-9]+(?:\.[0-9]+)?){3})$(?![\s\S])"
