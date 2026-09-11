@@ -49,6 +49,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
     "overture-core[stac]",
+    # Renders BBOX_WKT_JINJA in tests the way Airflow templating would.
+    "jinja2>=3.0",
 ]
 
 [build-system]
