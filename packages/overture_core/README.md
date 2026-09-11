@@ -5,7 +5,7 @@
 
 Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
 
-`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql` modules too.
+`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
 
 ## Modules
 
@@ -26,9 +26,11 @@ covers it; only add a new row/module when nothing existing fits.
 | `versioning` | Deriving a consistent dated version string for sources that don't publish explicit version metadata. |
 | `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
 | `cloud.cloud` | Provider-agnostic cloud helpers that don't belong to one specific vendor. |
-| `cloud.aws` | The home for any AWS-specific helper, built on boto3. |
+| `cloud.aws` | The home for any AWS-specific helper, built on boto3, one module per service (`core` for STS/IAM, `object` for S3, `ecs`, `ecr`, `datasync`, `secrets`, `codeartifact`). |
+| `cloud.azure` | The home for any Azure-specific helper. Imports `azure-storage-blob` lazily; install `overture-core[azure]` to use it. |
 | `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
+| `tomtom` | Client for TomTom's Map Content API (MCAPI), for discovering the latest released version of a product such as Orbis WRL. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |

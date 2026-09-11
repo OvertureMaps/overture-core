@@ -65,10 +65,15 @@ sql-spark = [
 sql-trino = [
     "trino>=0.328",
 ]
+# cloud.azure imports azure-storage-blob lazily; only consumers touching
+# Azure Blob need it.
+azure = [
+    "azure-storage-blob>=12.0",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
-    "overture-core[stac]",
+    "overture-core[stac,azure]",
     # Renders BBOX_WKT_JINJA in tests the way consumers' templating
     # engines (e.g. Airflow) would.
     "jinja2>=3.0",

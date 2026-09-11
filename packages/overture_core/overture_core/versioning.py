@@ -49,3 +49,17 @@ def get_last_modified_version(url: str, fallback_to_today: bool = False) -> str:
             return datetime.now(timezone.utc).strftime("%Y%m%d")
         raise ValueError(f"Missing Last-Modified header for URL: {url}")
     return parse_http_last_modified_version(last_modified)
+
+
+def date_to_yyww(dt: datetime | None = None) -> str:
+    """Return the ISO 8601 week-based ``YYWW`` string for *dt* (default: now).
+
+    ``%g`` is the two-digit ISO year and ``%V`` the ISO week (Monday-start,
+    weeks 01-53), so dates near a year boundary follow the ISO week's year,
+    not the calendar year. Matches the version scheme of weekly sources like
+    TomTom Orbis.
+
+    >>> date_to_yyww(datetime(2024, 12, 30))  # ISO week 1 of 2025
+    '2501'
+    """
+    return (dt or datetime.now()).strftime("%g%V")

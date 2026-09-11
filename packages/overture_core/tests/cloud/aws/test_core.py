@@ -7,6 +7,7 @@ from overture_core.cloud.aws.core import (
     build_role_arn,
     get_account_id,
     get_region,
+    get_role_arn,
 )
 
 
@@ -62,6 +63,18 @@ class TestBuildRoleArn:
             build_role_arn("123456789012", "my-role")
             == "arn:aws:iam::123456789012:role/my-role"
         )
+
+
+class TestGetRoleArn:
+    def test_uses_caller_account(self):
+        get_account_id.cache_clear()
+        get_role_arn.cache_clear()
+        sts = MagicMock()
+        sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        with patch("overture_core.cloud.aws.core.boto3.client", return_value=sts):
+            assert get_role_arn("my-role") == "arn:aws:iam::123456789012:role/my-role"
+            assert get_role_arn("my-role") == "arn:aws:iam::123456789012:role/my-role"
+        sts.get_caller_identity.assert_called_once()
 
 
 class TestAssumeRole:

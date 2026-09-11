@@ -37,6 +37,16 @@ def build_role_arn(account_id: str, role_name: str) -> str:
     return f"arn:aws:iam::{account_id}:role/{role_name}"
 
 
+@lru_cache(maxsize=64)
+def get_role_arn(role_name: str) -> str:
+    """Build an IAM role ARN for *role_name* in the caller's own account.
+
+    Convenience over :func:`build_role_arn` + :func:`get_account_id`, cached
+    per role name since the result is stable for the process lifetime.
+    """
+    return build_role_arn(get_account_id(), role_name)
+
+
 def assume_role(
     role_arn: str,
     session_name: str,
