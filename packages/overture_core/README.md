@@ -30,6 +30,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
+| `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
