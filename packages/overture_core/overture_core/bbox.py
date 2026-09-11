@@ -47,15 +47,29 @@ def validate_bbox(bbox: str) -> None:
 
 # Jinja template expression rendering an optional 'bbox' param
 # ("min_lon,min_lat,max_lon,max_lat") as a SQL POLYGON WKT literal
-# (Athena/Trino-compatible). Only valid inside a `{% if params.bbox %}`
-# guard. The `float` filter guarantees each rendered component is a
-# numeric literal even if a value sidesteps BBOX_PARAM_PATTERN
-# validation, so the WKT string cannot be broken out of.
-BBOX_WKT_JINJA = (
-    "{% set _b = params.bbox.split(',') %}"
-    "POLYGON(({{ _b[0] | float }} {{ _b[1] | float }}, "
-    "{{ _b[2] | float }} {{ _b[1] | float }}, "
-    "{{ _b[2] | float }} {{ _b[3] | float }}, "
-    "{{ _b[0] | float }} {{ _b[3] | float }}, "
-    "{{ _b[0] | float }} {{ _b[1] | float }}))"
-)
+# (Athena/Trino-compatible). Only valid inside a guard equivalent to
+# `{% if params.bbox %}`. The `float` filter guarantees each rendered
+# component is a numeric literal even if a value sidesteps
+# BBOX_PARAM_PATTERN validation, so the WKT string cannot be broken
+# out of.
+
+
+def bbox_wkt_jinja(bbox_expr: str = "params.bbox") -> str:
+    """Build the POLYGON WKT Jinja expression for a bbox in any template context.
+
+    bbox_expr is the Jinja expression yielding the bbox string in the
+    consumer's context — e.g. "params.bbox" (Airflow params, the
+    default) or "dag_run.conf['bbox']".
+    """
+    return (
+        "{% set _b = (" + bbox_expr + ").split(',') %}"
+        "POLYGON(({{ _b[0] | float }} {{ _b[1] | float }}, "
+        "{{ _b[2] | float }} {{ _b[1] | float }}, "
+        "{{ _b[2] | float }} {{ _b[3] | float }}, "
+        "{{ _b[0] | float }} {{ _b[3] | float }}, "
+        "{{ _b[0] | float }} {{ _b[1] | float }}))"
+    )
+
+
+# Ready-made template for the common Airflow-params case.
+BBOX_WKT_JINJA = bbox_wkt_jinja()

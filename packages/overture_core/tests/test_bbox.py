@@ -5,7 +5,12 @@ import re
 import jinja2
 import pytest
 
-from overture_core.bbox import BBOX_PARAM_PATTERN, BBOX_WKT_JINJA, validate_bbox
+from overture_core.bbox import (
+    BBOX_PARAM_PATTERN,
+    BBOX_WKT_JINJA,
+    bbox_wkt_jinja,
+    validate_bbox,
+)
 
 
 class TestBboxParamPattern:
@@ -94,3 +99,10 @@ class TestBboxWktJinja:
     def test_float_filter_neutralizes_non_numeric_input(self):
         rendered = self.render("1'); DROP TABLE x;--,2,3,4")
         assert rendered == "POLYGON((0.0 2.0, 3.0 2.0, 3.0 4.0, 0.0 4.0, 0.0 2.0))"
+
+    def test_custom_context_expression(self):
+        template = bbox_wkt_jinja("dag_run.conf['bbox']")
+        rendered = jinja2.Template(template).render(
+            dag_run={"conf": {"bbox": "1,2,3,4"}}
+        )
+        assert rendered == "POLYGON((1.0 2.0, 3.0 2.0, 3.0 4.0, 1.0 4.0, 1.0 2.0))"

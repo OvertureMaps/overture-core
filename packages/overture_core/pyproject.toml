@@ -69,7 +69,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
     "overture-core[stac]",
-    # Renders BBOX_WKT_JINJA in tests the way Airflow templating would.
+    # Renders BBOX_WKT_JINJA in tests the way consumers' templating
+    # engines (e.g. Airflow) would.
     "jinja2>=3.0",
     # Stand-in ANSI-SQL engine for the uuids_sql Spark-dialect parity tests:
     # its md5()/sha1() return lowercase hex strings directly, like Spark's,
