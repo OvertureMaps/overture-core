@@ -1,5 +1,7 @@
 """S3 object and prefix utilities built on boto3."""
 
+import logging
+import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -252,3 +254,50 @@ def list_common_prefixes(bucket: str, prefix: str) -> list[str]:
             if name and name != "$folder$":
                 names.append(name)
     return names
+
+
+def upload_directory(
+    directory_path: str,
+    bucket: str,
+    prefix: str = "",
+    *,
+    max_concurrency: int = _DEFAULT_MAX_CONCURRENCY,
+) -> list[str]:
+    """Upload a local directory tree to S3, preserving its relative layout.
+
+    Uses boto3's managed multipart upload (the same TransferConfig pattern as
+    :func:`copy_prefix`) so large local files transfer in parallel chunks.
+
+    Args:
+        directory_path: Local directory to upload.
+        bucket: Destination bucket.
+        prefix: S3 prefix (folder) to upload files under.
+        max_concurrency: Concurrent upload threads per file.
+
+    Returns:
+        List of resulting ``s3://`` URLs, one per uploaded file.
+
+    Raises:
+        NotADirectoryError: If ``directory_path`` doesn't exist or isn't a directory.
+    """
+    if not os.path.isdir(directory_path):
+        raise NotADirectoryError(f"Not a directory: {directory_path}")
+
+    s3 = boto3.client("s3")
+    transfer_config = TransferConfig(
+        multipart_threshold=_MULTIPART_CHUNK_BYTES,
+        multipart_chunksize=_MULTIPART_CHUNK_BYTES,
+        max_concurrency=max_concurrency,
+    )
+
+    result: list[str] = []
+    for root, _, files in os.walk(directory_path):
+        for file in files:
+            local_path = os.path.join(root, file)
+            relative_path = os.path.relpath(local_path, directory_path)
+            key = os.path.join(prefix, relative_path).replace("\\", "/").lstrip("/")
+            s3.upload_file(local_path, bucket, key, Config=transfer_config)
+            uri = build_s3_uri(bucket, key)
+            logging.info("Uploaded %s to %s", local_path, uri)
+            result.append(uri)
+    return result

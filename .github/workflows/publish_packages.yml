@@ -23,6 +23,10 @@
 # before any upload, catching bad PyPI metadata (broken README rendering,
 # missing/invalid classifiers, etc.) as a CI failure instead of a broken
 # PyPI project page.
+#
+# If a run tags/releases a package but then fails to publish it, a re-run
+# resumes the build/publish instead of no-oping (see "Check for a
+# tagged-but-unpublished release" below).
 
 name: Publish Python Packages
 
@@ -43,7 +47,7 @@ jobs:
     name: detect-changes
     permissions:
       contents: read # forwarded to discover-packages.yml's checkout step
-    uses: ./.github/workflows/discover-packages.yml
+    uses: $/.github/workflows/discover-packages.yml
 
   release:
     name: release ${{ matrix.package }}
@@ -85,6 +89,41 @@ jobs:
           pipx install "python-semantic-release==10.6.1"
           pipx inject --force python-semantic-release "gitpython<3.1.60"
 
+      # GITHUB_TOKEN can never be granted the `workflows` permission, so PSR's
+      # tag push is rejected the moment the pushed history contains any
+      # `.github/workflows/*` change since the last successful push (hit
+      # this releasing overture_core-v0.7.0: run 34383462097).
+      # overture-pull-requester already has contents:write + workflows:write,
+      # so mint a token from it instead (same pattern as
+      # tf-places-matcher-model's reusable-maven-deploy.yml).
+      - name: Configure AWS credentials for pull-requester PEM
+        # Narrow OIDC role (omf-github-terraform's oidc-aws.tf) that can only
+        # read this secret.
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        with:
+          role-to-assume: arn:aws:iam::816069134238:role/gha-pull-requester-secrets-reader
+          aws-region: us-west-2
+
+      - name: Fetch pull-requester PEM from Secrets Manager
+        if: github.event_name == 'push'
+        uses: aws-actions/aws-secretsmanager-get-secrets@2cb1a461cbd4865ac4299648312e4704c646cd53 # v3.0.1
+        with:
+          secret-ids: |
+            PULL_REQUESTER_APP_PEM, omf-github-terraform/pull-requester/pem
+
+      - name: Generate release push token
+        if: github.event_name == 'push'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: Iv23liiN80WEARreTV7m # https://github.com/apps/overture-pull-requester
+          private-key: ${{ env.PULL_REQUESTER_APP_PEM }} # zizmor: ignore[secrets-outside-env]
+          owner: OvertureMaps
+          repositories: overture-core
+          permission-contents: write
+          permission-workflows: write
+
       # Computes the next version from the commits since this package's last
       # release tag, attributing each commit to the package by its changed
       # files (see path_filters in the package's pyproject.toml), and, if a
@@ -101,20 +140,54 @@ jobs:
         if: github.event_name == 'push'
         working-directory: packages/${{ matrix.package }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           semantic-release -v version --no-commit --tag --push --no-changelog --vcs-release --skip-build
 
+      # A prior run may have tagged/released this package but failed before
+      # publishing. semantic-release would then see no new commits and
+      # report released=false, so detect that stuck state directly instead.
+      - name: Check for a tagged-but-unpublished release
+        id: resume
+        if: github.event_name == 'push' && steps.release.outputs.released != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          tag_format=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['semantic_release']['tag_format'])")
+          tag_prefix=$(printf '%s' "$tag_format" | sed 's/{version}.*//')
+          tag=$(git describe --tags --exact-match --match "${tag_prefix}*" HEAD 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "HEAD has no release tag for this package; nothing to resume."
+            echo "unpublished=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="${tag#$tag_prefix}"
+          pkg_name=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          status=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 "https://pypi.org/pypi/${pkg_name}/${version}/json")
+          case "$status" in
+            200)
+              echo "$tag ($pkg_name==$version) is already on PyPI; nothing to resume."
+              echo "unpublished=false" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "$tag ($pkg_name==$version) is tagged/released but missing from PyPI; resuming publish."
+              echo "unpublished=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unexpected HTTP $status checking PyPI for $pkg_name==$version; refusing to guess publish state."
+              exit 1
+              ;;
+          esac
+
       - name: Install uv
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: false # this job publishes a runtime artifact; don't risk a poisoned cache
 
       - name: Build package
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uv build
 
@@ -123,12 +196,12 @@ jobs:
       # upload time; running it here fails the build early instead of
       # silently rejecting or mangling the package's PyPI page.
       - name: Check package metadata
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uvx twine check --strict dist/*
 
       - name: Publish to PyPI
-        if: github.event_name == 'push' && steps.release.outputs.released == 'true'
+        if: github.event_name == 'push' && (steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true')
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: packages/${{ matrix.package }}/dist
