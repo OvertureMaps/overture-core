@@ -6,7 +6,9 @@ import pytest
 from packaging.version import Version
 
 from overture_core.cloud.aws.codeartifact import (
+    CodeArtifactMavenClient,
     CodeArtifactPyPiClient,
+    MavenCoordinates,
     PackageVersionStrategy,
     get_codeartifact_token,
 )
@@ -222,3 +224,130 @@ class TestAuthTokenAndUrl:
         assert client.get_url() == (
             "https://aws:tok@dom-123.d.codeartifact.us-east-1.amazonaws.com/pypi/repo/simple/"
         )
+
+
+CORPUS = MavenCoordinates(group_id="com.overturemaps", base_artifact_id="corpus")
+
+
+class TestMavenCoordinates:
+    @pytest.mark.parametrize(
+        "spark, scala, expected",
+        [
+            ("3.5.4", "2.12", "corpus-spark-3.5_2.12"),
+            ("3.3", "2.12", "corpus-spark-3.3_2.12"),
+            ("4.1.3", "2.13", "corpus-spark-4.1_2.13"),
+        ],
+    )
+    def test_artifact_id_uses_spark_minor_and_scala(self, spark, scala, expected):
+        assert CORPUS.artifact_id(spark, scala) == expected
+
+    def test_jar_path(self):
+        divisions = MavenCoordinates("org.overturemaps", "overture-divisions")
+        path = divisions.jar_path(
+            "overture-divisions-spark-3.5_2.12", "0.1.0-SNAPSHOT-dev-abc12345"
+        )
+        assert path == (
+            "org/overturemaps/overture-divisions-spark-3.5_2.12/0.1.0-SNAPSHOT-dev-abc12345/"
+            "overture-divisions-spark-3.5_2.12-0.1.0-SNAPSHOT-dev-abc12345.jar"
+        )
+
+
+class _Head:
+    def __init__(self, present: set, status: int = 404):
+        self.present = present
+        self.status = status
+        self.urls = []
+        self.auths = []
+
+    def __call__(self, url, **kwargs):
+        self.urls.append(url)
+        self.auths.append(kwargs.get("auth"))
+        found = any(url.endswith(p) for p in self.present)
+        response = MagicMock()
+        response.status_code = 200 if found else self.status
+        return response
+
+
+@pytest.fixture
+def maven(monkeypatch):
+    client = CodeArtifactMavenClient(
+        domain_owner="123", domain="dom", repository="mvn", region_name="us-east-1"
+    )
+    monkeypatch.setattr(client, "get_auth_token", lambda: "tok")
+    return client
+
+
+def _resolve(monkeypatch, maven, spark, scala, version, present, status=404):
+    head = _Head(present, status)
+    monkeypatch.setattr("overture_core.cloud.aws.codeartifact.requests.head", head)
+    url = maven.resolve_jar_url(CORPUS, version, spark, scala)
+    return url, head
+
+
+class TestCodeArtifactMavenClient:
+    def test_get_url_has_no_credentials(self, maven):
+        assert maven.get_url() == (
+            "https://dom-123.d.codeartifact.us-east-1.amazonaws.com/maven/mvn/"
+        )
+
+    def test_exists_authenticates_head(self, maven, monkeypatch):
+        head = _Head({"a.jar"})
+        monkeypatch.setattr("overture_core.cloud.aws.codeartifact.requests.head", head)
+        assert maven.exists("x/a.jar") is True
+        assert head.urls == [
+            "https://dom-123.d.codeartifact.us-east-1.amazonaws.com/maven/mvn/x/a.jar"
+        ]
+        assert head.auths == [("aws", "tok")]
+
+    def test_exists_raises_on_non_404_error(self, maven, monkeypatch):
+        response = MagicMock(status_code=500)
+        response.raise_for_status.side_effect = RuntimeError("boom")
+        monkeypatch.setattr(
+            "overture_core.cloud.aws.codeartifact.requests.head",
+            lambda *a, **k: response,
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            maven.exists("x/a.jar")
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_exists_raises_permission_error_without_token(
+        self, maven, monkeypatch, status
+    ):
+        head = _Head(set(), status)
+        monkeypatch.setattr("overture_core.cloud.aws.codeartifact.requests.head", head)
+        monkeypatch.setattr(maven, "get_auth_token", lambda: "s3cr3t-token-value")
+        with pytest.raises(PermissionError) as exc:
+            maven.exists("x/a.jar")
+        message = str(exc.value)
+        assert f"HTTP {status}" in message
+        assert "domain dom" in message and "repository mvn" in message
+        assert "s3cr3t" not in message
+        assert "s3cr3t" not in head.urls[0]
+        assert head.auths == [("aws", "s3cr3t-token-value")]
+
+    def test_prefers_platform_line(self, maven, monkeypatch):
+        url, head = _resolve(
+            monkeypatch, maven, "3.5.4", "2.12", "v1", {"corpus-spark-3.5_2.12-v1.jar"}
+        )
+        assert url == (
+            "https://aws:tok@dom-123.d.codeartifact.us-east-1.amazonaws.com/maven/mvn/"
+            "com/overturemaps/corpus-spark-3.5_2.12/v1/corpus-spark-3.5_2.12-v1.jar"
+        )
+        assert len(head.urls) == 1
+
+    def test_falls_back_to_legacy_artifact_for_scala_2_12(self, maven, monkeypatch):
+        url, head = _resolve(
+            monkeypatch, maven, "3.5.4", "2.12", "v0", {"corpus-v0.jar"}
+        )
+        assert url.endswith("com/overturemaps/corpus/v0/corpus-v0.jar")
+        assert len(head.urls) == 2
+
+    def test_no_legacy_fallback_for_other_scala(self, maven, monkeypatch):
+        with pytest.raises(ValueError, match="corpus-spark-4.1_2.13:v0"):
+            _resolve(monkeypatch, maven, "4.1.3", "2.13", "v0", {"corpus-v0.jar"})
+
+    def test_raises_when_no_jar_for_runtime(self, maven, monkeypatch):
+        with pytest.raises(
+            ValueError, match=r"corpus-spark-3.3_2.12:v1 .* Spark 3.3.0 / Scala 2.12"
+        ):
+            _resolve(monkeypatch, maven, "3.3.0", "2.12", "v1", set())
