@@ -80,10 +80,16 @@ absence mean survival only when `identity_capture_status` is `complete`.
   * **Yes** → name none of them. Any surviving identity is recorded explicitly;
     an absent entry does not supply another link.
 
-The default is an empty list. That means no implicit survival links, not that
-there are no contributions: explicit entries still say what happened. One input
-does not settle the answer either. A group-by and a filter both have one input,
-but only the filter has surviving records that need no entry. Go to Part 3.
+An empty list means no implicit survival links, not that there are no
+contributions: explicit entries still say what happened.
+
+A helper may fill this in for you when the answer is unambiguous. One input keyed
+the way the output is keyed is a filter or a value rewrite almost every time, so
+that case defaults to naming its input. Anything else defaults to an empty list,
+since two inputs keyed alike often play different roles and a rekeyed output is
+usually an aggregate. Say the empty list outright for a group-by keyed on the
+column it grouped, which key columns alone cannot tell apart from a filter. Go to
+Part 3.
 
 ## Part 3: Does this transform need row detail?
 
@@ -200,9 +206,9 @@ nobody else named. It is fine to name columns on some entries and leave others
 null. Several inputs can name the same column if its value was computed from
 all of them. An empty list is invalid; use null for no column detail.
 
-`identity_capture_status` covers record relationships, not column sources.
-Rules for tracing unrecorded fields through an enrichment or filter remain open
-in the design spec; a null list does not establish those sources.
+`identity_capture_status` covers record relationships, not column sources. A
+field no entry mentions has no recorded source, and whether it was touched is
+answered by reading the descriptions of the operations on the record's path.
 
 Go to Part 6 for a content change, or Part 7 for the other kinds.
 

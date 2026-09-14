@@ -38,7 +38,7 @@ An operation is essentially *a directed relationship* that transforms one or mul
 | `code_ref` | The fully-qualified module and function where this operation's logic lives. | Unlike `op_key`, this field is automatically filled and is not guaranteed to be persisted across refactors. | `"overture_base.base_land.promote_names" (str)` |
 | `code_version` | The commit (or other revision id) of the code that was run for this operation. | Automatically filled; pinpoints the exact code that was run when paired with `code_ref`. | `"a1b2c3d" (str)` |
 | `output_key_columns` | The columns that the output of the operation is keyed on. | Necessary for knowing how to trace the lineage graph at the row-level. | `["gers_id", "provider"] (array[str])` |
-| `description` | Plain-text description of *what* this operation did. | Makes the lineage graph human-interpretable and establishes a way to understand our pipelines without reading code. | `"Trailing/leading whitespace is removed from names." (str)` |
+| `description` | Plain-text description of *what* this operation did and *why* it happens. | Makes the lineage graph human-interpretable and establishes a way to understand our pipelines without reading code. The why is the half that cannot be recovered from the code, and it is also what a reader falls back on for any field no entry mentions. | `"Trailing/leading whitespace is removed from names, since providers pad inconsistently." (str)` |
 | `identity_capture_status` | `partial` or `complete`, defaulting to `partial`. Complete capture accounts for this operation's input fates and output origins through entries or the declared pass-through rule. | Tells readers when an absent entry supports a conclusion. It does not promise complete column detail or complete upstream history. | `"complete" (str)` |
 | `physical_source` | What physical location this operation reads from, if any. If the operation reads from multiple physical locations, it should be split into smaller operations. | This lets the bundle-entrypoint operations specify what sources they draw information from. | `"s3://overture-stuff/data.json" (str)` |
 | `physical_dest` | What physical location this operation writes to, if any. If an operation writes to multiple locations, it should be split into multiple operations. | This lets bundle-exit point operations specify what they end up materializing. | `"s3://overture-stuff/output.parquet" (str)` |
@@ -85,7 +85,7 @@ However, `identity_capture_status=complete` does not mean that the row detail ta
 | `output_id` | The output record ID. | - | `["1337", "meta"] (array[str])` |
 | `affected_output_columns` | This array asks: which output columns does this entry concern? Null means no column-level detail was recorded. | If `kind=derived_from`, these are the columns the input supplied or helped compute. If `kind=content_changed`, these are the changed columns. If `kind=flagged`, these are the columns the finding concerns. | `["height", "name"] (array[str])` |
 | `column_change` | For a `content_changed` entry: `set` (filled from empty), `replaced` (changed a present value), or `cleared` (made empty). Null means "we don't know". For implementers: columns with the same fate should occupy the same record. | Describes the before/after change to a surviving record separately from which input supplied the value. | `"set" (str)` |
-| `detail` | How this record was changed. | The "why" lives in the operations table, the "how" lives here. | - |
+| `detail` | What happened to this particular record, where that goes beyond what the operation's `description` already says. | The operation says why it runs at all; this says why it reached this one record. Worth writing where the per-record reason varies, such as a match score that fell under a threshold, and worth leaving null where every record's story is the same. | `"IOU 0.31, below the 0.5 threshold" (str)` |
 
 #### Justification for `kind`
 `kind` describes the fact an entry records:
@@ -229,8 +229,25 @@ all of them.
 There is no column-completeness field. Report known sources without assuming
 they are the only ones. Same-ID survival alone does not prove that a field was
 unchanged. Omitting column detail does not make a complete record-level account
-partial. Rules for tracing unrecorded fields through enrichments and known
-filters remain open; `identity_capture_status` does not settle them.
+partial.
+
+#### Column carry-over is not recorded
+
+A field that no entry mentions has no recorded source. Cairn does not say whether
+it carried over untouched or was rewritten by a rule that wrote no entries. That
+question is answered by reading the `description` of each operation on the
+record's path, which is a handful of operations rather than a query.
+
+The alternative is for every operation to declare which columns it may have
+written, so that a column named nowhere could be inferred to have carried over.
+That was considered and rejected. The declaration would sit on every operation,
+nothing could verify it, and forgetting one entry would produce a confident wrong
+answer rather than a gap, which is worse than the silence it replaces.
+
+So column tracing answers per-record choices, which is where merges and donor
+selections live and where the question is usually asked. Everything uniform,
+including normalizations, unit conversions, and renames at ingest, is explained
+by the operation's description and the code it points at.
 
 #### What an absent entry means
 
