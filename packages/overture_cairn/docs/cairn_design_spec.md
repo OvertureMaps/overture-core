@@ -42,8 +42,8 @@ An operation is essentially *a directed relationship* that transforms one or mul
 | `identity_capture_status` | `partial` or `complete`, defaulting to `partial`. Complete capture accounts for this operation's input fates and output origins through entries or the declared pass-through rule. | Tells readers when an absent entry supports a conclusion. It does not promise complete column detail or complete upstream history. | `"complete" (str)` |
 | `physical_source` | What physical location this operation reads from, if any. If the operation reads from multiple physical locations, it should be split into smaller operations. | This lets the bundle-entrypoint operations specify what sources they draw information from. | `"s3://overture-stuff/data.json" (str)` |
 | `physical_dest` | What physical location this operation writes to, if any. If an operation writes to multiple locations, it should be split into multiple operations. | This lets bundle-exit point operations specify what they end up materializing. | `"s3://overture-stuff/output.parquet" (str)` |
-| `input_op_ids` | The IDs of the operations whose outputs this operation consumes. | Intermediate datasets need not be stored, so operations link directly to operations. These links form the dataset-level graph; row detail describes record-level links. | `["20260903XXXX.reduce_precision", "20260903XXXX.simplify_geometry"] (array[str])` |
-| `passthrough_input_op_ids` | Inputs whose records survive under the same identity except for recorded outcomes. Defaults to an empty list. Readers may infer survival from absence only with `identity_capture_status=complete`. | Identifies which inputs supply the continuing record stream. Matching key columns cannot distinguish a base table from reference data. An empty list permits no implicit survival links. | `["20260903XXXX.read_feed"] (array[str])` |
+| `input_op_ids` | The IDs of the operations that fed into this one. | The IDs of the operations that feed into this one, if any. | This is, perhaps, initially counterintuitive: if operations are edges in the data transformation graph, why are we associating edges with one another? But recall: some operations *never materialize their data*. Thanks to Spark's Catalyst optimizer, an intermediate function that accepts a PySpark `DataFrame` and outputs another is *never even guaranteed to have the output of that function in memory*. Because of this, in most of Overture's use cases, ops link *directly to other ops*. In other words, the operations table is its own graph, with operations as nodes and `input_op_ids` as its edges; this sits one level above the finer graph that `row_detail` builds, where records are the nodes and `kind` names the edges between them. | `["20260903XXXX.reduce_precision", "20260903XXXX.simplify_geometry"] (array[str])` |
+| `passthrough_input_op_ids` | Inputs whose records survive under the same identity except for recorded outcomes. Defaults to an empty list. Readers may infer survival from absence only with `identity_capture_status=complete`. | Identifies which inputs supply the continuing record stream. An empty list permits no implicit survival links. | `["20260903XXXX.read_feed"] (array[str])` |
 | `timestamp` | When this operation was logged. | This column does not necessarily indicate when the operation *happened* (in some cases this may be an unanswerable question) -- it just captures when the operation record was added to Cairn. | `2026-09-07 13:01:00 (timestamp)` |
 
 #### Per-Cairn Operations Table Validations
@@ -71,28 +71,9 @@ These rules also enforce a level of tracking detail: if a job reads from multipl
 
 #### Complete and partial capture
 
-`complete` covers record relationships for this operation, including merges,
-splits, drops, and new identities. `partial` includes no capture and capture of
-only some effects. Known entries remain useful in either case; describe missing
-coverage in `description`.
+If `identity_capture_status=complete`, the record-level relationships between the input and output datasets are recoverable, even for things like merges, splits, drops, and id minting. A `partial` capture covers all other cases, any gaps should be described in `description`.
 
-An empty detail table can be complete. A filter that rejects zero records has
-nothing to write. Helpers for known operations can fill in the status; a generic
-transform defaults to partial. Reads, writes, and copies can be complete without
-row entries. A read's account starts at its source, so "complete" does not claim
-to explain how that source was made.
-
-**simplification:** The status covers the whole operation. If one input is only
-partly recorded, the operation is partial. Add per-input coverage only if actual
-usage needs it.
-
-Schema checks cannot prove that all real effects were recorded. Adapters must
-not claim complete record capture when duplicate or unknown keys make individual
-records impossible to distinguish. Composite keys can identify records after a
-join or explode.
-
-For older recordings without `identity_capture_status`, readers use `partial`.
-The old `has_row_detail` field does not establish completeness.
+However, `identity_capture_status=complete` does not mean that the row detail table has entries for that operation! If everything successfully passes a filtering operation, there is no reason to write any row-level records for that operation! This is also the case for reads, writes, copies, etc. -- you can just look at the physical data! Though if there are *any* gaps in lineage, the whole operation is marked `identity_capture_status=partial`.
 
 ### Row Detail
 | Column | Description | Reason for inclusion | Example + type |
@@ -214,6 +195,11 @@ retained identity: a split that keeps A and creates B records `A -> A` and
 Content changes and flags describe surviving records but do not replace a
 split's contribution links. Entries sharing endpoints describe one record link,
 not extra contributors.
+
+If a flag or content change says an input survived and that input also has
+contribution links, complete capture requires a same-ID `derived_from` entry.
+Reject a complete recording that omits it. In a partial recording, keep the
+known survival and report that contribution links may be missing.
 
 Reject a drop combined with a same-ID derivation, content change, or flag for the
 same input record in the same operation. A drop can coexist with contributions
