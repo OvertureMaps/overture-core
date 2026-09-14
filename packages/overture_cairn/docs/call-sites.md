@@ -1,3 +1,22 @@
+> This document is outdated. See [cairn_design_spec.md](./cairn_design_spec.md)
+> for the current schema and [cairn_recording_guide.md](./cairn_recording_guide.md)
+> for how to decide what to record.
+>
+> The call shapes below predate several decisions. `run.declarative_op`,
+> `run.comparative_op`, and `run.not_applicable_op` are now `run.read`,
+> `run.write`, `run.copy`, and `run.transform`, named for the four operation
+> shapes. `recording_method`, `records_captured`, and `complete=False` no longer
+> exist. "Edges" are now "row detail". The height example records a
+> `derived_from` carrying a `column_change`, which the schema no longer allows,
+> since only a `content_changed` entry has a before and an after to compare.
+>
+> The examples are still worth reading for the shape of the problem each job
+> poses. The current rules use `passthrough_input_op_ids` with
+> `identity_capture_status`, allow matching IDs on `derived_from`, and use null
+> for unrecorded column detail. The [README](../README.md#record-a-filter) shows
+> the implemented recording calls. The sketches below describe an adapter that
+> has not been built.
+
 # What calling cairn looks like
 
 Sketches of the Spark adapter's call sites, drawn against real jobs. None of this
