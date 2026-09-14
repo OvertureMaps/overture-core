@@ -25,19 +25,11 @@ ROW_DETAIL = "row_detail"
 
 
 class Kind(Enum):
-    """What happened to the ids one operation handled.
+    """The fact an entry records about an input, an output, or their relationship.
 
-    The value follows from three questions: is there an input id, is there an
-    output id, and if there are both, are they equal. That makes this set
-    exhaustive over identity outcomes, which is the whole of what it claims to
-    describe.
-
-    A merge, a split, and a rebind are all shapes of a set of ``DERIVED_FROM``
-    entries, so none of them appears here. Within one operation, one input
-    reaching one output is a rebind, several sharing an ``output_id`` are a merge,
-    and several sharing an ``input_id`` are a split. Reading the shape off a group
-    saves a caller from naming it, and it lets a many-to-many stay one thing that
-    answers to one name.
+    ``DERIVED_FROM`` records a contribution, even when the IDs match.
+    ``CONTENT_CHANGED`` records a value change on a surviving record.
+    Merges and splits are groups of contribution links.
     """
 
     DROPPED = "dropped"
@@ -50,19 +42,24 @@ class Kind(Enum):
 class ColumnChange(Enum):
     """What happened to the values in an entry's ``affected_output_columns``.
 
-    This is :class:`Kind` asked one grain down, about a single cell. ``SET`` is a
-    mint, ``CLEARED`` is a drop, and ``REPLACED`` is a content change.
-    The cell-grain equivalent of ``DERIVED_FROM`` would name which other column a
-    value came from, and that stays in ``detail`` prose, because the logic behind
-    such a choice does not fit a closed schema.
-
-    Only a ``CONTENT_CHANGED`` entry can carry one, since that is the only kind
-    whose record has both a before and an after.
+    ``SET`` fills an empty value, ``CLEARED`` empties a present value, and
+    ``REPLACED`` changes a present value. Only ``CONTENT_CHANGED`` carries this
+    field, because it records how values changed.
     """
 
     SET = "set"
     REPLACED = "replaced"
     CLEARED = "cleared"
+
+
+class IdentityCaptureStatus(str, Enum):
+    """Whether entries and pass-through rules account for every record.
+
+    This says nothing about missing column detail or earlier operations.
+    """
+
+    PARTIAL = "partial"
+    COMPLETE = "complete"
 
 
 class OpType(Enum):
@@ -133,13 +130,15 @@ class Op:
     code_ref: Optional[str] = None
     code_version: Optional[str] = None
     output_key_columns: Optional[Tuple[str, ...]] = None
-    has_row_detail: bool = False
+    identity_capture_status: IdentityCaptureStatus = IdentityCaptureStatus.PARTIAL
     physical_source: Optional[str] = None
     physical_dest: Optional[str] = None
     input_op_ids: Tuple[str, ...] = ()
+    passthrough_input_op_ids: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "input_op_ids", tuple(self.input_op_ids))
+        for name in ("input_op_ids", "passthrough_input_op_ids"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
         if self.output_key_columns is not None:
             object.__setattr__(
                 self, "output_key_columns", tuple(self.output_key_columns)
@@ -158,24 +157,40 @@ def op_type_of(op: Op) -> OpType:
     return OpType.TRANSFORM
 
 
-def changes_grain(op: Op, inputs: Iterable[Op]) -> bool:
-    """Whether an operation's output is keyed differently from its inputs.
+def resolve_input_op_id(row: Mapping[str, Any], op: Op) -> Optional[str]:
+    """Identify the source of an input ID, or return None if it is unresolved.
 
-    A missing row detail entry means a record passed through unchanged, and that
-    claim holds only while the output records are the same kind of thing as the
-    input records. An aggregate keyed by category consumes records keyed by id, so
-    nothing passed through it and a reader walking forward has to stop there.
-    Changing grain is a legitimate thing for an operation to do, which is why this
-    reports a fact and no rule forbids it.
+    Validate the entry before using the result to follow a record.
     """
-    return any(i.output_key_columns != op.output_key_columns for i in inputs)
+    if row.get("input_id") is None:
+        return None
+    if row.get("input_op_id") is not None:
+        return row["input_op_id"]
+    return op.input_op_ids[0] if len(op.input_op_ids) == 1 else None
+
+
+def keeps_grain_of(op: Op, inputs: Iterable[Op]) -> Tuple[Op, ...]:
+    """Which of an operation's inputs are keyed the same way as its output.
+
+    A compatibility check, useful for questioning a pass-through declaration that
+    names an input keyed differently from the output. Matching key columns say how
+    to identify a record, and never whether that record belongs in the output, so
+    an operation says which of its inputs a reader may draw conclusions about in
+    ``passthrough_input_op_ids`` and nothing here substitutes for that. Two tables
+    keyed by id routinely play different roles in one join.
+
+    Comparing key column names is also loose in both directions. A rename that
+    leaves identity alone drops an input from this result, and a group-by on the
+    same column keeps the name while changing what one record means.
+    """
+    return tuple(i for i in inputs if i.output_key_columns == op.output_key_columns)
 
 
 @dataclass(frozen=True)
 class Column:
     """One column of one Cairn table.
 
-    ``type`` comes from a small vocabulary, ``string``, ``bool``, ``timestamp``,
+    ``type`` comes from a small vocabulary, ``string``, ``timestamp``,
     and ``string[]``, which an adapter maps onto its own type system.
     """
 
@@ -228,13 +243,21 @@ OPERATION_COLUMNS: Tuple[Column, ...] = (
         "The columns this operation's output is keyed on. Row detail ids are read"
         " positionally against these.",
     ),
-    Column("description", "string", False, "What this operation did, in prose."),
     Column(
-        "has_row_detail",
-        "bool",
+        "description",
+        "string",
         False,
-        "Whether this operation may have entries in the row detail table. A cached"
-        " fact, so a validator can confirm it against those entries.",
+        "What this operation did and why it happens, in prose. The why is the half"
+        " a reader cannot recover from the code, and it is also the fallback for"
+        " any field no row detail entry mentions.",
+    ),
+    Column(
+        "identity_capture_status",
+        "string",
+        False,
+        "Whether all input fates and output origins are covered by entries or"
+        " pass-through rules. Values are partial (the default) and complete."
+        " This does not promise complete column detail or upstream history.",
     ),
     Column(
         "physical_source",
@@ -257,6 +280,15 @@ OPERATION_COLUMNS: Tuple[Column, ...] = (
         "The operations whose output this one consumed.",
     ),
     Column(
+        "passthrough_input_op_ids",
+        "string[]",
+        True,
+        "Inputs whose records survive under the same IDs unless entries say"
+        " otherwise. Absence implies survival only with complete identity capture."
+        " With complete capture, an absent entry for any other input means no"
+        " direct contribution. With partial capture, absence means unknown.",
+    ),
+    Column(
         "timestamp",
         "timestamp",
         False,
@@ -274,7 +306,9 @@ ROW_DETAIL_COLUMNS: Tuple[Column, ...] = (
         " which output_key_columns to read it against. Null when the operation has"
         " one input, since there is nothing to disambiguate.",
     ),
-    Column("kind", "string", False, "What happened to the ids."),
+    Column(
+        "kind", "string", False, "The fact recorded about a record or contribution."
+    ),
     Column(
         "input_id",
         "string[]",
@@ -293,11 +327,11 @@ ROW_DETAIL_COLUMNS: Tuple[Column, ...] = (
         "affected_output_columns",
         "string[]",
         True,
-        "Which output columns this entry concerns, where null means all of them."
+        "Which output columns this entry concerns. Null means no column detail"
+        " was recorded; claiming all columns requires listing them."
         " Under derived_from these are the columns the input supplied, under"
         " content_changed the ones whose values changed, and under flagged the ones"
-        " being called out. Only name columns when more than one input could have"
-        " supplied the value.",
+        " being called out. An empty list is invalid.",
     ),
     Column(
         "column_change",
@@ -319,6 +353,8 @@ def op_row(op: Op) -> Dict[str, Any]:
     row: Dict[str, Any] = {}
     for column in OPERATION_COLUMNS:
         value = getattr(op, column.name)
+        if isinstance(value, Enum):
+            value = value.value
         row[column.name] = list(value) if isinstance(value, tuple) else value
     return row
 
