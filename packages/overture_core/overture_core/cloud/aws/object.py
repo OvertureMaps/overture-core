@@ -3,7 +3,7 @@
 import logging
 import os
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import boto3
@@ -108,6 +108,169 @@ def delete_object(bucket: str, key: str) -> None:
 def write_marker(bucket: str, key: str) -> None:
     """Write an empty marker object (e.g. a ``_SUCCESS`` file) to ``bucket/key``."""
     boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=b"")
+
+
+SUCCESS_FILE_NAME = "success"
+
+
+def success_file_key(prefix: str) -> str:
+    """Return the key of the ``success`` marker for a partition *prefix*.
+
+    >>> success_file_key("feeds/x/ds=2024-01-01/")
+    'feeds/x/ds=2024-01-01/success'
+    >>> success_file_key("")
+    'success'
+    """
+    prefix = (prefix or "").strip("/")
+    return f"{prefix}/{SUCCESS_FILE_NAME}" if prefix else SUCCESS_FILE_NAME
+
+
+def write_success_file(s3_uri: str) -> str:
+    """Write an empty ``success`` marker under the prefix in *s3_uri*.
+
+    Returns the ``s3://`` URI of the marker written.
+    """
+    bucket, prefix = parse_s3_uri(s3_uri)
+    key = success_file_key(prefix)
+    write_marker(bucket, key)
+    uri = build_s3_uri(bucket, key)
+    logging.info("Wrote success file %s", uri)
+    return uri
+
+
+def delete_success_file(s3_uri: str) -> bool:
+    """Delete the ``success`` marker under the prefix in *s3_uri* if present.
+
+    Returns whether a marker existed and was deleted. Checks first so the
+    caller (and the logs) can tell a real delete from a no-op, which
+    :func:`delete_object` alone can't distinguish.
+    """
+    bucket, prefix = parse_s3_uri(s3_uri)
+    key = success_file_key(prefix)
+    if not object_exists(bucket, key):
+        logging.info(
+            "No success file at %s; nothing to delete", build_s3_uri(bucket, key)
+        )
+        return False
+    delete_object(bucket, key)
+    logging.info("Deleted success file %s", build_s3_uri(bucket, key))
+    return True
+
+
+def success_file_exists(bucket: str, prefix: str) -> bool:
+    """Return whether a ``success`` marker exists under ``bucket/prefix``."""
+    return object_exists(bucket, success_file_key(prefix))
+
+
+def validate_location(
+    bucket: str,
+    prefix: str,
+    *,
+    check_exists: bool = True,
+    check_writable: bool = False,
+    label: str = "location",
+) -> None:
+    """Validate that an S3 location exists and/or is writable, raising if not.
+
+    Always confirms the bucket exists (``head_bucket``); optionally that at
+    least one object lives under *prefix* and/or that the bucket accepts
+    writes. Collapses every failure into a ``ValueError`` with a readable
+    message so callers get one exception type to handle.
+
+    Args:
+        bucket: Bucket name.
+        prefix: Prefix under *bucket* to validate.
+        check_exists: Require at least one object under *prefix*.
+        check_writable: Require the bucket to accept a write probe.
+        label: Human-readable name for error messages (e.g. ``"source"``).
+
+    Raises:
+        ValueError: If the bucket is missing, the prefix is empty when
+            *check_exists* is set, the bucket rejects writes when
+            *check_writable* is set, or any other S3 error occurs.
+    """
+    uri = build_s3_uri(bucket, prefix)
+    try:
+        boto3.client("s3").head_bucket(Bucket=bucket)
+        exists = not check_exists or prefix_exists(bucket, prefix)
+    except botocore.exceptions.ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchBucket", "404"):
+            raise ValueError(f"{label} bucket does not exist: {bucket}") from exc
+        raise ValueError(f"Failed to validate {label} {uri}: {exc}") from exc
+
+    if not exists:
+        raise ValueError(f"{label} path does not exist or is empty: {uri}")
+    if check_writable and not bucket_writable(bucket):
+        raise ValueError(f"{label} bucket is not writable: {bucket}")
+    logging.info("Validated %s %s", label, uri)
+
+
+def console_url(
+    s3_uri: str, *, is_object: bool = False, region: str | None = None
+) -> str:
+    """Return the AWS console URL for an ``s3://`` URI.
+
+    Prefixes (default) open the bucket listing at that prefix; pass
+    ``is_object=True`` for the object detail page. *region* defaults to
+    :func:`overture_core.cloud.aws.core.get_region`.
+    """
+    from overture_core.cloud.aws.core import get_region
+
+    bucket, key = parse_s3_uri(s3_uri.rstrip("/"))
+    encoded = quote(key, safe="/")
+    region = region or get_region()
+    if is_object:
+        return (
+            f"https://{region}.console.aws.amazon.com/s3/object/{bucket}"
+            f"?region={region}&prefix={encoded}"
+        )
+    # The bucket root is the empty prefix, not "/".
+    prefix = f"{encoded}/" if encoded else ""
+    return (
+        f"https://{region}.console.aws.amazon.com/s3/buckets/{bucket}"
+        f"?region={region}&prefix={prefix}"
+    )
+
+
+def read_parquet_prefix(
+    s3_uri: str, columns: list[str] | None = None
+) -> list[dict] | None:
+    """Read every ``.parquet`` object under *s3_uri* into a list of row dicts.
+
+    Suited to small result sets (job outputs, manifests), not bulk data:
+    each file is pulled into memory and concatenated. Returns ``None`` when
+    no parquet files exist under the prefix.
+
+    Requires ``pyarrow``, imported lazily so it stays an optional dependency
+    of this package.
+    """
+    import io
+
+    import pyarrow
+    import pyarrow.parquet as pq
+
+    bucket, prefix = parse_s3_uri(s3_uri)
+    prefix = prefix.strip("/")
+    list_prefix = f"{prefix}/" if prefix else ""
+    s3 = boto3.client("s3")
+
+    keys = [
+        obj["Key"]
+        for page in s3.get_paginator("list_objects_v2").paginate(
+            Bucket=bucket, Prefix=list_prefix
+        )
+        for obj in page.get("Contents", [])
+        if obj["Key"].endswith(".parquet")
+    ]
+    if not keys:
+        return None
+
+    tables = []
+    for key in keys:
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        tables.append(pq.read_table(io.BytesIO(body), columns=columns))
+    return pyarrow.concat_tables(tables).to_pylist()
 
 
 def get_object_bytes(bucket: str, key: str) -> bytes | None:
