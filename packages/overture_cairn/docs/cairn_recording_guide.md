@@ -6,6 +6,8 @@ question. See [cairn_design_spec.md](./cairn_design_spec.md) for what the column
 mean and which rules the tables have to satisfy. Finish at Part 7 even if the
 operation needs no row detail.
 
+For the diagram version, see the [recording flowchart](./cairn_recording_flowchart.md).
+
 ## Part 1: How many operations is this?
 
 Start with a piece of code and split it before recording anything.
@@ -154,7 +156,9 @@ A merge writes one contribution per input record, even when those records came
 from a single input table. A split writes one per child. If a split keeps A and
 creates B, write both `A -> A` and `A -> B`; the second link alone does not imply
 the first. To claim complete capture, list all the links. A flag or content-change
-entry does not replace that list.
+entry does not replace that list. If it says A survived alongside `A -> B`,
+complete capture also needs the `A -> A` contribution. A complete recording
+without that link is rejected.
 
 A donor link is enough to record where a value came from. An extra
 `content_changed` entry is optional if you also want to record whether the value
