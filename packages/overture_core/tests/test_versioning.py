@@ -1,12 +1,29 @@
 """Unit tests for version-string parsing helpers."""
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from overture_core.versioning import (
+    date_to_yyww,
     get_last_modified_version,
     parse_http_last_modified_version,
     parse_iso_version,
 )
+
+
+class TestDateToYyww:
+    def test_iso_week(self):
+        assert date_to_yyww(datetime(2025, 1, 10)) == "2502"
+
+    def test_iso_year_boundary(self):
+        # Dec 30 2024 is a Monday in ISO week 1 of 2025.
+        assert date_to_yyww(datetime(2024, 12, 30)) == "2501"
+
+    def test_defaults_to_now(self):
+        fixed = datetime(2025, 1, 10)
+        with patch("overture_core.versioning.datetime") as dt:
+            dt.now.return_value = fixed
+            assert date_to_yyww() == "2502"
 
 
 class TestVersionParsers:
