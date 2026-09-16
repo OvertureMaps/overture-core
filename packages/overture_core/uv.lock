@@ -582,6 +582,15 @@ wheels = [
 ]
 
 [[package]]
+name = "geojson"
+version = "3.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/a9/bd61eee2c7904947094b74866b569f3fd5a8d6ac907ecdfecef74b19d459/geojson-3.3.0.tar.gz", hash = "sha256:92e83b9cb378a450b42f1207bb9b2a031f9fc89185f335153c44369b8b8b71fd", size = 25141, upload-time = "2026-05-28T21:48:08.214Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/aa/5e/fdd72167b57158d743353f71d453200719744d1e75f18b1c8230508db370/geojson-3.3.0-py3-none-any.whl", hash = "sha256:a2d885187eeaa8b357600b3fcc9d963cb4300d1694196636dbd7eddc82fd0825", size = 15181, upload-time = "2026-05-28T21:48:06.648Z" },
+]
+
+[[package]]
 name = "geopandas"
 version = "1.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -697,6 +706,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/da/137ddeea14c2cb86864838277b2607d09f8253f152156a07f84e11768a28/lz4-4.4.5-cp314-cp314-win32.whl", hash = "sha256:bd85d118316b53ed73956435bee1997bd06cc66dd2fa74073e3b1322bd520a67", size = 90139, upload-time = "2025-11-03T13:02:24.301Z" },
     { url = "https://files.pythonhosted.org/packages/18/2c/8332080fd293f8337779a440b3a143f85e374311705d243439a3349b81ad/lz4-4.4.5-cp314-cp314-win_amd64.whl", hash = "sha256:92159782a4502858a21e0079d77cdcaade23e8a5d252ddf46b0652604300d7be", size = 101497, upload-time = "2025-11-03T13:02:25.187Z" },
     { url = "https://files.pythonhosted.org/packages/ca/28/2635a8141c9a4f4bc23f5135a92bbcf48d928d8ca094088c962df1879d64/lz4-4.4.5-cp314-cp314-win_arm64.whl", hash = "sha256:d994b87abaa7a88ceb7a37c90f547b8284ff9da694e6afcfaa8568d739faf3f7", size = 93812, upload-time = "2025-11-03T13:02:26.133Z" },
+]
+
+[[package]]
+name = "maproulette"
+version = "1.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/79/51/1c53bdae56ffc6f787240501695b75aebb6bff353c7bfa62f82a315c586d/maproulette-1.8.1.tar.gz", hash = "sha256:d78bf58f01130c840a741e21f050628b38bdfc7e3385a5059fcc3c9f2149001e", size = 28477, upload-time = "2024-06-20T20:20:00.733Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/39/9b/80edeecafef86d86f46a973aa7a062c5be9a1eb4a0306f4661728b3fc6f8/maproulette-1.8.1-py3-none-any.whl", hash = "sha256:4ab83aaa509d71a433b8e7e1cf1bf7025d0b758cf859cf503745a0aea9038b30", size = 29267, upload-time = "2024-06-20T20:19:58.758Z" },
 ]
 
 [[package]]
@@ -1018,10 +1039,18 @@ dependencies = [
 dev = [
     { name = "databricks-sdk" },
     { name = "duckdb" },
+    { name = "geojson" },
     { name = "jinja2" },
+    { name = "maproulette" },
     { name = "overture-stac" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "shapely" },
+]
+maproulette = [
+    { name = "geojson" },
+    { name = "maproulette" },
+    { name = "shapely" },
 ]
 sql-spark = [
     { name = "pyspark" },
@@ -1038,7 +1067,10 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.28" },
     { name = "databricks-sdk", marker = "extra == 'dev'", specifier = ">=0.20" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
+    { name = "geojson", marker = "extra == 'maproulette'", specifier = ">=3.3.0" },
     { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3.0" },
+    { name = "maproulette", marker = "extra == 'maproulette'", specifier = ">=1.8.1" },
+    { name = "overture-core", extras = ["maproulette"], marker = "extra == 'dev'" },
     { name = "overture-core", extras = ["stac"], marker = "extra == 'dev'" },
     { name = "overture-serverless", directory = "../overture_serverless" },
     { name = "overture-stac", marker = "extra == 'stac'" },
@@ -1050,9 +1082,10 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "requests", specifier = ">=2.31" },
+    { name = "shapely", marker = "extra == 'maproulette'", specifier = ">=2.1.1" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
-provides-extras = ["stac", "sql-spark", "sql-trino", "dev"]
+provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "dev"]
 
 [[package]]
 name = "overture-serverless"

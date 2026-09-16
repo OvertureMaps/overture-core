@@ -7,6 +7,8 @@ Shared, framework-agnostic business logic — portable job classes built on [`ov
 
 `overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql` modules too.
 
+`maproulette`/`geojson`/`shapely` are likewise behind an optional `overture-core[maproulette]` extra, needed only for `maproulette.client.MapRouletteClient`.
+
 ## Modules
 
 Framework-agnostic helpers, each importable on its own without pulling in the job classes below.
@@ -32,6 +34,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
+| `maproulette.client` | MapRoulette project/challenge API client: create/update, admin sync, challenge upsert with drift check, rebuild with retry handling, delete, and building a challenge's GeoJSON tasks from a violations dataframe. Framework-agnostic — takes a `maproulette.Configuration` and a location list; deployment config like a default location/admin roster stays with the caller. |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
 | `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
