@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 package = false
 
 [dependency-groups]
-dev = ["ruff==0.16.5"]
+dev = ["ruff==0.16.6"]
 
 [tool.ruff.format]
 # ruff format is Black-compatible by default.

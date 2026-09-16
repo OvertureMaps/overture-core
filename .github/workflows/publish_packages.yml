@@ -100,7 +100,7 @@ jobs:
         # Narrow OIDC role (omf-github-terraform's oidc-aws.tf) that can only
         # read this secret.
         if: github.event_name == 'push'
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: arn:aws:iam::816069134238:role/gha-pull-requester-secrets-reader
           aws-region: us-west-2
