@@ -10,8 +10,8 @@ import requests
 import shapely
 from maproulette.api.errors import HttpError, InvalidJsonError
 
-from overture_core.maproulette import client as client_module
-from overture_core.maproulette.client import MapRouletteClient, simplified
+from overture_core.apis import maproulette as client_module
+from overture_core.apis.maproulette import MapRouletteClient, simplified
 
 
 class _FakeClient:
