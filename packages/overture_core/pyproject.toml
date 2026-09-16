@@ -65,7 +65,7 @@ sql-spark = [
 sql-trino = [
     "trino>=0.328",
 ]
-# cloud.azure imports azure-storage-blob lazily; only consumers touching
+# cloud.azure.object imports azure-storage-blob lazily; only consumers touching
 # Azure Blob need it.
 azure = [
     "azure-storage-blob>=12.0",

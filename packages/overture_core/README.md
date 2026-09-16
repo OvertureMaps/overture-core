@@ -27,7 +27,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
 | `cloud.cloud` | Provider-agnostic cloud helpers that don't belong to one specific vendor. |
 | `cloud.aws` | The home for any AWS-specific helper, built on boto3, one module per service (`core` for STS/IAM, `object` for S3, `ecs`, `ecr`, `datasync`, `secrets`, `codeartifact`). |
-| `cloud.azure` | The home for any Azure-specific helper. Imports `azure-storage-blob` lazily; install `overture-core[azure]` to use it. |
+| `cloud.azure` | The home for any Azure-specific helper, one module per service (`object` for Blob Storage). Imports `azure-storage-blob` lazily; install `overture-core[azure]` to use it. |
 | `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
 | `apis` | Clients for third-party HTTP APIs, one module per vendor (e.g. `apis.tomtom` for TomTom's Map Content API). Anything that's not a cloud platform but still an external service belongs here. |

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from overture_core.cloud.azure import (
+from overture_core.cloud.azure.object import (
     ContentMd5ClearResult,
     blob_account_url,
     clear_content_md5,
