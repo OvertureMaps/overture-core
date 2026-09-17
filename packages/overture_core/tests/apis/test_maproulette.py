@@ -312,6 +312,98 @@ def test_client_init_sets_attributes_and_builds_apis():
     )
 
 
+def _real_client(**overrides):
+    """A real (non-``__new__``-bypassed) MapRouletteClient, for exercising the
+    lazy API client construction in ``__init__``."""
+    return MapRouletteClient(
+        configuration=mock.MagicMock(),
+        name=overrides.get("name", "Fix Invalid Intersections"),
+        description=overrides.get("description", "desc"),
+        common_instructions=overrides.get("common_instructions", "common"),
+        violation_descriptions=overrides.get("violation_descriptions", {}),
+        checkin_comment=overrides.get("checkin_comment", "checkin"),
+        locations=overrides.get("locations", [{"name": "California"}]),
+        output_bucket=overrides.get("output_bucket", "bucket"),
+    )
+
+
+def test_init_does_not_eagerly_build_any_api_client():
+    with mock.patch.object(client_module, "_retrying_client") as retrying_client:
+        _real_client()
+
+    retrying_client.assert_not_called()
+
+
+def test_build_feature_collection_builds_no_api_clients():
+    with mock.patch.object(client_module, "_retrying_client") as retrying_client:
+        client = _real_client(
+            violation_descriptions={"missing_name": {"default": "desc"}}
+        )
+        df = pd.DataFrame(
+            [
+                {
+                    "id": 1,
+                    "type": "node",
+                    "flag_id": "flag-1",
+                    "severity": 1,
+                    "violation_name": "missing_name",
+                    "context": None,
+                    "tags": {},
+                    "geometry": shapely.wkb.dumps(shapely.Point(0, 0)),
+                }
+            ]
+        )
+        client.build_feature_collection(df)
+
+    retrying_client.assert_not_called()
+
+
+def test_rebuild_challenge_does_not_build_user_api():
+    api = _FakeRebuildApi()
+    with mock.patch.object(
+        client_module, "_retrying_client", return_value=api
+    ) as retrying_client:
+        client = _real_client()
+        client.rebuild_challenge({"name": "California"})
+
+    assert retrying_client.call_args_list == [
+        mock.call(maproulette.Project, client._configuration),
+        mock.call(maproulette.Challenge, client._configuration),
+    ]
+
+
+def test_delete_project_does_not_build_user_api():
+    project_api = mock.MagicMock()
+    project_api.get_project_by_name.return_value = {"data": {"id": 1}}
+    challenge_api = mock.MagicMock()
+    challenge_api.get_challenge_by_name.return_value = {"data": {"id": 2}}
+
+    def fake_retrying_client(api_cls, configuration):
+        return project_api if api_cls is maproulette.Project else challenge_api
+
+    with mock.patch.object(
+        client_module, "_retrying_client", side_effect=fake_retrying_client
+    ) as retrying_client:
+        client = _real_client()
+        client.delete_project()
+
+    called_classes = {call.args[0] for call in retrying_client.call_args_list}
+    assert called_classes == {maproulette.Project, maproulette.Challenge}
+    assert maproulette.User not in called_classes
+
+
+def test_project_api_is_cached_across_accesses():
+    with mock.patch.object(
+        client_module, "_retrying_client", return_value=mock.MagicMock()
+    ) as retrying_client:
+        client = _real_client()
+        first = client._project_api
+        second = client._project_api
+
+    assert first is second
+    retrying_client.assert_called_once_with(maproulette.Project, client._configuration)
+
+
 def test_sync_project_admins_swallows_maproulette_errors():
     api = mock.MagicMock()
     api.find_user_by_username.return_value = {"data": [{"id": 1}]}
