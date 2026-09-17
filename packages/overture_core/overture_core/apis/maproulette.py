@@ -12,6 +12,12 @@ its ``maproulette.Configuration`` credentials come from -- callers own both.
 Location/admin lists (e.g. a fixed set of cities or countries, a default
 admin roster) are deployment config owned by the caller, not this module.
 
+The project/challenge/user API clients (each with its own MapRoulette
+health-check ping on first use) are built lazily on first access rather than
+eagerly in ``__init__``, so a caller that only needs ``rebuild_challenge`` or
+``delete_project`` never pays for the user API client that only
+``update_project``'s admin sync uses.
+
 Requires the ``maproulette`` extra (``overture-core[maproulette]``): the
 ``maproulette``, ``geojson``, and ``shapely`` packages aren't hard
 dependencies of ``overture_core`` since most consumers of this package don't
