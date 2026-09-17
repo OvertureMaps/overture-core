@@ -56,6 +56,14 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 stac = [
     "overture-stac",
 ]
+# Kept out of the base dependencies for the same reason as `stac` above:
+# most consumers of this package don't touch MapRoulette, and `maproulette`
+# pulls in `geojson`/`shapely` that would otherwise be dead weight for them.
+maproulette = [
+    "maproulette>=1.8.1",
+    "geojson>=3.3.0",
+    "shapely>=2.1.1",
+]
 # Kept out of `dev`: these need a real JVM (pyspark) or a running Trino
 # coordinator (trino), so only the "sql-engines" CI workflow installs them,
 # not a routine local `pytest` run.
@@ -73,7 +81,7 @@ azure = [
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
-    "overture-core[stac,azure]",
+    "overture-core[stac,azure,maproulette]",
     # Renders BBOX_WKT_JINJA in tests the way consumers' templating
     # engines (e.g. Airflow) would.
     "jinja2>=3.0",

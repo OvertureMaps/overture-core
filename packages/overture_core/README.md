@@ -7,6 +7,8 @@ Shared, framework-agnostic business logic — portable job classes built on [`ov
 
 `overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
 
+`maproulette`/`geojson`/`shapely` are likewise behind an optional `overture-core[maproulette]` extra, needed only for `apis.maproulette.MapRouletteClient`.
+
 ## Modules
 
 Framework-agnostic helpers, each importable on its own without pulling in the job classes below.
@@ -30,7 +32,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `cloud.azure` | The home for any Azure-specific helper, one module per service (`object` for Blob Storage). Imports `azure-storage-blob` lazily; install `overture-core[azure]` to use it. |
 | `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
-| `apis` | Clients for third-party HTTP APIs, one module per vendor (e.g. `apis.tomtom` for TomTom's Map Content API). Anything that's not a cloud platform but still an external service belongs here. |
+| `apis` | Clients for third-party HTTP APIs, one module per vendor (`apis.tomtom` for TomTom's Map Content API, `apis.maproulette` for MapRoulette's project/challenge API — the latter needs `overture-core[maproulette]`). Anything that's not a cloud platform but still an external service belongs here. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
