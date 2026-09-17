@@ -125,9 +125,44 @@ class MapRouletteClient:
         self.admins = admins or []
         self.limit = limit
 
-        self._project_api = _retrying_client(maproulette.Project, configuration)
-        self._challenge_api = _retrying_client(maproulette.Challenge, configuration)
-        self._user_api = _retrying_client(maproulette.User, configuration)
+        self._configuration = configuration
+        self.__project_api: Any = None
+        self.__challenge_api: Any = None
+        self.__user_api: Any = None
+
+    @property
+    def _project_api(self):
+        if self.__project_api is None:
+            self.__project_api = _retrying_client(
+                maproulette.Project, self._configuration
+            )
+        return self.__project_api
+
+    @_project_api.setter
+    def _project_api(self, value):
+        self.__project_api = value
+
+    @property
+    def _challenge_api(self):
+        if self.__challenge_api is None:
+            self.__challenge_api = _retrying_client(
+                maproulette.Challenge, self._configuration
+            )
+        return self.__challenge_api
+
+    @_challenge_api.setter
+    def _challenge_api(self, value):
+        self.__challenge_api = value
+
+    @property
+    def _user_api(self):
+        if self.__user_api is None:
+            self.__user_api = _retrying_client(maproulette.User, self._configuration)
+        return self.__user_api
+
+    @_user_api.setter
+    def _user_api(self, value):
+        self.__user_api = value
 
     def _remote_geojson_url(self, location: dict) -> str:
         return (
