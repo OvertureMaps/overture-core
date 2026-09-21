@@ -52,16 +52,16 @@ wheels = [
 
 [[package]]
 name = "boto3"
-version = "1.43.89"
+version = "1.43.93"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/50/26/48b3da85526a72a02df55e564481fc348e93699c15f0f502681b12ac2c8a/boto3-1.43.89.tar.gz", hash = "sha256:c28abbe472e9b7cad08807356311aeec51bde5218c18489da827045d2267bfd9", size = 112702, upload-time = "2026-09-04T19:24:57.143Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/37/7a09d8320685b3b8c8a014e392e7595025d00965c46c5f410797905fab7a/boto3-1.43.93.tar.gz", hash = "sha256:196bfc8b4c9cd5505f9f7b963e30956db3a00fd47e20dd0ee3574a243c1fb212", size = 112752, upload-time = "2026-09-11T19:23:03.484Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cd/12/e1b5cb4a00a9bfd72cf2d3f982c5826757aacdfc90aa4bd61902dcc94856/boto3-1.43.89-py3-none-any.whl", hash = "sha256:fe4190afe63eb562b6ba6a3911cf4427473b35fa047adde093bf696d3ae09fc0", size = 140028, upload-time = "2026-09-04T19:24:55.929Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/68/f8f661b9e68daba4f775bfa1e750732ec52fc89b32d55f300aef530e1d62/boto3-1.43.93-py3-none-any.whl", hash = "sha256:3c948fe231490d446bf90bf3322d1452632107329d3683b37d88b7399bf481a0", size = 140022, upload-time = "2026-09-11T19:23:01.995Z" },
 ]
 
 [[package]]
@@ -560,7 +560,7 @@ wheels = [
 
 [[package]]
 name = "databricks-sdk"
-version = "0.136.0"
+version = "0.139.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-auth" },
@@ -568,9 +568,9 @@ dependencies = [
     { name = "requests" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/74/c769ee662b9b50d16f31780e208fb6866bb4aa012549c7231ce8a8c7975e/databricks_sdk-0.136.0.tar.gz", hash = "sha256:e8d3fafedae9dc59ea72228d3aa846948511b4114a1bfb13720251c5d60e183f", size = 1094650, upload-time = "2026-09-07T04:34:31.956Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/72/74a547b6a3b9b048ad348df5042a832560c2c673ff16f1fd1138b97eedaf/databricks_sdk-0.139.0.tar.gz", hash = "sha256:a1c1e1ca5db02fa13a3b40d78794b411ea33cb6b78e24905328a4e24d25b21af", size = 1098889, upload-time = "2026-09-13T05:27:40.383Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/db/b0c32e2d84f687bb1a5dafd15d829a454092553268380a1dc4188d34f0f1/databricks_sdk-0.136.0-py3-none-any.whl", hash = "sha256:4e014a61f7fbccf5dbf726a4bf575665039e2cbe7dd4bc52a9d247d6c3042a02", size = 1039204, upload-time = "2026-09-07T04:34:30.182Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/fc/245d6a55c1c7933ed1a2349ab92f2173b7c80fee12400176bb9af5930280/databricks_sdk-0.139.0-py3-none-any.whl", hash = "sha256:ac1ede8bdd69edba12b93e3102b248cd26cced4d2e6c22cd3e7dac8c0aef9ceb", size = 1043276, upload-time = "2026-09-13T05:27:38.782Z" },
 ]
 
 [[package]]
