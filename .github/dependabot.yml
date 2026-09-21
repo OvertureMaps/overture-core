@@ -19,7 +19,7 @@ updates:
     cooldown:
       default-days: 7
     commit-message:
-      prefix: "[CHORE](deps)"
+      prefix: "chore"
       include: "scope"
 
   # Maintain uv-managed Python package dependencies (all public PyPI, no
@@ -43,5 +43,5 @@ updates:
     cooldown:
       default-days: 7
     commit-message:
-      prefix: "[CHORE](py-deps)"
+      prefix: "chore"
       include: "scope"
