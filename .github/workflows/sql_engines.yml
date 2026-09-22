@@ -1,11 +1,16 @@
 # SQL Engines
 #
-# Validates the generated Spark/Trino SQL in overture_core.uuids_sql against
-# real engines, not just DuckDB's ANSI-SQL stand-in (see test_uuids_sql.py).
-# A JVM and a Trino service container are both too heavy to run on every PR
-# to the repo, so this workflow only triggers when uuids_sql.py or its tests
-# change, and each engine runs as its own job with `pytest -m <engine>`
-# against `test_uuids_sql_engines.py`.
+# Runs the test suites that need a real JVM/Sedona or a Trino service
+# container instead of a lightweight stand-in:
+# - overture_core.uuids_sql's generated Spark/Trino SQL, validated against
+#   real engines, not just DuckDB's ANSI-SQL stand-in (see test_uuids_sql.py).
+# - overture_spark's `spark`-marked tests (packages/overture_spark/tests),
+#   which exercise a real Spark/Sedona session via the `sql-spark` extra.
+#
+# Both are too heavy to run on every PR to the repo, so this workflow only
+# triggers when the relevant package's source/tests change, and each engine
+# runs as its own job with `pytest -m <engine>` (overture_core) or the full
+# suite (overture_spark, where every remaining test already needs Spark).
 
 name: SQL Engines
 
@@ -16,6 +21,7 @@ on:
       - packages/overture_core/overture_core/uuids_sql.py
       - packages/overture_core/tests/test_uuids_sql*.py
       - packages/overture_core/pyproject.toml
+      - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
   push:
     branches:
@@ -24,6 +30,7 @@ on:
       - packages/overture_core/overture_core/uuids_sql.py
       - packages/overture_core/tests/test_uuids_sql*.py
       - packages/overture_core/pyproject.toml
+      - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
   workflow_dispatch:
 
@@ -35,7 +42,7 @@ concurrency:
 
 jobs:
   spark:
-    name: spark
+    name: spark (overture_core)
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
@@ -116,6 +123,48 @@ jobs:
         working-directory: packages/overture_core
         run: uv run pytest -v -m trino tests/test_uuids_sql_engines.py
 
+  spark-overture-spark:
+    name: spark (overture_spark)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # setuptools-scm needs tag history to resolve the version
+          persist-credentials: false
+
+      - name: Install Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: packages/overture_spark/.python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: packages/overture_spark
+        run: uv sync --extra dev --extra sql-spark
+
+      # Every remaining test in this package already needs Spark (see
+      # test_python.yml's carve-out), so this runs the full suite with the
+      # coverage floor, unlike overture_core's `-m spark` slice above.
+      # test_python.yml already builds and twine-checks this package on
+      # every PR, so this job only needs to cover what it can't: the tests
+      # gated behind a real Spark session.
+      - name: Run tests
+        working-directory: packages/overture_spark
+        run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=95
+
   # Rollup status job - required in branch protection
   rollup-sql-engines-status:
     name: rollup-sql-engines-status
@@ -124,6 +173,7 @@ jobs:
     needs:
       - spark
       - trino
+      - spark-overture-spark
     if: always()
     steps:
       - uses: lowlydba/are-we-good@0f90ea9fa5e47188fcb69d9306fb8b3abb656018 # v1.2.0

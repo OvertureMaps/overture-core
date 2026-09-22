@@ -4,7 +4,9 @@
 # under packages/ with both a pyproject.toml and a tests/ directory is tested
 # via `uv run pytest -v`, then built and validated with `twine check --strict`
 # so bad PyPI metadata fails the PR instead of a real release after merge.
-# Adding a new package needs no edits here.
+# Adding a new package needs no edits here, except overture_spark's carve-out
+# below (its `spark`-marked tests run, and the coverage floor is enforced,
+# in the sql-engines workflow instead).
 
 name: Test Python
 
@@ -63,7 +65,18 @@ jobs:
 
       - name: Run tests
         working-directory: packages/${{ matrix.package }}
-        run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=95
+        # overture_spark's `spark`-marked tests need a real Spark/Sedona
+        # session (JVM, plus native JAR resolution) they only get from the
+        # sql-spark extra, which this JVM-free lane doesn't install; the
+        # sql-engines workflow installs it and enforces the coverage floor
+        # over the full suite instead. Everything else keeps the normal
+        # coverage-gated run.
+        run: |
+          if [ "${{ matrix.package }}" = "overture_spark" ]; then
+            uv run pytest -v -m "not spark"
+          else
+            uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=95
+          fi
 
       - name: Build package
         working-directory: packages/${{ matrix.package }}
