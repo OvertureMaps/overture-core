@@ -1,0 +1,95 @@
+[project]
+name = "overture-spark"
+dynamic = ["version"]
+description = "Portable, framework-agnostic Spark job runtime helpers."
+authors = [
+    {name = "Overture Maps Foundation"}
+]
+license = "MIT"
+# Vendored copy of the repo-root LICENSE: setuptools copies license-files
+# sdist entries to the exact relative path given, so "../../LICENSE" landed
+# outside the sdist root and PyPI rejected the upload. A package-local path
+# is the only one that survives packaging.
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["overture", "overturemaps", "spark", "secrets"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overture_spark"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
+
+[project.optional-dependencies]
+# Each SecretsInterface engine imports its SDK lazily (inside __init__/
+# get_secret, not at module load), so these stay optional extras rather than
+# base dependencies: a caller only pays for the SDK of the engine it
+# actually instantiates.
+databricks = [
+    "databricks-sdk>=0.20.0",
+]
+aws = [
+    "boto3>=1.34.0",
+]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
+    "databricks-sdk>=0.20.0",
+    "boto3>=1.34.0",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["overture_spark"]
+
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^overture_spark-v(?P<version>.*)$"
+git_describe_command = "git describe --dirty --tags --long --match 'overture_spark-v*'"
+# PyPI (and Test PyPI) rejects local version identifiers (the "+g<hash>"
+# suffix setuptools_scm appends between tags), so drop it. Only affects
+# unreleased/dirty builds (e.g. the workflow_dispatch smoke test) — a real
+# release always builds from a clean tag.
+local_scheme = "no-local-version"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["overture_spark"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "overture_spark-v{version}"
+allow_zero_version = true
+
+# path_filters (relative to this directory, since the release workflow cds
+# here) is what attributes a commit to this package: PSR checks the commit's
+# actual changed files, not its scope. No scope_prefix is set, so a plain
+# `fix: ...`/`feat: ...` with no scope works, as long as the commit touches
+# files under packages/overture_spark/.
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]
+# Without this, a conventional type outside minor_tags/patch_tags (docs,
+# style, refactor, chore, build, ci, test) is parsed but contributes no
+# bump, so a package can go multiple merges with no_release even though it
+# changed. Floor every recognized type at a patch bump so any release-worthy
+# push to this package always produces a new version.
+# PSR 10.6.1's pydantic schema wants LevelBump's raw IntEnum value here, not
+# the string name (a bare "patch" fails validation) -- 2 == LevelBump.PATCH.
+default_bump_level = 2
