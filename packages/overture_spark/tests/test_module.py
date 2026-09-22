@@ -40,6 +40,25 @@ class TestSparkPlatform(unittest.TestCase):
         self.assertEqual(SparkPlatform.GLUE, SparkPlatform.from_str("glue"))
         self.assertEqual(SparkPlatform.WHEROBOTS, SparkPlatform.from_str("wherOBOTS"))
 
+    def testFromStrRejectsUnknownName(self):
+        with self.assertRaises(ValueError):
+            SparkPlatform.from_str("not-a-platform")
+
+    @patch("overture_spark.SparkPlatform.isRunningInGlue", return_value=True)
+    def testAutoDetectGlue(self, _mock_glue):
+        self.assertEqual(SparkPlatform.GLUE, SparkPlatform.autodetect())
+
+    @patch("overture_spark.SparkPlatform.isRunningInGlue", return_value=False)
+    @patch("overture_spark.SparkPlatform.isRunningInDatabricks", return_value=True)
+    def testAutoDetectDatabricks(self, _mock_databricks, _mock_glue):
+        self.assertEqual(SparkPlatform.DATABRICKS, SparkPlatform.autodetect())
+
+    @patch("overture_spark.SparkPlatform.isRunningInGlue", return_value=False)
+    @patch("overture_spark.SparkPlatform.isRunningInDatabricks", return_value=False)
+    @patch("overture_spark.SparkPlatform.isRunningInWherobots", return_value=True)
+    def testAutoDetectWherobots(self, _mock_wherobots, _mock_databricks, _mock_glue):
+        self.assertEqual(SparkPlatform.WHEROBOTS, SparkPlatform.autodetect())
+
     @patch("overture_spark.SparkPlatform.isRunningInGlue", return_value=False)
     @patch("overture_spark.SparkPlatform.isRunningInDatabricks", return_value=False)
     @patch("overture_spark.SparkPlatform.isRunningInWherobots", return_value=False)
@@ -50,6 +69,28 @@ class TestSparkPlatform(unittest.TestCase):
         self.assertFalse(SparkPlatform.isRunningInGlue())
         self.assertFalse(SparkPlatform.isRunningInDatabricks())
         self.assertFalse(SparkPlatform.isRunningInDatabricksNotebook())
+
+    @patch.dict(os.environ, {"DATABRICKS_RUNTIME_VERSION": "14.3"}, clear=False)
+    @patch("overture_spark.find_spec", return_value=True)
+    def testIsRunningInDatabricksWhenRuntimeVersionSet(self, _mock_find_spec):
+        self.assertTrue(SparkPlatform.isRunningInDatabricks())
+
+    def testIsRunningInDatabricksNotebookWhenDbutilsDefined(self):
+        import overture_spark as _module
+
+        _module.dbutils = object()
+        try:
+            self.assertTrue(SparkPlatform.isRunningInDatabricksNotebook())
+        finally:
+            del _module.dbutils
+
+    @patch("overture_spark.sys.prefix", "/opt/conda/envs/wherobots-py")
+    @patch("overture_spark.os.path.exists", return_value=False)
+    @patch("overture_spark.find_spec", return_value=None)
+    def testIsRunningInWherobotsWhenPrefixContainsWherobots(
+        self, _mock_find_spec, _mock_exists
+    ):
+        self.assertTrue(SparkPlatform.isRunningInWherobots())
 
     @patch.dict(os.environ, {"WHEROBOTS_RUNTIME": "1"}, clear=False)
     @patch("overture_spark.os.path.exists", return_value=False)
@@ -82,6 +123,51 @@ class TestSparkPlatform(unittest.TestCase):
         mock_find_spec.return_value = None
 
         self.assertFalse(SparkPlatform.isRunningInWherobots())
+
+
+class TestGetPackageVersion(unittest.TestCase):
+    def testRaisesPackageNotFoundErrorForMissingPackage(self):
+        with self.assertRaises(PackageNotFoundError):
+            get_package_version("definitely-not-a-real-package-xyz")
+
+
+class TestGetSparkVersionForSedonaRejectsSpark2(unittest.TestCase):
+    def testRejectsNonSpark3(self):
+        with self.assertRaises(RuntimeError):
+            SparkSedona.getSparkVersionForSedona("2.4.8", "1.6.1")
+
+
+class TestHadoopAwsInstallerOutsideVenv(unittest.TestCase):
+    def testNoJarPathOutsideVenv(self):
+        class _FakeSys:
+            prefix = "/usr"
+            base_prefix = "/usr"
+
+        with patch("overture_spark.sys", _FakeSys):
+            installer = HadoopAwsInstaller()
+        self.assertIsNone(installer.site_packages_path)
+        self.assertIsNone(installer.jarPath)
+
+
+@pytest.mark.spark
+@needs_spark
+class TestGetSparkSedonaSessionDatabricksNotebook(unittest.TestCase):
+    """Only the raise path (extra_spark_conf set while running in a
+    Databricks notebook) is covered here — that's reachable without a real
+    Spark session, unlike the rest of getSparkSedonaSession. It still needs
+    pyspark/apache-sedona importable (see the function's lazy-import note),
+    hence the sql-spark extra."""
+
+    @patch(
+        "overture_spark.SparkPlatform.isRunningInDatabricksNotebook",
+        return_value=True,
+    )
+    def testRaisesWhenExtraConfProvidedInNotebook(self, _mock_notebook):
+        with self.assertRaises(RuntimeError):
+            getSparkSedonaSession(
+                spark_platform=SparkPlatform.DATABRICKS,
+                extra_spark_conf={"spark.some.conf": "value"},
+            )
 
 
 @pytest.mark.spark

@@ -70,9 +70,13 @@ jobs:
         # sql-spark extra, which this JVM-free lane doesn't install; the
         # sql-engines workflow installs it and enforces the coverage floor
         # over the full suite instead. Everything else keeps the normal
-        # coverage-gated run.
+        # coverage-gated run. PACKAGE is passed as an env var, not
+        # interpolated directly into the script, so matrix.package can never
+        # be read as shell code (zizmor's template-injection audit).
+        env:
+          PACKAGE: ${{ matrix.package }}
         run: |
-          if [ "${{ matrix.package }}" = "overture_spark" ]; then
+          if [ "$PACKAGE" = "overture_spark" ]; then
             uv run pytest -v -m "not spark"
           else
             uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=95

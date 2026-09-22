@@ -6,7 +6,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from overture_spark.job import MissingParameterError, SparkSedonaJob
+from overture_spark.job import (
+    JobResult,
+    MissingParameterError,
+    SparkSedonaJob,
+    pretty_print_elapsed_time,
+)
 from overture_spark.secret_engines import AwsSecretsManager
 
 try:
@@ -173,6 +178,132 @@ class TestSecrets(unittest.TestCase):
         result = JobTest().with_secrets_engine(AwsSecretsManager()).run()
         self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
         self.assertEqual("AKIAEXAMPLE1234567890", result.data["lakefs_secret"])
+
+
+class TestJobResult(unittest.TestCase):
+    def testLogAppendsMessage(self):
+        result = JobResult()
+        result.log("hello")
+        self.assertEqual(["hello"], result.messages)
+
+    def testToJsonIncludesExceptionAsString(self):
+        result = JobResult()
+        result.exception = ValueError("boom")
+        result.exception_traceback = ["Traceback...", "ValueError: boom"]
+        result.params = {"a": 1}
+        result.data = {"b": 2}
+        as_json = result.to_json()
+        self.assertEqual("boom", as_json["exception"])
+        self.assertEqual(
+            ["Traceback...", "ValueError: boom"], as_json["exception_traceback"]
+        )
+        self.assertEqual({"a": 1}, as_json["params"])
+        self.assertEqual({"b": 2}, as_json["data"])
+
+    def testToJsonExceptionIsNoneWhenNoException(self):
+        self.assertIsNone(JobResult().to_json()["exception"])
+
+
+class TestPrettyPrintElapsedTime(unittest.TestCase):
+    def testFormatsHoursMinutesSecondsMilliseconds(self):
+        self.assertEqual("01:02:03.004", pretty_print_elapsed_time(3723004))
+
+
+class TestLog(unittest.TestCase):
+    """SparkSedonaJob.log() itself, distinct from TestLogData's log_data()."""
+
+    def testLogStringMessage(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log("plain message")
+
+        result = JobTest().run()
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertTrue(any("plain message" in m for m in result.messages))
+
+    def testLogDictMessage(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log({"k": "v"})
+
+        result = JobTest().run()
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertIn({"k": "v"}, result.messages)
+
+
+class TestRunInvalidParams(unittest.TestCase):
+    def testInvalidJsonParamsMarksJobFailed(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                pass
+
+        result = JobTest().run("not-json")
+        self.assertFalse(result.isSuccess)
+        self.assertIn("Cannot parse params", str(result.exception))
+
+
+class TestCheckOutputWritable(unittest.TestCase):
+    class _ConcreteJob(JobBaseMockSpark):
+        def execute_job(self):
+            pass
+
+    def _fs_mock(self, job):
+        jvm = job.spark._jvm
+        return jvm.org.apache.hadoop.fs.FileSystem.get.return_value
+
+    def testCreatesMissingDirectoryAndWritesProbeFile(self):
+        job = self._ConcreteJob()
+        fs = self._fs_mock(job)
+        fs.exists.return_value = False
+        fs.mkdirs.return_value = True
+        stream = fs.create.return_value
+
+        job.check_output_writable("s3://bucket/prefix")
+
+        fs.mkdirs.assert_called_once()
+        stream.write.assert_called_once_with(0)
+        stream.close.assert_called_once()
+        fs.delete.assert_called_once()
+
+    def testRaisesPermissionErrorWhenMkdirsFails(self):
+        job = self._ConcreteJob()
+        fs = self._fs_mock(job)
+        fs.exists.return_value = False
+        fs.mkdirs.return_value = False
+
+        with self.assertRaises(PermissionError):
+            job.check_output_writable("s3://bucket/prefix")
+
+    def testRaisesPermissionErrorWhenWriteFails(self):
+        job = self._ConcreteJob()
+        fs = self._fs_mock(job)
+        fs.exists.return_value = True
+        stream = fs.create.return_value
+        stream.write.side_effect = OSError("disk full")
+
+        with self.assertRaises(PermissionError):
+            job.check_output_writable("s3://bucket/prefix")
+        fs.delete.assert_called_once()
+
+
+@pytest.mark.spark
+@pytest.mark.skipif(
+    pyspark is None, reason="pyspark not installed; requires the sql-spark extra"
+)
+class TestInitSparkForPlatformInvalidConf(unittest.TestCase):
+    """init_spark_for_platform imports pyspark.sql.SQLContext at the top of
+    the method (see its lazy-import note in job.py), so this needs the
+    sql-spark extra even though the invalid-JSON error it raises here never
+    reaches a real Spark session."""
+
+    def testInvalidExtraSparkConfRaisesBeforeBuildingSession(self):
+        class JobTest(SparkSedonaJob):
+            def execute_job(self):
+                pass
+
+        job = JobTest()
+        with self.assertRaises(Exception):
+            job.init_spark_for_platform(extra_spark_conf="not-json")
 
 
 if __name__ == "__main__":

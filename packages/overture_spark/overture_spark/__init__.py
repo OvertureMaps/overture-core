@@ -44,26 +44,13 @@ class PackageNotFoundError(Exception):
 
 
 def get_package_version(package_name):
-    if sys.version_info >= (3, 8):
-        # Use importlib.metadata for Python 3.8 and above
-        try:
-            from importlib.metadata import version
-        except ImportError:
-            from importlib_metadata import (
-                version,
-            )  # For compatibility with older pip-installed versions
-        try:
-            return version(package_name)
-        except Exception:
-            raise PackageNotFoundError(package_name)
-    else:
-        # Use pkg_resources for older Python versions
-        import pkg_resources
+    from importlib.metadata import PackageNotFoundError as _DistNotFound
+    from importlib.metadata import version
 
-        try:
-            return pkg_resources.get_distribution(package_name).version
-        except pkg_resources.DistributionNotFound:
-            raise PackageNotFoundError(package_name)
+    try:
+        return version(package_name)
+    except _DistNotFound:
+        raise PackageNotFoundError(package_name)
 
 
 class SparkPlatform(IntEnum):
@@ -255,7 +242,7 @@ def getSparkSedonaSession(
                     "spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
                 )
             )
-        else:
+        else:  # pragma: no cover - non-local platforms need a real cluster to exercise
             # sedona jars for other (non-local) spark platforms are configured in SparkSedonaOperator*
             pass
         builder.config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
@@ -264,7 +251,8 @@ def getSparkSedonaSession(
         spark = builder.getOrCreate()
 
     spark = SedonaContext.create(spark)
-    if spark_platform == SparkPlatform.GLUE:
+    is_glue = spark_platform == SparkPlatform.GLUE
+    if is_glue:  # pragma: no cover - needs a real Glue job runtime
         from awsglue.context import GlueContext
 
         spark = GlueContext(spark).spark_session
