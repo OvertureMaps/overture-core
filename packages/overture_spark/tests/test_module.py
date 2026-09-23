@@ -4,29 +4,22 @@ import unittest
 from importlib.machinery import ModuleSpec
 from unittest.mock import patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from overture_spark import *  # noqa: F403
 
 try:
-    import boto3
     import pyspark  # noqa: F401
-    from moto import mock_aws
     from moto.core import set_initial_no_auth_action_count
     from moto.server import ThreadedMotoServer
     from sedona.spark import KryoSerializer, SedonaKryoRegistrator
 except ImportError:
-    boto3 = None
     pyspark = None
     ThreadedMotoServer = None
     KryoSerializer = None
     SedonaKryoRegistrator = None
-
-    def mock_aws(fn):
-        """No-op stand-in so @mock_aws still defines cleanly when moto isn't
-        installed; the class-level skipif below skips the test itself
-        before this ever runs."""
-        return fn
 
     def set_initial_no_auth_action_count(fn):
         """No-op stand-in so the decorated method still defines cleanly when

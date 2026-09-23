@@ -9,7 +9,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
-keywords = ["overture", "overturemaps", "spark"]
+keywords = ["overture", "overturemaps", "spark", "secrets"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -25,13 +25,22 @@ Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overt
 Issues = "https://github.com/OvertureMaps/overture-core/issues"
 
 [project.optional-dependencies]
+# Each SecretsInterface engine imports its SDK lazily (inside __init__/
+# get_secret, not at module load), so these stay optional extras rather than
+# base dependencies: a caller only pays for the SDK of the engine it
+# actually instantiates.
+databricks = [
+    "databricks-sdk>=0.20.0",
+]
+aws = [
+    "boto3>=1.34.0",
+]
 # Kept out of `dev`: these need a real JVM (pyspark) and pull in Sedona's
 # native GeoTools JARs at session-creation time, so only the "sql-engines"
 # CI workflow installs them, not a routine local `pytest` run. See the
 # lazy-import note on getSparkSedonaSession in overture_spark/__init__.py:
 # everything that doesn't need a live Spark session stays importable, and
-# therefore testable, without this extra. moto[server] backs the S3-via-Spark
-# mock tests in test_module.py, also Spark-only.
+# therefore testable, without this extra.
 sql-spark = [
     "pyspark==3.5.0",
     "apache-sedona==1.7.0",
@@ -40,6 +49,9 @@ sql-spark = [
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
+    "databricks-sdk>=0.20.0",
+    "boto3>=1.34.0",
+    "moto>=5.0.25",
 ]
 
 [build-system]
