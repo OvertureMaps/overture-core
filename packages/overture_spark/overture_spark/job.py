@@ -96,7 +96,6 @@ class SparkSedonaJob(ABC):
         self.start: float = 0.0
         self.result = self.get_result()
         self.sql = None
-        self.secrets_engine = None
 
     def init_spark_for_platform(
         self,
@@ -125,10 +124,6 @@ class SparkSedonaJob(ABC):
             sparkContext=self.spark.sparkContext, sparkSession=self.spark
         )
 
-        return self
-
-    def with_secrets_engine(self, secrets_engine):
-        self.secrets_engine = secrets_engine
         return self
 
     def get_result(self):
@@ -280,6 +275,3 @@ class SparkSedonaJob(ABC):
         return filter_df_to_area(
             df, test_area, geometry_col=geometry_col, is_wkb=is_wkb
         )
-
-    def get_secret(self, secret_name: str) -> str:
-        return self.secrets_engine.get_secret(secret_name)

@@ -1,10 +1,7 @@
-import json
 import unittest
 from unittest.mock import Mock
 
-import boto3
 import pytest
-from moto import mock_aws
 
 from overture_spark.job import (
     JobResult,
@@ -12,7 +9,6 @@ from overture_spark.job import (
     SparkSedonaJob,
     pretty_print_elapsed_time,
 )
-from overture_spark.secret_engines import AwsSecretsManager
 
 try:
     import pyspark  # noqa: F401
@@ -84,9 +80,9 @@ class TestRealSedonaJob(unittest.TestCase):
 
 class JobBaseMockSpark(SparkSedonaJob):
     """Base for tests that exercise SparkSedonaJob's plain-Python logic
-    (params, logging, secrets) without a real Spark session — a plain
-    ``Mock()`` stands in for ``self.spark`` since these tests never call
-    into it, so they don't need pyspark installed at all."""
+    (params, logging) without a real Spark session — a plain ``Mock()``
+    stands in for ``self.spark`` since these tests never call into it, so
+    they don't need pyspark installed at all."""
 
     def __init__(self):
         SparkSedonaJob.__init__(self)
@@ -161,23 +157,6 @@ class TestLogData(unittest.TestCase):
         result = JobTest().run()
         self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
         self.assertEqual({"abc": 123}, result.data["k"])
-
-
-class TestSecrets(unittest.TestCase):
-    @mock_aws
-    def testOutsideDatabricks(self):
-        boto3.client("secretsmanager", region_name="us-west-2").create_secret(
-            Name="keyvaultsecret",
-            SecretString=json.dumps({"lakefskey": "AKIAEXAMPLE1234567890"}),
-        )
-
-        class JobTest(JobBaseMockSpark):
-            def execute_job(self):
-                self.log_data("lakefs_secret", self.get_secret("lakefskey"))
-
-        result = JobTest().with_secrets_engine(AwsSecretsManager()).run()
-        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
-        self.assertEqual("AKIAEXAMPLE1234567890", result.data["lakefs_secret"])
 
 
 class TestJobResult(unittest.TestCase):
