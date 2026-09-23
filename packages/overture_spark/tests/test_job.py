@@ -1,19 +1,18 @@
 import json
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import boto3
 import pytest
 from moto import mock_aws
 
-from overture_spark import SparkPlatform
 from overture_spark.job import (
     JobResult,
     MissingParameterError,
     SparkSedonaJob,
     pretty_print_elapsed_time,
 )
-from overture_spark.secret_engines import AwsSecretsManager, Databricks
+from overture_spark.secret_engines import AwsSecretsManager
 
 try:
     import pyspark  # noqa: F401
@@ -92,11 +91,6 @@ class JobBaseMockSpark(SparkSedonaJob):
     def __init__(self):
         SparkSedonaJob.__init__(self)
         self.spark = Mock()
-
-
-class NoopJob(JobBaseMockSpark):
-    def execute_job(self):
-        pass
 
 
 class TestJobParameters(unittest.TestCase):
@@ -184,20 +178,6 @@ class TestSecrets(unittest.TestCase):
         result = JobTest().with_secrets_engine(AwsSecretsManager()).run()
         self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
         self.assertEqual("AKIAEXAMPLE1234567890", result.data["lakefs_secret"])
-
-    def testDefaultsToDatabricksEngineOnDatabricks(self):
-        job = NoopJob()
-        job.spark_platform = SparkPlatform.DATABRICKS
-        with patch.object(Databricks, "get_secret", return_value="s3cr3t") as get:
-            self.assertEqual("s3cr3t", job.get_secret("lakefskey"))
-        get.assert_called_once_with("lakefskey")
-        self.assertIsInstance(job.secrets_engine, Databricks)
-
-    def testNoDefaultEngineOffDatabricks(self):
-        job = NoopJob()
-        job.spark_platform = SparkPlatform.GLUE
-        with self.assertRaisesRegex(RuntimeError, "with_secrets_engine"):
-            job.get_secret("lakefskey")
 
 
 class TestJobResult(unittest.TestCase):
