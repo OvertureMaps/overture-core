@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Dict, Union
 
 from overture_spark import SparkPlatform, getSparkSedonaSession
+from overture_spark.secret_engines import Databricks
 from overture_spark.test_area import filter_df_to_area, validate_area
 
 if TYPE_CHECKING:
@@ -282,4 +283,16 @@ class SparkSedonaJob(ABC):
         )
 
     def get_secret(self, secret_name: str) -> str:
+        if self.secrets_engine is None:
+            self.secrets_engine = self._default_secrets_engine()
         return self.secrets_engine.get_secret(secret_name)
+
+    def _default_secrets_engine(self):
+        # Platform runners are Overture-free and don't inject an engine, so pick one here.
+        platform = self.spark_platform or SparkPlatform.autodetect()
+        if platform == SparkPlatform.DATABRICKS:
+            return Databricks()
+        raise RuntimeError(
+            f"No secrets engine configured for platform {platform.name}; "
+            "call with_secrets_engine() first"
+        )
