@@ -12,10 +12,6 @@ via `to_hex()`. Both dialects then share the same portable, engine-neutral
 `CASE` expression to force the UUID variant nibble into RFC 4122's required
 8-b range, which avoids depending on either dialect's bitwise or
 base-conversion functions.
-
-`generate_uuid3_sql_legacy_spark_bug` is a separate, deprecated function
-that reproduces a known bug in `tf-data-platform`'s `uuid_v3_sql` byte for
-byte, see its docstring and OvertureMaps/tf-data-platform#5051.
 """
 
 import uuid
@@ -113,35 +109,3 @@ def generate_uuid4_sql(*, engine: str = "spark") -> str:
     """
     _check_engine(engine)
     return "uuid()" if engine == "spark" else "cast(uuid() as varchar)"
-
-
-def generate_uuid3_sql_legacy_spark_bug(namespace: uuid.UUID, name_sql: str) -> str:
-    """Reproduce `tf-data-platform`'s current `uuid_v3_sql`, bug included.
-
-    Deprecated: only for a caller that already has this function's output
-    baked into a stable ID and needs an exact byte-for-byte match while it
-    plans a migration. Use `generate_uuid3_sql` for anything new.
-
-    The reference implementation wraps `md5()`'s output in an extra `hex()`.
-    Spark's `md5()` already returns a 32-character lowercase hex string, so
-    the extra `hex()` re-encodes each of those hex characters as its own
-    2-digit hex byte value, producing a 64-character string. Only the first
-    32 characters of that string ever reach the final UUID, which means only
-    the first 16 hex digits of the real 32-digit digest are used. The
-    digest's second half is discarded, halving the hash's effective entropy
-    (128 bits down to about 64). See
-    OvertureMaps/tf-data-platform#5051 for the bug report and the planned
-    migration off this function.
-
-    Spark-only: the reference implementation this mirrors never had a Trino
-    equivalent, so there's no `engine` parameter here. See
-    `TestSparkDialectMatchesPython.test_legacy_matches_known_buggy_value` in
-    `tests/test_uuids_sql.py` for a DuckDB-executed check that this
-    reproduces the known-buggy value from
-    OvertureMaps/tf-data-platform#5047's before/after example.
-    """
-    namespace_hex = namespace.hex
-    digest_hex_sql = (
-        f"lower(hex(md5(unhex('{namespace_hex}') || encode({name_sql}, 'UTF-8'))))"
-    )
-    return _uuid_from_digest_hex_sql(digest_hex_sql, "3")
