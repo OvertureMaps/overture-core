@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from importlib.machinery import ModuleSpec
 from unittest.mock import patch
@@ -83,13 +84,13 @@ class TestSparkPlatform(unittest.TestCase):
         self.assertTrue(SparkPlatform.isRunningInDatabricks())
 
     def testIsRunningInDatabricksNotebookWhenDbutilsDefined(self):
-        import overture_spark as _module
+        import __main__ as _main
 
-        _module.dbutils = object()
+        _main.dbutils = object()
         try:
             self.assertTrue(SparkPlatform.isRunningInDatabricksNotebook())
         finally:
-            del _module.dbutils
+            del _main.dbutils
 
     @patch("overture_spark.sys.prefix", "/opt/conda/envs/wherobots-py")
     @patch("overture_spark.os.path.exists", return_value=False)
@@ -144,16 +145,30 @@ class TestGetSparkVersionForSedonaRejectsSpark2(unittest.TestCase):
             SparkSedona.getSparkVersionForSedona("2.4.8", "1.6.1")
 
 
-class TestHadoopAwsInstallerOutsideVenv(unittest.TestCase):
-    def testNoJarPathOutsideVenv(self):
-        class _FakeSys:
-            prefix = "/usr"
-            base_prefix = "/usr"
+class TestHadoopAwsInstallerNoPyspark(unittest.TestCase):
+    """No real pyspark needed: find_spec is mocked directly, so this runs in
+    the routine not-spark lane and validates the fix without a JVM."""
 
-        with patch("overture_spark.sys", _FakeSys):
-            installer = HadoopAwsInstaller()
-        self.assertIsNone(installer.site_packages_path)
+    @patch("overture_spark.find_spec", return_value=None)
+    def testNoJarPathWhenPysparkNotInstalled(self, _mock_find_spec):
+        installer = HadoopAwsInstaller()
         self.assertIsNone(installer.jarPath)
+
+    @patch("overture_spark.find_spec", return_value=None)
+    def testInstallRaisesWhenPysparkNotInstalled(self, _mock_find_spec):
+        installer = HadoopAwsInstaller()
+        with self.assertRaisesRegex(RuntimeError, "pyspark"):
+            installer.install()
+
+    def testInstallRaisesWhenNoMatchingJarFound(self):
+        empty_jars_dir = tempfile.mkdtemp()
+        fake_spec = ModuleSpec("pyspark", loader=None)
+        fake_spec.submodule_search_locations = [os.path.dirname(empty_jars_dir)]
+        with patch("overture_spark.find_spec", return_value=fake_spec):
+            installer = HadoopAwsInstaller()
+            installer.jarPath = empty_jars_dir  # no hadoop-client-api-* jar here
+            with self.assertRaisesRegex(RuntimeError, "pyspark"):
+                installer.install()
 
 
 @pytest.mark.spark

@@ -65,6 +65,17 @@ class TestWktArea(unittest.TestCase):
         self.assertFalse(is_wkt_area(ICELAND))
         self.assertFalse(is_wkt_area(""))
 
+    def test_is_wkt_area_rejects_malformed_type_keyword(self):
+        # A prefix match ("POLYGONX".startswith("POLYGON")) must not count:
+        # it would otherwise pass shape validation only to fail later at
+        # ST_GeomFromText.
+        self.assertFalse(is_wkt_area("POLYGONX ((0 0, 1 0, 1 1, 0 0))"))
+        self.assertFalse(is_wkt_area("MULTIPOLYGONX (((0 0, 1 0, 1 1, 0 0)))"))
+
+    def test_malformed_type_keyword_fails_as_bbox_instead(self):
+        with self.assertRaises(ValueError):
+            parse_area_envelope("POLYGONX ((0 0, 1 0, 1 1, 0 0))")
+
     def test_envelope_of_polygon(self):
         self.assertEqual(
             parse_area_envelope(ICELAND_TRIANGLE), (-25.0, 63.0, -13.0, 67.0)

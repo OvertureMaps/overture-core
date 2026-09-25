@@ -14,7 +14,7 @@ from typing import Tuple
 
 Envelope = Tuple[float, float, float, float]
 
-_WKT_PREFIXES = ("POLYGON", "MULTIPOLYGON")
+_WKT_TYPE = re.compile(r"^(MULTIPOLYGON|POLYGON)\s*\(", re.IGNORECASE)
 _NUMBER = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _COORD_PAIR = re.compile(rf"({_NUMBER})\s+({_NUMBER})")
 # Restrict WKT to its grammar's alphabet so it can be safely inlined in SQL.
@@ -22,8 +22,14 @@ _WKT_CHARS = re.compile(r"[A-Za-z0-9\s(),.+\-]+")
 
 
 def is_wkt_area(area: str) -> bool:
-    """True when the area string is a (MULTI)POLYGON WKT rather than a bbox."""
-    return bool(area) and area.strip().upper().startswith(_WKT_PREFIXES)
+    """True when the area string is a (MULTI)POLYGON WKT rather than a bbox.
+
+    Matches the type keyword followed by whitespace/`(`, not a bare string
+    prefix: a malformed type like ``POLYGONX (...)`` must not pass here,
+    since it would clear this and the shape checks below only to fail at
+    job runtime when Sedona's ST_GeomFromText rejects the invalid keyword.
+    """
+    return bool(area) and bool(_WKT_TYPE.match(area.strip()))
 
 
 def _check_lon_lat_ranges(min_lon, min_lat, max_lon, max_lat, area: str) -> None:

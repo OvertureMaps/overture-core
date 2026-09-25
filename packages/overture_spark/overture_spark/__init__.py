@@ -25,7 +25,6 @@ session install the ``sql-spark`` extra.
 """
 
 import os
-import site
 import sys
 from enum import IntEnum, auto
 from importlib.util import find_spec
@@ -86,11 +85,14 @@ class SparkPlatform(IntEnum):
 
     @classmethod
     def isRunningInDatabricksNotebook(cls):
-        try:
-            dbutils
-            return True
-        except NameError:
-            return False
+        # dbutils is injected into the *notebook's* execution namespace
+        # (__main__ when run through Databricks' REPL), not into whichever
+        # module happens to define this classmethod. A bare `dbutils` name
+        # lookup here only ever resolves against overture_spark's own
+        # globals, so it always raises NameError and always returns False,
+        # even inside a real Databricks notebook.
+        main = sys.modules.get("__main__")
+        return main is not None and hasattr(main, "dbutils")
 
     @classmethod
     def isRunningInGlue(cls):
@@ -265,25 +267,34 @@ def isLocalSpark(spark):
 
 class HadoopAwsInstaller:
     def __init__(self):
-        if hasattr(sys, "real_prefix") or (
-            hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
-        ):
-            # The site.getsitepackages() function returns a list of all site-packages directories
-            self.site_packages_path = site.getsitepackages()[0]
-            self.jarPath = os.path.join(self.site_packages_path, "pyspark", "jars")
+        # Resolve pyspark's own install location via its module spec instead
+        # of site.getsitepackages(), which only looks at the interpreter's
+        # site-packages directories and returns nothing outside a venv (e.g.
+        # a system-Python install, or pyspark installed via --user). That
+        # left _getInstalledVersion() unable to find the bundled jars, and
+        # install() silently built an invalid "hadoop-aws:None" coordinate.
+        pyspark_spec = find_spec("pyspark")
+        if pyspark_spec and pyspark_spec.submodule_search_locations:
+            self.jarPath = os.path.join(
+                pyspark_spec.submodule_search_locations[0], "jars"
+            )
         else:
-            self.site_packages_path = None
             self.jarPath = None
 
     def install(self):
         hadoopVersion = self._getInstalledVersion()
+        if not hadoopVersion:
+            raise RuntimeError(
+                "Could not determine the installed Hadoop version from "
+                "pyspark's bundled jars; is pyspark installed?"
+            )
         return [f"org.apache.hadoop:hadoop-aws:{hadoopVersion}"]
 
     def _getInstalledVersion(self):
-        if self.site_packages_path:
-            for root, dirs, files in os.walk(self.jarPath):
-                for file in files:
-                    if file.startswith("hadoop-client-api-"):
-                        return os.path.splitext(file)[0].replace(
-                            "hadoop-client-api-", ""
-                        )
+        if not self.jarPath:
+            return None
+        for root, dirs, files in os.walk(self.jarPath):
+            for file in files:
+                if file.startswith("hadoop-client-api-"):
+                    return os.path.splitext(file)[0].replace("hadoop-client-api-", "")
+        return None

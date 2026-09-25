@@ -8,9 +8,10 @@
 #   which exercise a real Spark/Sedona session via the `sql-spark` extra.
 #
 # Both are too heavy to run on every PR to the repo, so this workflow only
-# triggers when the relevant package's source/tests change, and each engine
-# runs as its own job with `pytest -m <engine>` (overture_core) or the full
-# suite (overture_spark, where every remaining test already needs Spark).
+# triggers when either package's source/tests change, and detect-changes
+# further narrows which jobs actually run: a PR touching only one package
+# doesn't pay for the other package's JVM/Trino cost, even though both live
+# under this one workflow file.
 
 name: SQL Engines
 
@@ -41,8 +42,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect-changes:
+    name: detect-changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+    if: github.event_name != 'workflow_dispatch'
+    outputs:
+      overture_core: ${{ steps.changed.outputs.overture_core_any_changed }}
+      overture_spark: ${{ steps.changed.outputs.overture_spark_any_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A workflow-file-only change marks both categories changed (each list
+      # below repeats it), same as this workflow's own trigger paths already
+      # treat it: editing this file could affect either job.
+      - name: Find which package(s) changed
+        id: changed
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          files_yaml: |
+            overture_core:
+              - packages/overture_core/overture_core/uuids_sql.py
+              - packages/overture_core/tests/test_uuids_sql*.py
+              - packages/overture_core/pyproject.toml
+              - .github/workflows/sql_engines.yml
+            overture_spark:
+              - packages/overture_spark/**
+              - .github/workflows/sql_engines.yml
+
   spark:
     name: spark (overture_core)
+    needs: detect-changes
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.overture_core == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
@@ -79,6 +115,8 @@ jobs:
 
   trino:
     name: trino
+    needs: detect-changes
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.overture_core == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
@@ -125,6 +163,8 @@ jobs:
 
   spark-overture-spark:
     name: spark (overture_spark)
+    needs: detect-changes
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.overture_spark == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
@@ -171,6 +211,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {} # are-we-good only reads job results from `needs` context
     needs:
+      - detect-changes
       - spark
       - trino
       - spark-overture-spark
