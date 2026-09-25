@@ -10,6 +10,7 @@ A monorepo of independently versioned, independently published Python packages. 
 | --- | --- |
 | [`overture_core`](packages/overture_core) | Shared, framework-agnostic business logic — portable job classes. |
 | [`overture_serverless`](packages/overture_serverless) | Base class for portable, framework-agnostic serverless jobs. |
+| [`overture_spark`](packages/overture_spark) | Portable, framework-agnostic Spark job runtime helpers. |
 
 ## Contributing
 

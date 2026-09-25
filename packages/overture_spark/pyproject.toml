@@ -1,0 +1,94 @@
+[project]
+name = "overture-spark"
+dynamic = ["version"]
+description = "Portable, framework-agnostic Spark job runtime helpers."
+authors = [
+    {name = "Overture Maps Foundation"}
+]
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["overture", "overturemaps", "spark"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/OvertureMaps/overture-core"
+Source = "https://github.com/OvertureMaps/overture-core/tree/main/packages/overture_spark"
+Issues = "https://github.com/OvertureMaps/overture-core/issues"
+
+[project.optional-dependencies]
+# Kept out of `dev`: these need a real JVM (pyspark) and pull in Sedona's
+# native GeoTools JARs at session-creation time, so only the "sql-engines"
+# CI workflow installs them, not a routine local `pytest` run. See the
+# lazy-import note on getSparkSedonaSession in overture_spark/__init__.py:
+# everything that doesn't need a live Spark session stays importable, and
+# therefore testable, without this extra. moto[server] backs the S3-via-Spark
+# mock tests in test_module.py, also Spark-only.
+sql-spark = [
+    "pyspark==3.5.0",
+    "apache-sedona==1.7.0",
+    "moto[server]>=5.0.25",
+]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.3", "setuptools_scm>=8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["overture_spark"]
+
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^overture_spark-v(?P<version>.*)$"
+git_describe_command = "git describe --dirty --tags --long --match 'overture_spark-v*'"
+# PyPI (and Test PyPI) rejects local version identifiers (the "+g<hash>"
+# suffix setuptools_scm appends between tags), so drop it. Only affects
+# unreleased/dirty builds (e.g. the workflow_dispatch smoke test) — a real
+# release always builds from a clean tag.
+local_scheme = "no-local-version"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "spark: requires a real Spark/Sedona session (overture-spark[sql-spark]); run via the sql-engines CI workflow, not routine local pytest.",
+]
+
+[tool.coverage.run]
+source = ["overture_spark"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "overture_spark-v{version}"
+allow_zero_version = true
+
+# path_filters (relative to this directory, since the release workflow cds
+# here) is what attributes a commit to this package: PSR checks the commit's
+# actual changed files, not its scope. No scope_prefix is set, so a plain
+# `fix: ...`/`feat: ...` with no scope works, as long as the commit touches
+# files under packages/overture_spark/.
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]
+# Without this, a conventional type outside minor_tags/patch_tags (docs,
+# style, refactor, chore, build, ci, test) is parsed but contributes no
+# bump, so a package can go multiple merges with no_release even though it
+# changed. Floor every recognized type at a patch bump so any release-worthy
+# push to this package always produces a new version.
+# PSR 10.6.1's pydantic schema wants LevelBump's raw IntEnum value here, not
+# the string name (a bare "patch" fails validation) -- 2 == LevelBump.PATCH.
+default_bump_level = 2

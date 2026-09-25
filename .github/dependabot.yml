@@ -27,8 +27,7 @@ updates:
   - package-ecosystem: "uv"
     directories:
       - "/"
-      - "/packages/overture_core"
-      - "/packages/overture_serverless"
+      - "/packages/*"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 3
