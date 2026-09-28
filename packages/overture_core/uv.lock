@@ -1102,6 +1102,9 @@ sql-trino = [
 stac = [
     { name = "overture-stac" },
 ]
+telemetry = [
+    { name = "pyspark" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1119,6 +1122,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pygithub", specifier = ">=2.3" },
     { name = "pyspark", marker = "extra == 'sql-spark'", specifier = ">=3.5" },
+    { name = "pyspark", marker = "extra == 'telemetry'", specifier = ">=3.5" },
     { name = "pystac", specifier = ">=1.8.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
@@ -1126,7 +1130,7 @@ requires-dist = [
     { name = "shapely", marker = "extra == 'maproulette'", specifier = ">=2.1.1" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
-provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "azure", "dev"]
+provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "telemetry", "azure", "dev"]
 
 [[package]]
 name = "overture-serverless"

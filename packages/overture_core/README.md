@@ -37,6 +37,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
+| `telemetry` | Recording pipeline metrics (`TelemetryEmitter`, `MetricRecord`, pluggable `MetricsWriter` backends, default `IcebergMetricsWriter`). Needs `overture-core[telemetry]` (PySpark); see below. |
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
 | `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
 | `dataset.dataset` | Parsing a provider/resource JSON config into its collection/ingestion/matching sections. |
@@ -53,3 +54,21 @@ covers it; only add a new row/module when nothing existing fits.
 
 - **Bundle-owned schema accessor** — when `ReleaseCandidateBundle` becomes publishable, move `read_schema_version_from_rc_bundle` onto it as `resolved_schema_version()`; single-release mode's schema read shrinks to one line.
 - **Upstream `build_release_catalog`** — file a PR against [OvertureMaps/stac](https://github.com/OvertureMaps/stac) exposing this as a public API (their CLI already does the exact call sequence). When it lands, our wrapper collapses.
+
+## Telemetry
+
+`overture_core.telemetry` records pipeline metrics from Spark jobs. It needs `overture-core[telemetry]` (PySpark); nothing else in the package imports it, so a plain install is unaffected.
+
+```python
+from overture_core.telemetry import TelemetryEmitter
+
+emitter = TelemetryEmitter(
+    spark=spark, stage="feed_ingest", snapshot="meta-places-2026-03-04", theme="places"
+)
+emitter.record(metric_id="IngestInputCount", value=1_250_000)
+emitter.record_dataframe(metrics_df)  # batch of MetricRecord-shaped rows
+```
+
+Metrics land in the Iceberg table `pipeline_metrics.{environment}_pipeline_metrics` (catalog `s3tables_catalog`), partitioned by `(stage, metric_id, snapshot)`. Each write overwrites only its own `(stage, metric_id, snapshot)` rows, so reruns are idempotent. The environment is resolved from the `environment` argument, then the Spark conf `spark.overture.metrics.environment`, then the `OVERTURE_METRICS_ENVIRONMENT` environment variable.
+
+To use another backend, subclass `overture_core.telemetry.MetricsWriter` and pass it as `writer=`. The telemetry tests need a JVM, so they carry the `spark` marker and run in the `sql-engines` workflow.

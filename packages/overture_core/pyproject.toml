@@ -73,6 +73,13 @@ sql-spark = [
 sql-trino = [
     "trino>=0.328",
 ]
+# overture_core.telemetry (TelemetryEmitter, MetricRecord, IcebergMetricsWriter)
+# is built on PySpark DataFrames; the Iceberg runtime jars come from the Spark
+# environment (see overture_core.iceberg), not from a Python dependency. Nothing
+# else in overture_core imports the subpackage, so the base install is unaffected.
+telemetry = [
+    "pyspark>=3.5",
+]
 # cloud.azure.object imports azure-storage-blob lazily; only consumers touching
 # Azure Blob need it.
 azure = [
@@ -125,6 +132,10 @@ markers = [
 
 [tool.coverage.run]
 source = ["overture_core"]
+
+# telemetry needs a real JVM, so its `spark`-marked tests run only in the
+# sql-engines workflow, not in the coverage-gated JVM-free lane.
+omit = ["overture_core/telemetry/*"]
 
 [tool.coverage.report]
 fail_under = 95

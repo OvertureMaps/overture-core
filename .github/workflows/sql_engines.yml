@@ -4,6 +4,8 @@
 # container instead of a lightweight stand-in:
 # - overture_core.uuids_sql's generated Spark/Trino SQL, validated against
 #   real engines, not just DuckDB's ANSI-SQL stand-in (see test_uuids_sql.py).
+# - overture_core.telemetry's tests (packages/overture_core/tests/telemetry),
+#   which need a local Spark session via the `telemetry` extra.
 # - overture_spark's `spark`-marked tests (packages/overture_spark/tests),
 #   which exercise a real Spark/Sedona session via the `sql-spark` extra.
 #
@@ -21,6 +23,8 @@ on:
     paths:
       - packages/overture_core/overture_core/uuids_sql.py
       - packages/overture_core/tests/test_uuids_sql*.py
+      - packages/overture_core/overture_core/telemetry/**
+      - packages/overture_core/tests/telemetry/**
       - packages/overture_core/pyproject.toml
       - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
@@ -30,6 +34,8 @@ on:
     paths:
       - packages/overture_core/overture_core/uuids_sql.py
       - packages/overture_core/tests/test_uuids_sql*.py
+      - packages/overture_core/overture_core/telemetry/**
+      - packages/overture_core/tests/telemetry/**
       - packages/overture_core/pyproject.toml
       - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
@@ -69,6 +75,8 @@ jobs:
             overture_core:
               - packages/overture_core/overture_core/uuids_sql.py
               - packages/overture_core/tests/test_uuids_sql*.py
+              - packages/overture_core/overture_core/telemetry/**
+              - packages/overture_core/tests/telemetry/**
               - packages/overture_core/pyproject.toml
               - .github/workflows/sql_engines.yml
             overture_spark:
@@ -107,11 +115,11 @@ jobs:
 
       - name: Install dependencies
         working-directory: packages/overture_core
-        run: uv sync --extra dev --extra sql-spark
+        run: uv sync --extra dev --extra sql-spark --extra telemetry
 
       - name: Run Spark engine tests
         working-directory: packages/overture_core
-        run: uv run pytest -v -m spark tests/test_uuids_sql_engines.py
+        run: uv run pytest -v -m spark tests/test_uuids_sql_engines.py tests/telemetry
 
   trino:
     name: trino
