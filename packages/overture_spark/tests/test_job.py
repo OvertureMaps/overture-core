@@ -130,6 +130,80 @@ class TestJobParameters(unittest.TestCase):
         self.assertEqual(456, result.params["provided"])
 
 
+class TestGetTestAreaParam(unittest.TestCase):
+    """get_test_area_param() normalizes two DAG-side renderings before
+    validating: a DAG with render_template_as_native_obj=True literal_evals a
+    templated bbox into a list of floats, and a 'none' sentinel (or a null
+    param rendered as the text "None") means no filtering.
+    """
+
+    def testUnset(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log_data("test_area", self.get_test_area_param())
+
+        result = JobTest().run()
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertEqual("", result.data["test_area"])
+
+    def testNoneSentinelString(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log_data("test_area", self.get_test_area_param())
+
+        result = JobTest().run({"test_area": "None"})
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertEqual("", result.data["test_area"])
+
+    def testLowercaseNoneSentinel(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log_data("test_area", self.get_test_area_param())
+
+        result = JobTest().run({"test_area": "none"})
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertEqual("", result.data["test_area"])
+
+    def testBboxString(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log_data("test_area", self.get_test_area_param())
+
+        result = JobTest().run({"test_area": "-1,-1,2,2"})
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertEqual("-1,-1,2,2", result.data["test_area"])
+
+    def testNativeObjBboxList(self):
+        """A DAG with render_template_as_native_obj=True literal_evals a
+        templated bbox into a list of floats instead of leaving it a string."""
+
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log_data("test_area", self.get_test_area_param())
+
+        result = JobTest().run({"test_area": [-1.0, -1.0, 2.0, 2.0]})
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertEqual("-1.0,-1.0,2.0,2.0", result.data["test_area"])
+
+    def testNativeObjBboxTuple(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.log_data("test_area", self.get_test_area_param())
+
+        result = JobTest().run({"test_area": (-1.0, -1.0, 2.0, 2.0)})
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        self.assertEqual("-1.0,-1.0,2.0,2.0", result.data["test_area"])
+
+    def testInvalidFormatRaises(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.get_test_area_param()
+
+        result = JobTest().run({"test_area": "1,2,3"})
+        self.assertFalse(result.isSuccess)
+        self.assertIsInstance(result.exception, ValueError)
+
+
 class TestLogData(unittest.TestCase):
     def testLogString(self):
         class JobTest(JobBaseMockSpark):
