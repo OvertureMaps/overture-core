@@ -251,8 +251,17 @@ class SparkSedonaJob(ABC):
         Returns the validated 'test_area' param — a bbox
         'min_lon,min_lat,max_lon,max_lat' or a (MULTI)POLYGON WKT — or ""
         for the full planet.
+
+        Two renderings of the DAG-side value are normalized first: a DAG with
+        render_template_as_native_obj=True literal_evals a templated bbox
+        into a list of floats, and the 'none' sentinel (or a null param
+        rendered as the text "None") means no filtering.
         """
         test_area = self.get_param("test_area", default_value="", is_required=False)
+        if isinstance(test_area, (list, tuple)):
+            test_area = ",".join(str(v) for v in test_area)
+        if str(test_area).strip().lower() == "none":
+            test_area = ""
         validate_area(test_area)  # fail fast on a malformed area
         return test_area
 
