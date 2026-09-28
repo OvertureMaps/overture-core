@@ -33,7 +33,7 @@ Issues = "https://github.com/OvertureMaps/overture-core/issues"
 # therefore testable, without this extra. moto[server] backs the S3-via-Spark
 # mock tests in test_module.py, also Spark-only.
 sql-spark = [
-    "pyspark==3.5.0",
+    "pyspark==4.2.0",
     "apache-sedona==1.7.0",
     "moto[server]>=5.0.25",
 ]
