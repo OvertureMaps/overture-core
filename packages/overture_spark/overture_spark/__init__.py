@@ -211,11 +211,12 @@ def getSparkSedonaSession(
         spark_platform == SparkPlatform.DATABRICKS
         and SparkPlatform.isRunningInDatabricksNotebook()
     ):
-        global spark
         if len(extra_spark_conf) > 0:
             raise RuntimeError(
                 "You need to set extra spark configuration when configuring the databricks cluster"
             )
+        # Databricks injects `spark` into __main__'s namespace
+        spark = sys.modules["__main__"].spark
     else:
         # init a new spark session
         builder = SparkSession.builder.appName(app_name)

@@ -191,6 +191,26 @@ class TestGetSparkSedonaSessionDatabricksNotebook(unittest.TestCase):
                 extra_spark_conf={"spark.some.conf": "value"},
             )
 
+    @patch("sedona.spark.SedonaContext.SedonaContext.create", side_effect=lambda s: s)
+    @patch(
+        "overture_spark.SparkPlatform.isRunningInDatabricksNotebook",
+        return_value=True,
+    )
+    def testUsesSparkSessionInjectedIntoMainByNotebook(
+        self, _mock_notebook, mock_sedona_create
+    ):
+        import __main__ as _main
+
+        fake_spark = object()
+        _main.spark = fake_spark
+        try:
+            result = getSparkSedonaSession(spark_platform=SparkPlatform.DATABRICKS)
+        finally:
+            del _main.spark
+
+        mock_sedona_create.assert_called_once_with(fake_spark)
+        self.assertIs(fake_spark, result)
+
 
 @pytest.mark.spark
 @needs_spark
