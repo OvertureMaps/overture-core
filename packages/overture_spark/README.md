@@ -42,6 +42,32 @@ uv run pytest -v --cov --cov-fail-under=95
 
 CI mirrors this split: the routine `Test Python` workflow runs `pytest -m "not spark"` for this package (no coverage gate, since the Spark-only code paths aren't exercised), and the `SQL Engines` workflow's `spark (overture_spark)` job installs the `sql-spark` extra and Java, then runs the full suite with the 95% coverage floor.
 
+## Reading the OSM history table
+
+`overture_spark.osm_history` holds the read-side contract for the OSM
+full-history Iceberg table: the `ds-YYYY-MM-DD` tag names, the snapshot
+column order, and helpers that load "the OSM snapshot as of a day" (the
+latest visible version of every entity at that tag) in the geometry_daily
+column shape.
+
+```python
+from overture_spark.osm_history import read_job_osm_snapshot
+
+
+class MyJob(SparkSedonaJob):
+    def execute_job(self):
+        # Production params: history_table + snapshot_ds (reads
+        # `VERSION AS OF 'ds-<snapshot_ds>'`). Tests / ad-hoc runs pass a
+        # geometry_daily-shaped parquet path under input_path instead.
+        osm = read_job_osm_snapshot(self)
+```
+
+`read_osm_snapshot(spark, ...)` is the same helper for code that is not a
+`SparkSedonaJob`, and `osm_snapshot_sql(history_table, ds)` returns the bare
+SELECT for callers that compose their own SQL. A missing tag fails fast in
+Iceberg ("Cannot find snapshot with reference name"), which is the
+freshness contract.
+
 ## Publishing
 
 See [`PACKAGE_VERSIONING.md`](../PACKAGE_VERSIONING.md) for how a version bump here turns into a PyPI release.
