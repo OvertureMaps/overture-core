@@ -51,6 +51,7 @@ latest visible version of every entity at that tag) in the geometry_daily
 column shape.
 
 ```python
+from overture_spark.job import SparkSedonaJob
 from overture_spark.osm_history import read_job_osm_snapshot
 
 
