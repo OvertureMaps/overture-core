@@ -103,9 +103,10 @@ class TestValidate:
 def table_rows(out: str) -> list[list[str]]:
     """Cell values of each data/header row of a boxed Rich table."""
     return [
-        [c.strip() for c in line.strip("│ ").split("│")]
+        # Rich draws header cells with "┃" on UTF-8 terminals and "│" elsewhere.
+        [c.strip() for c in line.strip("│┃ ").replace("┃", "│").split("│")]
         for line in out.splitlines()
-        if line.startswith("│")
+        if line.startswith(("│", "┃"))
     ]
 
 
