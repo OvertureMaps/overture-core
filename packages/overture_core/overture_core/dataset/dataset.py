@@ -26,7 +26,7 @@ Usage
 
     from overture_core.dataset.dataset import Dataset
 
-    ds = Dataset.from_name("osm", "planet", datasets_dir="configs/datasets")
+    ds = Dataset.from_name("osm", "planet", datasets_dir="path/to/datasets")
 
     collection_cfg = ds.collection
     ingestion_cfg  = ds.ingestion
@@ -90,7 +90,7 @@ class Dataset:
             Resource label within the provider, e.g. ``"planet"``.
         datasets_dir : str | Path
             Directory containing the provider JSON files. Callers own the
-            actual location (e.g. a repo's ``configs/datasets`` directory);
+            actual location of the dataset config files;
             this module makes no assumption about it.
 
         Returns

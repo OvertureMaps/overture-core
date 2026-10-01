@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     fall back to when no arguments are given — callers (e.g. a CI step) pass
     the files or a shell glob explicitly, e.g.:
 
-        python -m overture_core.dataset.schema configs/datasets/*.json
+        python -m overture_core.dataset.schema path/to/datasets/*.json
     """
     args = sys.argv[1:] if argv is None else argv
     if not args:

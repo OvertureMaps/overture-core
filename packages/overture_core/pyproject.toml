@@ -41,7 +41,11 @@ dependencies = [
     "PyGithub>=2.3",
     "requests>=2.31",
     "packaging>=23.0",
+    "rich>=13.0",
 ]
+
+[project.scripts]
+overture-datasets = "overture_core.dataset.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/OvertureMaps/overture-core"
