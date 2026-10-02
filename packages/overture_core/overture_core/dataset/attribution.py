@@ -60,7 +60,14 @@ def entries_from_file(
                 f"available: {sorted(available)}"
             )
         selected = [available[label] for label in sorted(resources)]
-    return [license_entry(provider, r.model_dump()) for r in selected]
+    entries = []
+    for r in selected:
+        resource = r.model_dump()
+        entry = license_entry(provider, resource)
+        license_data = (resource.get("collection") or {}).get("license") or {}
+        entry["notice"] = license_data.get("text") or ""
+        entries.append(entry)
+    return entries
 
 
 def _display_name(entry: dict[str, Any]) -> str:
@@ -92,40 +99,84 @@ def _sorted(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _notices(entries: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """``(heading, notice text)`` per provider/notice pair, in sorted order, deduplicated."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in _sorted(entries):
+        notice = (entry.get("notice") or "").strip()
+        key = (entry["provider_label"], notice)
+        if not notice or key in seen:
+            continue
+        seen.add(key)
+        out.append((f"{entry['provider_name']}: {entry['resource_name']}", notice))
+    return out
+
+
 def render_markdown(
-    entries: list[dict[str, Any]], title: str = "Data Attribution"
+    entries: list[dict[str, Any]],
+    title: str = "Data Attribution",
+    *,
+    attribution: bool = True,
+    notices: bool = False,
+    license_texts: dict[str, str] | None = None,
 ) -> str:
     """Render entries as a Markdown document grouped by provider.
 
     Resources from one provider that render to an identical attribution line
-    collapse to one bullet.
+    collapse to one bullet. ``notices`` adds each resource's license notice
+    text; ``license_texts`` (SPDX id -> text) appends one copy of each license.
     """
     if not entries:
         return ""
     lines = [f"# {title}", ""]
-    current_provider = None
-    seen: set[str] = set()
-    for entry in _sorted(entries):
-        if entry["provider_label"] != current_provider:
-            current_provider = entry["provider_label"]
-            seen = set()
-            if len(lines) > 2:
+    if attribution:
+        current_provider = None
+        seen: set[str] = set()
+        for entry in _sorted(entries):
+            if entry["provider_label"] != current_provider:
+                current_provider = entry["provider_label"]
+                seen = set()
+                if len(lines) > 2:
+                    lines.append("")
+                lines.append(f"## {entry['provider_name']}")
                 lines.append("")
-            lines.append(f"## {entry['provider_name']}")
+            bullet = render_attribution_bullet(entry)
+            if bullet not in seen:
+                seen.add(bullet)
+                lines.append(bullet)
+    notice_items = _notices(entries) if notices else []
+    if notice_items:
+        lines += ["", "## Notices", ""] if attribution else ["## Notices", ""]
+        for heading, text in notice_items:
+            lines += [f"### {heading}", "", text, ""]
+        lines.pop()
+    if license_texts:
+        if len(lines) > 2:
             lines.append("")
-        bullet = render_attribution_bullet(entry)
-        if bullet not in seen:
-            seen.add(bullet)
-            lines.append(bullet)
+        lines += ["## License Texts", ""]
+        for spdx_id, text in license_texts.items():
+            lines += [f"### {spdx_id}", "", "~~~~text", text, "~~~~", ""]
+        lines.pop()
     return "\n".join(lines) + "\n"
 
 
-def render_text(entries: list[dict[str, Any]], title: str = "Data Attribution") -> str:
-    """Render entries as plain text, one block per resource."""
+def render_text(
+    entries: list[dict[str, Any]],
+    title: str = "Data Attribution",
+    *,
+    attribution: bool = True,
+    notices: bool = False,
+    license_texts: dict[str, str] | None = None,
+) -> str:
+    """Render entries as plain text, one block per resource.
+
+    See ``render_markdown`` for ``notices`` and ``license_texts``.
+    """
     if not entries:
         return ""
     blocks = [title, "=" * len(title)]
-    for entry in _sorted(entries):
+    for entry in _sorted(entries) if attribution else []:
         block = [
             "",
             _display_name(entry),
@@ -141,6 +192,15 @@ def render_text(entries: list[dict[str, Any]], title: str = "Data Attribution") 
         if entry.get("coverage_description"):
             block.append(f"  Coverage: {entry['coverage_description']}")
         blocks.extend(block)
+    notice_items = _notices(entries) if notices else []
+    if notice_items:
+        blocks += ["", "Notices", "-------"]
+        for heading, text in notice_items:
+            blocks += ["", heading, "", text]
+    if license_texts:
+        blocks += ["", "License Texts", "-------------"]
+        for spdx_id, text in license_texts.items():
+            blocks += ["", spdx_id, "", text]
     return "\n".join(blocks) + "\n"
 
 

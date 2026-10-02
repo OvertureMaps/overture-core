@@ -34,6 +34,7 @@ class TestLicenseEntry:
             "attribution": "© Acme Maps contributors",
             "coverage_description": "Global",
             "coverage_areas": ["GLOBAL"],
+            "notice": "",
         }
 
     def test_tolerates_missing_sections(self):
@@ -134,3 +135,41 @@ class TestRenderText:
         assert "License:" not in out
         assert "Coverage:" in out
         assert "  Provider: No License Co\n" in out
+
+
+class TestNoticesAndLicenseTexts:
+    @pytest.fixture()
+    def entries(self, acme_entries):
+        return [{**e, "notice": "Copyright Acme. Changes: none."} for e in acme_entries]
+
+    def test_defaults_match_attribution_only(self, entries):
+        assert render_markdown(entries) == render_markdown(
+            entries, attribution=True, notices=False, license_texts=None
+        )
+        assert "Notices" not in render_markdown(entries)
+        assert "Notices" not in render_text(entries)
+
+    def test_markdown_sections(self, entries):
+        out = render_markdown(
+            entries, notices=True, license_texts={"ODbL-1.0": "ODbL body"}
+        )
+        assert "## Notices" in out
+        assert out.count("Copyright Acme. Changes: none.") == 1  # deduped per provider
+        assert "## License Texts\n\n### ODbL-1.0\n\n~~~~text\nODbL body\n~~~~\n" in out
+        assert out.index("## Notices") < out.index("## License Texts")
+
+    def test_text_sections(self, entries):
+        out = render_text(
+            entries, notices=True, license_texts={"ODbL-1.0": "ODbL body"}
+        )
+        assert "Notices\n-------" in out
+        assert "Copyright Acme." in out
+        assert "License Texts\n-------------\n\nODbL-1.0\n\nODbL body\n" in out
+
+    def test_attribution_can_be_omitted(self, entries):
+        out = render_markdown(entries, attribution=False, notices=True)
+        assert out.startswith("# Data Attribution\n\n## Notices")
+        assert "Available under" not in out
+        assert "Available under" not in render_text(
+            entries, attribution=False, notices=True
+        )

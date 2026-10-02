@@ -35,6 +35,13 @@ from rich.text import Text
 from overture_core.dataset import banner
 from overture_core.dataset.attribution import RENDERERS, entries_from_file
 from overture_core.dataset.license_policy import load_policy
+from overture_core.dataset.spdx import (
+    SPDX_LICENSE_LIST_VERSION,
+    SPDX_PAGE_URL,
+    LicenseTextError,
+    is_license_ref,
+    license_texts,
+)
 from overture_core.dataset.schema import (
     LABEL_PATTERN,
     DatasetFile,
@@ -275,6 +282,20 @@ def _load_policy(path: str):
         ) from exc
 
 
+def _warn_missing_license_urls(path: Path) -> None:
+    """Warn when a license has an SPDX id but no URL, which is inferable from the id."""
+    dataset = validate_file(path)
+    for res in dataset.resources:
+        lic = res.collection.license
+        if lic and lic.type and not lic.url.primary:
+            _warn(
+                f"WARN {path}: resource '{res.label}' has license '{lic.type}' "
+                f"but no license URL"
+            )
+            if not is_license_ref(lic.type):
+                _hint(f"consider {SPDX_PAGE_URL.format(id=lic.type)}")
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     paths = _expand_paths(args.paths)
     policy_failed = False
@@ -290,6 +311,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     errors = validate_all(paths)
     for path, exc in errors:
         _fail(f"FAIL {path}:\n{exc}\n")
+    failed = {str(p) for p, _ in errors}
+    for path in paths:
+        if str(path) not in failed:
+            _warn_missing_license_urls(path)
     summary = f"{len(paths) - len(errors)}/{len(paths)} dataset config files valid"
     if errors:
         _fail(summary, err=False)
@@ -362,7 +387,34 @@ def cmd_license(args: argparse.Namespace) -> int:
             f"unsupported format '{fmt}'; choose from {sorted(RENDERERS)}",
             ExitCode.USAGE,
         )
-    _write_output(RENDERERS[fmt](entries, title=args.title), output)
+    if args.no_attribution and args.no_notices and args.no_license_texts:
+        raise CliError(
+            "nothing to render: attribution, notices and license texts are all disabled",
+            ExitCode.USAGE,
+        )
+    texts = None
+    if not args.no_license_texts:
+        spdx_ids = {
+            e["license_type"]
+            for e in entries
+            if e["license_type"] and not is_license_ref(e["license_type"])
+        }
+        try:
+            texts = license_texts(spdx_ids)
+        except LicenseTextError as exc:
+            raise CliError(
+                str(exc),
+                ExitCode.IO_ERROR,
+                hint="pass --no-license-texts to skip license texts",
+            ) from exc
+    rendered = RENDERERS[fmt](
+        entries,
+        title=args.title,
+        attribution=not args.no_attribution,
+        notices=not args.no_notices,
+        license_texts=texts,
+    )
+    _write_output(rendered, output)
     return ExitCode.OK
 
 
@@ -576,7 +628,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--only-required-attribution",
         action="store_true",
-        help="only include resources whose license requires attribution",
+        help="only include resources whose license requires attribution "
+        "(applies to every section)",
+    )
+    p.add_argument(
+        "--no-attribution",
+        action="store_true",
+        help="omit the per-provider attribution list",
+    )
+    p.add_argument(
+        "--no-notices",
+        action="store_true",
+        help="omit each resource's license notice text (copyright, NOTICE, changes)",
+    )
+    p.add_argument(
+        "--no-license-texts",
+        action="store_true",
+        help="omit the full text of each SPDX license (fetched from SPDX "
+        f"license-list-data {SPDX_LICENSE_LIST_VERSION})",
     )
     p.set_defaults(func=cmd_license)
 
