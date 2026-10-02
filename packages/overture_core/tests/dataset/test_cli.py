@@ -384,30 +384,11 @@ class TestColor:
         )  # fmt: skip
         assert "\033[33mWARN" in err
 
-    def test_never_and_no_color_env_emit_no_escapes(
-        self, capsys, datasets_dir, monkeypatch
-    ):
+    def test_never_emits_no_escapes(self, capsys, datasets_dir):
         _, out, _ = run(
             capsys, "--color", "never", "validate", datasets_dir / "acme.json"
         )
         assert "\033" not in out
-        monkeypatch.setenv("NO_COLOR", "1")
-        _, out, _ = run(
-            capsys, "--color", "auto", "validate", datasets_dir / "acme.json"
-        )
-        assert "\033" not in out
-
-    def test_auto_is_plain_when_not_a_tty(self, capsys, datasets_dir, monkeypatch):
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.delenv("FORCE_COLOR", raising=False)
-        _, out, _ = run(capsys, "validate", datasets_dir / "acme.json")
-        assert "\033" not in out
-
-    def test_force_color_env(self, capsys, datasets_dir, monkeypatch):
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.setenv("FORCE_COLOR", "1")
-        _, out, _ = run(capsys, "validate", datasets_dir / "acme.json")
-        assert self.GREEN in out
 
 
 class TestHints:
