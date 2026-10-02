@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterator, TypeVar
 from urllib.parse import urlparse
 
 from overture_core.cloud.aws.object import get_object_bytes, put_object
+from overture_core.dataset.attribution import license_entry, render_attribution_bullet
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ class LicenseArtifact(MetadataArtifact):
     """
     Extract license/attribution info from all input entries.
     The way these fields are represented + extracted is coupled to the structure
-    of the sources in airflow/dags/configs/datasets/*.json
+    of the dataset config files (see ``overture_core.dataset.schema``)
     """
 
     name = "license"
@@ -158,23 +159,7 @@ class LicenseArtifact(MetadataArtifact):
     }
 
     def generate(self, metadata: dict[str, Any], bundle_uri: str) -> None:
-        # Merge entries with the same provider+resource so a license that
-        # applies to multiple themes lists them all. Keyed on labels (the
-        # stable Dataset.dataset_id components), not display names.
-        by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        for node, themes in find_nodes_with_context(
-            metadata, self._PATTERN, _accumulate_themes, frozenset()
-        ):
-            entry = self._extract(node)
-            key = (entry["provider_label"], entry["resource_label"])
-            existing = by_key.get(key)
-            if existing is None:
-                entry["themes"] = sorted(themes)
-                by_key[key] = entry
-            else:
-                existing["themes"] = sorted(set(existing["themes"]) | themes)
-
-        entries = list(by_key.values())
+        entries = self.entries(metadata)
         if not entries:
             log.info("No license data found in metadata for %s", bundle_uri)
             return
@@ -184,29 +169,31 @@ class LicenseArtifact(MetadataArtifact):
             "Wrote %d license entries to %s/license.json", len(entries), bundle_uri
         )
 
+    @classmethod
+    def entries(cls, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """License entries for every provider/resource node in *metadata*.
+
+        Entries with the same provider+resource are merged so a license that
+        applies to multiple themes lists them all. Keyed on labels (the
+        stable Dataset.dataset_id components), not display names.
+        """
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for node, themes in find_nodes_with_context(
+            metadata, cls._PATTERN, _accumulate_themes, frozenset()
+        ):
+            entry = cls._extract(node)
+            key = (entry["provider_label"], entry["resource_label"])
+            existing = by_key.get(key)
+            if existing is None:
+                entry["themes"] = sorted(themes)
+                by_key[key] = entry
+            else:
+                existing["themes"] = sorted(set(existing["themes"]) | themes)
+        return list(by_key.values())
+
     @staticmethod
     def _extract(node: dict[str, Any]) -> dict[str, Any]:
-        provider = node["provider"]
-        resource = node["resource"]
-        collection = resource.get("collection", {})
-        license_data = collection.get("license", {})
-        coverage = collection.get("coverage", {})
-
-        return {
-            "provider_name": provider["name"],
-            "provider_label": provider["label"],
-            "provider_url": provider.get("url", {}).get("primary", ""),
-            "resource_name": resource["name"],
-            "resource_label": resource["label"],
-            "license_type": license_data.get("type", ""),
-            "license_url": license_data.get("url", {}).get("primary", ""),
-            "requires_attribution": license_data.get("requires_attribution", False),
-            "attribution": license_data.get("attribution", ""),
-            "coverage_description": coverage.get("description", ""),
-            "coverage_areas": [
-                a.get("iso_3166_1", "") for a in coverage.get("areas", [])
-            ],
-        }
+        return license_entry(node["provider"], node["resource"])
 
 
 def render_attribution_mdx(entries: list[dict[str, Any]]) -> str:
@@ -225,7 +212,7 @@ def render_attribution_mdx(entries: list[dict[str, Any]]) -> str:
     for theme in sorted(by_theme):
         title = theme.replace("_", " ").title()
         bullets = "\n".join(
-            _render_attribution_bullet(e)
+            render_attribution_bullet(e)
             for e in sorted(by_theme[theme], key=lambda e: e["resource_name"])
         )
         sections.append(
@@ -237,25 +224,6 @@ def render_attribution_mdx(entries: list[dict[str, Any]]) -> str:
             "</details>"
         )
     return "\n\n".join(sections) + "\n" if sections else ""
-
-
-def _render_attribution_bullet(entry: dict[str, Any]) -> str:
-    if entry.get("requires_attribution") and entry.get("attribution"):
-        name = entry["attribution"]
-    else:
-        name = entry.get("resource_name", "")
-    url = entry.get("provider_url") or ""
-    license_type = entry.get("license_type") or ""
-    license_url = entry.get("license_url") or ""
-
-    name_part = f"[{name}]({url})" if url else name
-    if license_type and license_url:
-        license_part = f" Available under [{license_type}]({license_url})."
-    elif license_type:
-        license_part = f" Available under {license_type}."
-    else:
-        license_part = ""
-    return f"- {name_part}.{license_part}"
 
 
 class AttributionArtifact(MetadataArtifact):

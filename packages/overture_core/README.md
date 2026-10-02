@@ -27,20 +27,16 @@ covers it; only add a new row/module when nothing existing fits.
 | `uuids_sql` | SQL-string equivalents of `uuids`, for computing UUID columns server-side in Spark or Trino instead of round-tripping through a Python UDF. |
 | `versioning` | Deriving a consistent dated version string for sources that don't publish explicit version metadata. |
 | `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
-| `cloud.cloud` | Provider-agnostic cloud helpers that don't belong to one specific vendor. |
-| `cloud.aws` | The home for any AWS-specific helper, built on boto3, one module per service (`core` for STS/IAM, `object` for S3, `ecs`, `ecr`, `datasync`, `secrets`, `codeartifact`). |
-| `cloud.azure` | The home for any Azure-specific helper, one module per service (`object` for Blob Storage). Imports `azure-storage-blob` lazily; install `overture-core[azure]` to use it. |
-| `cloud.databricks` | The home for any Databricks-specific helper. Prefers accepting a caller-supplied SDK client over constructing one, keeping `databricks-sdk` out of this package's runtime dependencies. |
+| [`cloud`](overture_core/cloud/README.md) | Cloud helpers: provider-agnostic code plus one subpackage per vendor (`aws`, `azure`, `databricks`). |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
 | `apis` | Clients for third-party HTTP APIs, one module per vendor (`apis.tomtom` for TomTom's Map Content API, `apis.maproulette` for MapRoulette's project/challenge API — the latter needs `overture-core[maproulette]`). Anything that's not a cloud platform but still an external service belongs here. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
-| `stac.catalog` | STAC catalog reads/writes backing the jobs below. |
+| `stac` | STAC catalog reads/writes and the jobs that publish them (see [Jobs](#jobs)). |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
 | `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
-| `dataset.dataset` | Parsing a provider/resource JSON config into its collection/ingestion/matching sections. |
-| `dataset.schema` | Validating provider/resource JSON configs, including as a standalone CI check. |
+| [`dataset`](overture_core/dataset/README.md) | Parsing, validating and rendering provider/resource dataset configs and the license policy, plus the `overture-datasets` CLI. |
 
 ## Jobs
 
