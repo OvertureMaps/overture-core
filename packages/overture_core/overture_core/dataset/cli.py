@@ -37,6 +37,7 @@ from overture_core.dataset.attribution import RENDERERS, entries_from_file
 from overture_core.dataset.license_policy import load_policy
 from overture_core.dataset.spdx import (
     SPDX_LICENSE_LIST_VERSION,
+    SPDX_PAGE_URL,
     LicenseTextError,
     license_texts,
 )
@@ -280,6 +281,19 @@ def _load_policy(path: str):
         ) from exc
 
 
+def _warn_missing_license_urls(path: Path) -> None:
+    """Warn when a license has an SPDX id but no URL, which is inferable from the id."""
+    dataset = validate_file(path)
+    for res in dataset.resources:
+        lic = res.collection.license
+        if lic and lic.type and not lic.url.primary:
+            _warn(
+                f"WARN {path}: resource '{res.label}' has license '{lic.type}' "
+                f"but no license URL"
+            )
+            _hint(f"consider {SPDX_PAGE_URL.format(id=lic.type)}")
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     paths = _expand_paths(args.paths)
     policy_failed = False
@@ -295,6 +309,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     errors = validate_all(paths)
     for path, exc in errors:
         _fail(f"FAIL {path}:\n{exc}\n")
+    failed = {str(p) for p, _ in errors}
+    for path in paths:
+        if str(path) not in failed:
+            _warn_missing_license_urls(path)
     summary = f"{len(paths) - len(errors)}/{len(paths)} dataset config files valid"
     if errors:
         _fail(summary, err=False)

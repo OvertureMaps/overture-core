@@ -45,3 +45,17 @@ def test_missing_id_names_it(monkeypatch):
 def test_invalid_id_rejected(bad):
     with pytest.raises(spdx.LicenseTextError, match="not a valid SPDX"):
         spdx.fetch_license_text(bad)
+
+
+def test_deprecated_id_falls_back(monkeypatch):
+    urls = []
+
+    def fake_urlopen(url, timeout):
+        urls.append(url)
+        if "deprecated_" not in url:
+            raise urllib.error.HTTPError(url, 404, "nf", {}, None)
+        return io.BytesIO(b"old")
+
+    monkeypatch.setattr(spdx.urllib.request, "urlopen", fake_urlopen)
+    assert spdx.fetch_license_text("GPL-2.0") == "old"
+    assert urls[-1].endswith("/text/deprecated_GPL-2.0.txt")

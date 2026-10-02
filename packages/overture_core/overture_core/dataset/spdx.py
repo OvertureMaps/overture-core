@@ -18,6 +18,7 @@ SPDX_TEXT_URL = (
     "https://raw.githubusercontent.com/spdx/license-list-data/"
     f"{SPDX_LICENSE_LIST_VERSION}/text/{{id}}.txt"
 )
+SPDX_PAGE_URL = "https://spdx.org/licenses/{id}.html"
 _SPDX_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
 _TIMEOUT_SECONDS = 30
 
@@ -26,14 +27,26 @@ class LicenseTextError(Exception):
     """A license text could not be obtained for an SPDX id."""
 
 
+def _get(name: str) -> str:
+    url = SPDX_TEXT_URL.format(id=urllib.parse.quote(name))
+    with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
+        return response.read().decode("utf-8")
+
+
 def fetch_license_text(spdx_id: str) -> str:
-    """Download the text of ``spdx_id`` from the pinned ``license-list-data`` release."""
+    """Download the text of ``spdx_id`` from the pinned ``license-list-data`` release.
+
+    Deprecated ids (e.g. ``GPL-2.0``) are published as ``deprecated_<id>.txt``.
+    """
     if not _SPDX_ID.fullmatch(spdx_id):
         raise LicenseTextError(f"'{spdx_id}' is not a valid SPDX license id")
-    url = SPDX_TEXT_URL.format(id=urllib.parse.quote(spdx_id))
     try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
-            return response.read().decode("utf-8")
+        try:
+            return _get(spdx_id)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            return _get(f"deprecated_{spdx_id}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise LicenseTextError(
@@ -41,11 +54,11 @@ def fetch_license_text(spdx_id: str) -> str:
                 f"{SPDX_LICENSE_LIST_VERSION}"
             ) from exc
         raise LicenseTextError(
-            f"fetching license text for '{spdx_id}' failed: HTTP {exc.code} ({url})"
+            f"fetching license text for '{spdx_id}' failed: HTTP {exc.code}"
         ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise LicenseTextError(
-            f"fetching license text for '{spdx_id}' failed: {exc} ({url})"
+            f"fetching license text for '{spdx_id}' failed: {exc}"
         ) from exc
 
 

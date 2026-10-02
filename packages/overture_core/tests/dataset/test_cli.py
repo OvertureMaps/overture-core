@@ -258,6 +258,22 @@ class TestLicense:
         assert "no license entries selected" in err
 
 
+class TestValidateLicenseUrlWarning:
+    def test_warns_when_url_missing(self, capsys, datasets_dir, tmp_path):
+        doc = json.loads((datasets_dir / "acme.json").read_text(encoding="utf-8"))
+        for res in doc["resources"]:
+            res["collection"]["license"]["url"]["primary"] = ""
+        target = tmp_path / "acme.json"
+        target.write_text(json.dumps(doc), encoding="utf-8")
+        rc, out, err = run(capsys, "validate", target)
+        assert rc == 0
+        assert "https://spdx.org/licenses/ODbL-1.0.html" in out + err
+
+    def test_no_warning_when_url_present(self, capsys, datasets_dir):
+        rc, out, err = run(capsys, "validate", datasets_dir / "acme.json")
+        assert rc == 0 and "no license URL" not in out + err
+
+
 class TestPolicy:
     def test_validate_prints_themes(self, capsys, policy_path):
         rc, out, _ = run(capsys, "policy", "validate", policy_path)
