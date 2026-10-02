@@ -14,6 +14,13 @@ from overture_core.dataset.cli import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fake_spdx(monkeypatch):
+    monkeypatch.setattr(
+        cli, "license_texts", lambda ids: {i: f"TEXT {i}" for i in sorted(ids)}
+    )
+
+
 def run(capsys, *argv) -> tuple[int, str, str]:
     rc = main([str(a) for a in argv])
     captured = capsys.readouterr()
@@ -205,6 +212,38 @@ class TestLicense:
         assert rc == 0
         assert "## Acme Maps" in out
         assert "Globex" not in out and "Stuff" not in out
+
+    def test_default_includes_license_texts(self, capsys, datasets_dir):
+        rc, out, _ = run(capsys, "license", "-d", datasets_dir)
+        assert rc == 0
+        assert "## License Texts" in out
+        assert out.count("### ODbL-1.0") == 1 and "TEXT ODbL-1.0" in out
+
+    def test_opt_outs(self, capsys, datasets_dir):
+        rc, out, _ = run(capsys, "license", "-d", datasets_dir, "--no-license-texts")
+        assert rc == 0 and "License Texts" not in out and "## Acme Maps" in out
+        rc, out, _ = run(capsys, "license", "-d", datasets_dir, "--no-attribution")
+        assert rc == 0 and "Available under" not in out and "TEXT ODbL-1.0" in out
+
+    def test_all_parts_off(self, capsys, datasets_dir):
+        rc, _, err = run(
+            capsys,
+            "license",
+            "-d",
+            datasets_dir,
+            "--no-attribution",
+            "--no-notices",
+            "--no-license-texts",
+        )
+        assert rc == ExitCode.USAGE and "nothing to render" in err
+
+    def test_missing_license_id_fails(self, capsys, datasets_dir, monkeypatch):
+        def boom(ids):
+            raise cli.LicenseTextError("license id Nope-1.0 not found")
+
+        monkeypatch.setattr(cli, "license_texts", boom)
+        rc, _, err = run(capsys, "license", "-d", datasets_dir)
+        assert rc == ExitCode.IO_ERROR and "Nope-1.0" in err
 
     def test_nothing_selected(self, capsys, datasets_dir):
         rc, _, err = run(
