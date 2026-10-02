@@ -31,7 +31,7 @@ class TestLoadPolicy:
         }
 
     def test_missing_file(self, tmp_path):
-        with pytest.raises(ValueError, match="could not read"):
+        with pytest.raises(FileNotFoundError):
             load_policy(tmp_path / "nope.json")
 
     def test_top_level_must_be_object(self, tmp_path):

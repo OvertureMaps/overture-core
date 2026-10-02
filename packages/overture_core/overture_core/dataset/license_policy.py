@@ -88,13 +88,13 @@ def _dataset_id(entry: Mapping[str, Any]) -> str:
 
 
 def load_policy(path: str | Path) -> LicensePolicy:
-    """Load and validate a license policy file; raises ``ValueError`` on any problem."""
+    """Load and validate a license policy file.
+
+    Raises ``OSError`` if the file can't be read and ``ValueError`` if its content is invalid.
+    """
     path = Path(path)
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data: Any = json.load(fh)
-    except OSError as e:
-        raise ValueError(f"could not read {path}: {e}") from e
+    with open(path, "r", encoding="utf-8") as fh:
+        data: Any = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError(
             f"{path.name}: top level must be a JSON object of theme -> licenses"

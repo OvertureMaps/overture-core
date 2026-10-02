@@ -16,7 +16,7 @@ Parsing, validating and rendering provider/resource dataset config files, plus t
 
 ## CLI
 
-`overture-datasets` validates, inspects and renders dataset configs. The datasets directory is always passed explicitly with `-d`. A dataset *spec* is `provider` (every resource in that file) or `provider:resource`; with no specs, every `*.json` in the directory is used.
+`overture-datasets` validates, inspects and renders dataset configs. Commands that select datasets (`parse`, `license`, `policy check`) take the datasets directory explicitly with `-d`; `validate` takes file paths or globs, and `policy validate` takes a policy file. A dataset *spec* is `provider` (every resource in that file) or `provider:resource`; with no specs, every `*.json` in the directory is used.
 
 ```sh
 # from packages/overture_core, after `uv sync`

@@ -19,6 +19,7 @@ def license_entry(provider: dict[str, Any], resource: dict[str, Any]) -> dict[st
 
     Both arguments follow the dataset file shape (see ``schema.DatasetFile``);
     missing optional sections degrade to empty strings / lists rather than raising.
+    A license ``type`` of ``None`` is kept as ``None``, as the pipeline artifact has always emitted it.
     """
     collection = resource.get("collection") or {}
     license_data = collection.get("license") or {}
@@ -30,7 +31,7 @@ def license_entry(provider: dict[str, Any], resource: dict[str, Any]) -> dict[st
         "provider_url": (provider.get("url") or {}).get("primary", ""),
         "resource_name": resource["name"],
         "resource_label": resource["label"],
-        "license_type": license_data.get("type") or "",
+        "license_type": license_data.get("type", ""),
         "license_url": (license_data.get("url") or {}).get("primary", ""),
         "requires_attribution": license_data.get("requires_attribution", False),
         "attribution": license_data.get("attribution", ""),

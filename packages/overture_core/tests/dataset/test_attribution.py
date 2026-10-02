@@ -46,10 +46,17 @@ class TestLicenseEntry:
         assert entry["requires_attribution"] is False
         assert entry["coverage_areas"] == []
 
-    def test_null_license_is_empty(self, datasets_dir):
+    def test_missing_license_is_empty(self, datasets_dir):
         (entry,) = entries_from_file(validate_file(datasets_dir / "nolic.json"))
         assert entry["license_type"] == ""
         assert entry["license_url"] == ""
+
+    def test_null_license_type_is_preserved(self):
+        entry = license_entry(
+            {"label": "p", "name": "P"},
+            {"label": "r", "name": "R", "collection": {"license": {"type": None}}},
+        )
+        assert entry["license_type"] is None
 
 
 class TestEntriesFromFile:

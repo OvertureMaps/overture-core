@@ -23,6 +23,7 @@ import difflib
 import enum
 import glob
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -34,7 +35,12 @@ from rich.text import Text
 from overture_core.dataset import banner
 from overture_core.dataset.attribution import RENDERERS, entries_from_file
 from overture_core.dataset.license_policy import load_policy
-from overture_core.dataset.schema import DatasetFile, validate_all, validate_file
+from overture_core.dataset.schema import (
+    LABEL_PATTERN,
+    DatasetFile,
+    validate_all,
+    validate_file,
+)
 
 PROG = "overture-datasets"
 
@@ -138,11 +144,13 @@ def _print_table(rows: Sequence[Sequence[str | Text]]) -> None:
 def parse_spec(spec: str) -> tuple[str, str | None]:
     """``"acme"`` -> ``("acme", None)``; ``"acme:planet"`` -> ``("acme", "planet")``."""
     provider, sep, resource = spec.partition(":")
-    if not provider or (sep and not resource) or resource.count(":"):
+    labels = [provider, resource] if sep else [provider]
+    if not all(re.fullmatch(LABEL_PATTERN, label) for label in labels):
         raise CliError(
             f"invalid dataset spec '{spec}': expected provider[:resource]",
             ExitCode.USAGE,
-            hint="use a provider name ('acme') or provider:resource ('acme:planet')",
+            hint="use a provider name ('acme') or provider:resource ('acme:planet'); "
+            "labels are lowercase letters, digits and underscores",
         )
     return provider, resource or None
 
@@ -255,12 +263,24 @@ def _write_output(text: str, output: Path | None) -> None:
 # ── subcommands ──────────────────────────────────────────────────────────────
 
 
+def _load_policy(path: str):
+    """``load_policy`` with unreadable files reported as an I/O error."""
+    try:
+        return load_policy(path)
+    except OSError as exc:
+        raise CliError(
+            f"cannot read {path}: {exc}",
+            ExitCode.IO_ERROR,
+            hint="check the policy file path and permissions",
+        ) from exc
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     paths = _expand_paths(args.paths)
     policy_failed = False
     if args.policy:
         try:
-            policy = load_policy(args.policy)
+            policy = _load_policy(args.policy)
         except ValueError as exc:
             policy_failed = True
             _fail(f"FAIL {args.policy}:\n{exc}\n")
@@ -348,7 +368,7 @@ def cmd_license(args: argparse.Namespace) -> int:
 
 def cmd_policy_validate(args: argparse.Namespace) -> int:
     try:
-        policy = load_policy(args.policy)
+        policy = _load_policy(args.policy)
     except ValueError as exc:
         _fail(f"FAIL {args.policy}:\n{exc}")
         _hint("expected a JSON object of 'theme' -> ['license ids']")
@@ -374,7 +394,7 @@ def cmd_policy_validate(args: argparse.Namespace) -> int:
 
 def cmd_policy_check(args: argparse.Namespace) -> int:
     try:
-        policy = load_policy(args.policy)
+        policy = _load_policy(args.policy)
     except ValueError as exc:
         raise CliError(
             f"{args.policy} failed validation:\n{exc}",

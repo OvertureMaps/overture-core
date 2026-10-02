@@ -28,7 +28,10 @@ class TestSpecs:
     def test_parse(self, spec, expected):
         assert parse_spec(spec) == expected
 
-    @pytest.mark.parametrize("spec", ["", ":planet", "acme:", "a:b:c"])
+    @pytest.mark.parametrize(
+        "spec",
+        ["", ":planet", "acme:", "a:b:c", "../acme", "/tmp/acme", "Acme", "acme:../x"],
+    )
     def test_invalid(self, spec):
         with pytest.raises(CliError, match="invalid dataset spec"):
             parse_spec(spec)
@@ -230,9 +233,16 @@ class TestPolicy:
         ]
 
     def test_validate_bad(self, capsys, tmp_path):
-        rc, _, err = run(capsys, "policy", "validate", tmp_path / "nope.json")
+        p = tmp_path / "p.json"
+        p.write_text("[]", encoding="utf-8")
+        rc, _, err = run(capsys, "policy", "validate", p)
         assert rc == ExitCode.INVALID
         assert "FAIL" in err
+
+    def test_validate_unreadable_is_io_error(self, capsys, tmp_path):
+        rc, _, err = run(capsys, "policy", "validate", tmp_path / "nope.json")
+        assert rc == ExitCode.IO_ERROR
+        assert "cannot read" in err
 
     def test_check_theme_passes(self, capsys, datasets_dir, policy_path):
         rc, out, err = run(
@@ -311,6 +321,13 @@ class TestPolicy:
             "-d",
             datasets_dir,
         )
+        assert rc == ExitCode.IO_ERROR
+        assert "cannot read" in err
+
+    def test_check_invalid_policy(self, capsys, datasets_dir, tmp_path):
+        p = tmp_path / "p.json"
+        p.write_text("[]", encoding="utf-8")
+        rc, _, err = run(capsys, "policy", "check", "--policy", p, "-d", datasets_dir)
         assert rc == ExitCode.INVALID
         assert "failed validation" in err
 
