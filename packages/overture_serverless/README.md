@@ -54,6 +54,7 @@ collect = serverless_python_task_group(
     task_role_arn=my_resolved_role_arn,  # e.g. via STS in your own DAG code
     network_config=my_ecs_network_config,  # ECS `networkConfiguration` dict
     image_uri=my_resolved_runner_image_uri,  # e.g. from your own ECR-URI builder
+    codeartifact_owner="123456789012",  # AWS account that owns your CodeArtifact domain
     ecs_task_builder_factory=MyEcsTaskBuilder,  # your register/run/teardown builder
 )
 ```

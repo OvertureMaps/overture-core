@@ -78,6 +78,7 @@ def _build_task_group(**overrides):
             }
         },
         image_uri="123456789012.dkr.ecr.us-west-2.amazonaws.com/overture-python-runner:py311-stable-prod",
+        codeartifact_owner="123456789012",
         ecs_task_builder_factory=_FakeEcsTaskBuilder,
     )
     kwargs.update(overrides)
@@ -184,6 +185,26 @@ def test_ecs_cluster_and_log_group_default_to_overture_runner():
     assert container["logConfiguration"]["options"]["awslogs-group"] == (
         "/ecs/overture-python-runner"
     )
+
+
+def test_codeartifact_owner_is_required():
+    kwargs = dict(
+        group_id="g",
+        module_name="m",
+        class_name="C",
+        python_packages="p",
+        task_role_arn="arn",
+        network_config={},
+        image_uri="img",
+        ecs_task_builder_factory=_FakeEcsTaskBuilder,
+    )
+    with pytest.raises(TypeError, match="codeartifact_owner"):
+        serverless_python_task_group(**kwargs)
+
+
+def test_codeartifact_owner_reaches_run_operator():
+    run = _run_operator_of(_build_task_group(codeartifact_owner="999999999999"))
+    assert run._ca_owner == "999999999999"
 
 
 def test_ecs_cluster_and_log_group_are_overridable():

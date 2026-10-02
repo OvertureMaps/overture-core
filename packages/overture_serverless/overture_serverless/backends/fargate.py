@@ -440,6 +440,7 @@ def serverless_python_task_group(
     task_role_arn: str,
     network_config: dict,
     image_uri: str,
+    codeartifact_owner: str,
     ecs_task_builder_factory: "type[EcsTaskBuilderLike] | Any",
     parameters: str = "{}",
     size: Literal["xs", "s", "m", "l"] | None = None,
@@ -453,7 +454,6 @@ def serverless_python_task_group(
     ecs_cluster: str = _DEFAULT_ECS_CLUSTER,
     log_group: str = _DEFAULT_LOG_GROUP,
     codeartifact_domain: str = "overture-pypi",
-    codeartifact_owner: str = "505071440022",
     codeartifact_repo: str = "overture",
     output_path: str | None = None,
 ):
@@ -528,8 +528,11 @@ def serverless_python_task_group(
         log_group: CloudWatch Logs group for the task's container logs.
             Defaults to Overture's reference runner log group; override for
             any other deployment.
-        codeartifact_domain, codeartifact_owner, codeartifact_repo:
-            CodeArtifact coordinates. This backend fetches an auth token
+        codeartifact_owner: AWS account ID that owns the CodeArtifact domain.
+            Required -- there is deliberately no default, so a caller cannot
+            silently install from a stale account's index.
+        codeartifact_domain, codeartifact_repo:
+            Other CodeArtifact coordinates. This backend fetches an auth token
             and assembles a ``PIP_INDEX_URL`` before invoking the runner;
             the container itself is not CodeArtifact-aware.
         output_path: Forwarded to ``ecs_task_builder_factory`` so an
