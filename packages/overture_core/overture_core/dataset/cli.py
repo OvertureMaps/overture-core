@@ -39,6 +39,7 @@ from overture_core.dataset.spdx import (
     SPDX_LICENSE_LIST_VERSION,
     SPDX_PAGE_URL,
     LicenseTextError,
+    is_license_ref,
     license_texts,
 )
 from overture_core.dataset.schema import (
@@ -291,7 +292,8 @@ def _warn_missing_license_urls(path: Path) -> None:
                 f"WARN {path}: resource '{res.label}' has license '{lic.type}' "
                 f"but no license URL"
             )
-            _hint(f"consider {SPDX_PAGE_URL.format(id=lic.type)}")
+            if not is_license_ref(lic.type):
+                _hint(f"consider {SPDX_PAGE_URL.format(id=lic.type)}")
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -392,7 +394,11 @@ def cmd_license(args: argparse.Namespace) -> int:
         )
     texts = None
     if not args.no_license_texts:
-        spdx_ids = {e["license_type"] for e in entries if e["license_type"]}
+        spdx_ids = {
+            e["license_type"]
+            for e in entries
+            if e["license_type"] and not is_license_ref(e["license_type"])
+        }
         try:
             texts = license_texts(spdx_ids)
         except LicenseTextError as exc:

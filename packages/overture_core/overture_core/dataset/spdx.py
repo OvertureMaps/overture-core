@@ -23,6 +23,11 @@ _SPDX_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
 _TIMEOUT_SECONDS = 30
 
 
+def is_license_ref(license_id: str) -> bool:
+    """``LicenseRef-*`` ids are locally defined and absent from the SPDX License List."""
+    return license_id.startswith("LicenseRef-")
+
+
 class LicenseTextError(Exception):
     """A license text could not be obtained for an SPDX id."""
 
