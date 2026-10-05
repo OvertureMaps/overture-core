@@ -100,7 +100,7 @@ def _sorted(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)")
 
 
 def _plain_links(text: str) -> str:

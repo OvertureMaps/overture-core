@@ -206,3 +206,9 @@ class TestNoticeFormatting:
         assert "See NOTICE.txt <https://x.example/n>." in txt
         assert "[NOTICE.txt]" not in txt
         assert "See [NOTICE.txt](https://x.example/n)." in md
+
+    def test_link_with_balanced_parentheses_in_url(self):
+        url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
+        entries = [self._entry("Acme", f"See [reference]({url}).")]
+        txt = render_text(entries, attribution=False, notices=True)
+        assert f"See reference <{url}>." in txt
