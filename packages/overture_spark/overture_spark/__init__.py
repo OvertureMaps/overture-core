@@ -162,18 +162,23 @@ class SparkSedona:
     @classmethod
     def getGeotoolsWrapperVersion(cls, sedona_version: str) -> str:
         # see https://repo1.maven.org/maven2/org/datasyslab/geotools-wrapper/
+        # Keyed by Sedona major.minor; new minors must be added deliberately
+        # (and the apache-sedona upper bound in pyproject.toml raised with them).
         geotoolsVersionMap = {
-            "1.5.3": "28.2",
-            "1.6.1": "28.2",
-            "1.7.0": "28.5",
-            "1.7.1": "28.5",
-            "1.7.2": "28.5",
-            "1.8.0": "33.1",
-            "1.8.1": "33.1",
-            "1.9.0": "33.5",
-            "1.9.1": "33.5",
+            "1.5": "28.2",
+            "1.6": "28.2",
+            "1.7": "28.5",
+            "1.8": "33.1",
+            "1.9": "33.5",
         }
-        return geotoolsVersionMap[sedona_version]
+        majorMinor = ".".join(sedona_version.split(".")[:2])
+        try:
+            return geotoolsVersionMap[majorMinor]
+        except KeyError:
+            raise RuntimeError(
+                f"Unsupported apache-sedona version {sedona_version}; "
+                f"supported minors: {', '.join(geotoolsVersionMap)}"
+            ) from None
 
     @classmethod
     def getSedonaJarPackages(

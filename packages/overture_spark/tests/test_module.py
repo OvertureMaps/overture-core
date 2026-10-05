@@ -145,6 +145,16 @@ class TestGetSparkVersionForSedonaRejectsSpark2(unittest.TestCase):
             SparkSedona.getSparkVersionForSedona("2.4.8", "1.6.1")
 
 
+class TestGetGeotoolsWrapperVersion(unittest.TestCase):
+    def testResolvesByMinorVersion(self):
+        self.assertEqual("28.5", SparkSedona.getGeotoolsWrapperVersion("1.7.0"))
+        self.assertEqual("33.5", SparkSedona.getGeotoolsWrapperVersion("1.9.4"))
+
+    def testRejectsUnknownMinor(self):
+        with self.assertRaises(RuntimeError):
+            SparkSedona.getGeotoolsWrapperVersion("1.10.0")
+
+
 class TestHadoopAwsInstallerNoPyspark(unittest.TestCase):
     """No real pyspark needed: find_spec is mocked directly, so this runs in
     the routine not-spark lane and validates the fix without a JVM."""
@@ -231,7 +241,7 @@ class TestSparkSedona(unittest.TestCase):
     def testSedonaVersion(self):
         self.assertIn(
             SparkSedona.getSedonaVersion(),
-            ["1.6.1", "1.7.0", "1.7.2", "1.9.1"],
+            ["1.6.1", "1.7.0", "1.7.2", "1.8.0", "1.8.1", "1.9.0", "1.9.1"],
             "Unsupported apache-sedona version",
         )
 
