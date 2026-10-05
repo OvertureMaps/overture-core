@@ -9,6 +9,7 @@ CLI share one definition.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from overture_core.dataset.schema import DatasetFile
@@ -99,6 +100,14 @@ def _sorted(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+
+
+def _plain_links(text: str) -> str:
+    """Rewrite Markdown ``[label](url)`` links as ``label <url>``."""
+    return _MD_LINK.sub(r"\1 <\2>", text)
+
+
 def _notices(entries: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """``(heading, notice text)`` per provider/notice pair, in sorted order, deduplicated."""
     out: list[tuple[str, str]] = []
@@ -109,7 +118,9 @@ def _notices(entries: list[dict[str, Any]]) -> list[tuple[str, str]]:
         if not notice or key in seen:
             continue
         seen.add(key)
-        out.append((f"{entry['provider_name']}: {entry['resource_name']}", notice))
+        provider, resource = entry["provider_name"], entry["resource_name"]
+        heading = provider if provider == resource else f"{provider}: {resource}"
+        out.append((heading, notice))
     return out
 
 
@@ -196,7 +207,7 @@ def render_text(
     if notice_items:
         blocks += ["", "Notices", "-------"]
         for heading, text in notice_items:
-            blocks += ["", heading, "", text]
+            blocks += ["", heading, "", _plain_links(text)]
     if license_texts:
         blocks += ["", "License Texts", "-------------"]
         for spdx_id, text in license_texts.items():

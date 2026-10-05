@@ -173,3 +173,36 @@ class TestNoticesAndLicenseTexts:
         assert "Available under" not in render_text(
             entries, attribution=False, notices=True
         )
+
+
+class TestNoticeFormatting:
+    @staticmethod
+    def _entry(resource_name, notice="Plain notice."):
+        return {
+            "provider_name": "Acme",
+            "provider_label": "acme",
+            "resource_name": resource_name,
+            "notice": notice,
+        }
+
+    def test_heading_not_repeated_when_names_match(self):
+        entries = [self._entry("Acme")]
+        assert "### Acme\n" in render_markdown(entries, attribution=False, notices=True)
+        assert "Acme: Acme" not in render_text(entries, attribution=False, notices=True)
+
+    def test_heading_keeps_both_names_when_different(self):
+        entries = [self._entry("Places")]
+        assert "### Acme: Places\n" in render_markdown(
+            entries, attribution=False, notices=True
+        )
+        assert "\nAcme: Places\n" in render_text(
+            entries, attribution=False, notices=True
+        )
+
+    def test_markdown_link_rendered_for_text_only(self):
+        entries = [self._entry("Acme", "See [NOTICE.txt](https://x.example/n).")]
+        txt = render_text(entries, attribution=False, notices=True)
+        md = render_markdown(entries, attribution=False, notices=True)
+        assert "See NOTICE.txt <https://x.example/n>." in txt
+        assert "[NOTICE.txt]" not in txt
+        assert "See [NOTICE.txt](https://x.example/n)." in md
