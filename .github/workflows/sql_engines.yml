@@ -162,10 +162,16 @@ jobs:
         run: uv run pytest -v -m trino tests/test_uuids_sql_engines.py
 
   spark-overture-spark:
-    name: spark (overture_spark)
+    name: spark (overture_spark, ${{ matrix.resolution }})
     needs: detect-changes
     if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.overture_spark == 'true')
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `lowest-direct` exercises the floor of each declared bound (e.g.
+        # apache-sedona>=1.7.0); `highest` is the locked, latest-allowed set.
+        resolution: [highest, lowest-direct]
     permissions:
       contents: read # checkout
     steps:
@@ -193,7 +199,14 @@ jobs:
 
       - name: Install dependencies
         working-directory: packages/overture_spark
-        run: uv sync --extra dev --extra sql-spark
+        run: |
+          if [ "$RESOLUTION" = "highest" ]; then
+            uv sync --extra dev --extra sql-spark
+          else
+            uv sync --upgrade --resolution "$RESOLUTION" --extra dev --extra sql-spark
+          fi
+        env:
+          RESOLUTION: ${{ matrix.resolution }}
 
       # Every remaining test in this package already needs Spark (see
       # test_python.yml's carve-out), so this runs the full suite with the
