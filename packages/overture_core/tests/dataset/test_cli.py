@@ -14,6 +14,16 @@ from overture_core.dataset.cli import (
 )
 
 
+cli_entries = cli.entries_from_file
+
+
+@pytest.fixture(autouse=True)
+def fake_spdx(monkeypatch):
+    monkeypatch.setattr(
+        cli, "license_texts", lambda ids: {i: f"TEXT {i}" for i in sorted(ids)}
+    )
+
+
 def run(capsys, *argv) -> tuple[int, str, str]:
     rc = main([str(a) for a in argv])
     captured = capsys.readouterr()
@@ -206,6 +216,53 @@ class TestLicense:
         assert "## Acme Maps" in out
         assert "Globex" not in out and "Stuff" not in out
 
+    def test_default_includes_license_texts(self, capsys, datasets_dir):
+        rc, out, _ = run(capsys, "license", "-d", datasets_dir)
+        assert rc == 0
+        assert "## License Texts" in out
+        assert out.count("### ODbL-1.0") == 1 and "TEXT ODbL-1.0" in out
+
+    def test_opt_outs(self, capsys, datasets_dir):
+        rc, out, _ = run(capsys, "license", "-d", datasets_dir, "--no-license-texts")
+        assert rc == 0 and "License Texts" not in out and "## Acme Maps" in out
+        rc, out, _ = run(capsys, "license", "-d", datasets_dir, "--no-attribution")
+        assert rc == 0 and "Available under" not in out and "TEXT ODbL-1.0" in out
+
+    def test_license_ref_has_no_spdx_text(self, capsys, datasets_dir, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            cli, "license_texts", lambda ids: seen.append(set(ids)) or {}
+        )
+        monkeypatch.setattr(
+            cli,
+            "entries_from_file",
+            lambda d, r: [
+                {**e, "license_type": "LicenseRef-x"} for e in cli_entries(d, r)
+            ],
+        )
+        rc, _, _ = run(capsys, "license", "-d", datasets_dir, "acme")
+        assert rc == 0 and seen == [set()]
+
+    def test_all_parts_off(self, capsys, datasets_dir):
+        rc, _, err = run(
+            capsys,
+            "license",
+            "-d",
+            datasets_dir,
+            "--no-attribution",
+            "--no-notices",
+            "--no-license-texts",
+        )
+        assert rc == ExitCode.USAGE and "nothing to render" in err
+
+    def test_missing_license_id_fails(self, capsys, datasets_dir, monkeypatch):
+        def boom(ids):
+            raise cli.LicenseTextError("license id Nope-1.0 not found")
+
+        monkeypatch.setattr(cli, "license_texts", boom)
+        rc, _, err = run(capsys, "license", "-d", datasets_dir)
+        assert rc == ExitCode.IO_ERROR and "Nope-1.0" in err
+
     def test_nothing_selected(self, capsys, datasets_dir):
         rc, _, err = run(
             capsys,
@@ -217,6 +274,34 @@ class TestLicense:
         )
         assert rc == ExitCode.IO_ERROR
         assert "no license entries selected" in err
+
+
+class TestValidateLicenseUrlWarning:
+    def test_warns_when_url_missing(self, capsys, datasets_dir, tmp_path):
+        doc = json.loads((datasets_dir / "acme.json").read_text(encoding="utf-8"))
+        for res in doc["resources"]:
+            res["collection"]["license"]["url"]["primary"] = ""
+        target = tmp_path / "acme.json"
+        target.write_text(json.dumps(doc), encoding="utf-8")
+        rc, out, err = run(capsys, "validate", target)
+        assert rc == 0
+        assert "https://spdx.org/licenses/ODbL-1.0.html" in out + err
+
+    def test_license_ref_warns_without_spdx_hint(self, capsys, datasets_dir, tmp_path):
+        doc = json.loads((datasets_dir / "acme.json").read_text(encoding="utf-8"))
+        for res in doc["resources"]:
+            res["collection"]["license"]["type"] = "LicenseRef-acme"
+            res["collection"]["license"]["url"]["primary"] = ""
+        target = tmp_path / "acme.json"
+        target.write_text(json.dumps(doc), encoding="utf-8")
+        rc, out, err = run(capsys, "validate", target)
+        assert rc == 0
+        assert "no license URL" in out + err
+        assert "spdx.org" not in out + err
+
+    def test_no_warning_when_url_present(self, capsys, datasets_dir):
+        rc, out, err = run(capsys, "validate", datasets_dir / "acme.json")
+        assert rc == 0 and "no license URL" not in out + err
 
 
 class TestPolicy:

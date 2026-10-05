@@ -11,6 +11,7 @@ Parsing, validating and rendering provider/resource dataset config files, plus t
 | `dataset` | Parsing a provider/resource JSON config into its collection/ingestion/matching sections. |
 | `schema` | Validating provider/resource JSON configs, including as a standalone CI check. |
 | `attribution` | Flattening provider/resource configs into license entries and rendering them as Markdown or plain text. |
+| `spdx` | Fetching canonical SPDX license texts from a pinned `license-list-data` release. |
 | `license_policy` | Validating and querying the per-theme license allowlist. |
 | `cli` | The `overture-datasets` command-line interface over the modules above. |
 
@@ -29,6 +30,7 @@ uv run overture-datasets policy check --policy path/to/license_policy.json --the
 ```
 
 - `license` infers `--format` (`md` or `txt`) from the `-o` extension and writes to stdout without `-o`.
+- `license` writes three parts by default: the per-provider attribution list, each resource's notice text (`license.text`: copyright, NOTICE, change statements), and one copy of the full text of every distinct SPDX license in the selection. Turn parts off with `--no-attribution`, `--no-notices` and `--no-license-texts`; at least one must stay on. `--only-required-attribution` filters the resources for every part. License texts are downloaded from [SPDX license-list-data](https://github.com/spdx/license-list-data) at the release pinned in `spdx.py`, so they need network access; an id missing from that release fails with exit 4 naming the id.
 - `policy check` fails when a selected resource's license isn't allowed for `--theme`. Licenses listed under no theme are warnings, or failures with `--strict`.
 - Running `overture-datasets` with no command prints a banner and a menu of commands and examples. The banner shows only on a terminal, or with `--color always`.
 - Success lines are green, failures red, warnings yellow and `hint:` lines cyan. Control this with `--color auto|always|never`; `auto` honors `NO_COLOR` and `FORCE_COLOR` and is off when output is piped. Output is rendered with [Rich](https://github.com/Textualize/rich). JSON and rendered license files are never colored.
