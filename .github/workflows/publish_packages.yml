@@ -73,6 +73,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # uv 0.13.4 is the first release that no longer trusts the compromised
+      # emSign ECC Root CA - G3 (GHSA-hq85-5cpj-mr62).
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ">=0.13.4"
+          enable-cache: false # this job publishes a runtime artifact; don't risk a poisoned cache
+
       # The official Docker action resolves GitPython (an unpinned transitive
       # dependency) at image-build time, so every run picks up whatever
       # GitPython release is newest. GitPython v3.1.60 dropped the
@@ -80,14 +88,12 @@ jobs:
       # of writing) still reads unconditionally, breaking config load for
       # every user of the action regardless of which PSR tag is pinned. The
       # fix is an open PR with no PSR release yet, so install PSR ourselves
-      # in an isolated pipx venv where we can pin GitPython below the broken
+      # as an isolated uv tool where we can pin GitPython below the broken
       # release. Revert to the Docker action once a fixed PSR version ships.
       # See: https://github.com/python-semantic-release/python-semantic-release/issues/1476
       - name: Install python-semantic-release
         if: github.event_name == 'push'
-        run: |
-          pipx install "python-semantic-release==10.6.1"
-          pipx inject --force python-semantic-release "gitpython<3.1.60"
+        run: uv tool install "python-semantic-release==10.6.1" --with "gitpython<3.1.60"
 
       # GITHUB_TOKEN can never be granted the `workflows` permission, so PSR's
       # tag push is rejected the moment the pushed history contains any
@@ -180,12 +186,6 @@ jobs:
               ;;
           esac
 
-      - name: Install uv
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          enable-cache: false # this job publishes a runtime artifact; don't risk a poisoned cache
-
       - name: Build package
         if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
         working-directory: packages/${{ matrix.package }}
@@ -202,13 +202,13 @@ jobs:
 
       - name: Publish to PyPI
         if: github.event_name == 'push' && (steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true')
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: packages/${{ matrix.package }}/dist
 
       - name: Publish to Test PyPI (smoke test)
         if: github.event_name == 'workflow_dispatch'
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: packages/${{ matrix.package }}/dist
           repository-url: https://test.pypi.org/legacy/
