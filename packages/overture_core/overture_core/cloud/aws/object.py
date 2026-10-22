@@ -1,7 +1,9 @@
 """S3 object and prefix utilities built on boto3."""
 
+import datetime
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from urllib.parse import quote, urlparse
 from uuid import uuid4
@@ -43,6 +45,20 @@ def object_exists(bucket: str, key: str) -> bool:
         if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
             return False
         raise
+
+
+def object_last_modified(bucket: str, key: str) -> datetime.datetime | None:
+    """Return the ``LastModified`` timestamp of ``bucket/key``, or ``None`` if missing.
+
+    Raises for any error other than a missing key.
+    """
+    try:
+        response = boto3.client("s3").head_object(Bucket=bucket, Key=key)
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return None
+        raise
+    return response.get("LastModified")
 
 
 def prefix_exists(bucket: str, prefix: str) -> bool:
@@ -395,6 +411,19 @@ def delete_prefix(bucket: str, prefix: str) -> int:
         deleted += len(keys)
 
     return deleted
+
+
+def iter_keys(bucket: str, prefix: str) -> Iterator[str]:
+    """Yield every object key under *prefix* in *bucket*, recursively.
+
+    *prefix* is passed to ``ListObjectsV2`` as-is, so include a trailing
+    ``/`` to avoid matching sibling prefixes (``root/v=1`` also matches
+    ``root/v=10``).
+    """
+    paginator = boto3.client("s3").get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            yield obj["Key"]
 
 
 def list_common_prefixes(bucket: str, prefix: str) -> list[str]:

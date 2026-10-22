@@ -1,5 +1,6 @@
 """Unit tests for S3 object and prefix utilities."""
 
+import datetime
 from unittest.mock import MagicMock, patch
 
 import botocore.exceptions
@@ -13,8 +14,10 @@ from overture_core.cloud.aws.object import (
     delete_object,
     delete_prefix,
     get_object_bytes,
+    iter_keys,
     list_common_prefixes,
     object_exists,
+    object_last_modified,
     parse_s3_uri,
     prefix_exists,
     put_object,
@@ -91,6 +94,31 @@ class TestObjectExists:
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             with pytest.raises(botocore.exceptions.ClientError):
                 object_exists("bucket", "key")
+
+
+class TestObjectLastModified:
+    def test_returns_last_modified(self):
+        stamp = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+        s3 = MagicMock()
+        s3.head_object.return_value = {"LastModified": stamp}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert object_last_modified("bucket", "key") == stamp
+        s3.head_object.assert_called_once_with(Bucket="bucket", Key="key")
+
+    def test_none_on_404(self):
+        s3 = MagicMock()
+        s3.head_object.side_effect = _not_found_error("HeadObject")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert object_last_modified("bucket", "key") is None
+
+    def test_reraises_other_client_errors(self):
+        s3 = MagicMock()
+        s3.head_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                object_last_modified("bucket", "key")
 
 
 class TestPrefixExists:
@@ -323,6 +351,24 @@ class TestDeletePrefix:
         assert deleted == 1
         s3.get_paginator.return_value.paginate.assert_called_once_with(
             Bucket="bucket", Prefix=""
+        )
+
+
+class TestIterKeys:
+    def test_yields_keys_across_pages(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "root/a"}, {"Key": "root/b/c"}]},
+            {},
+            {"Contents": [{"Key": "root/d"}]},
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            keys = list(iter_keys("bucket", "root/"))
+
+        assert keys == ["root/a", "root/b/c", "root/d"]
+        s3.get_paginator.assert_called_once_with("list_objects_v2")
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix="root/"
         )
 
 
