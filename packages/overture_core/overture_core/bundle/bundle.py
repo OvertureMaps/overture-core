@@ -14,8 +14,12 @@ Bundles follow a lifecycle:
    bundle is being rebuilt) and create a fresh ``metadata.json``.
 2. **Process** -- the pipeline writes data into ``data/`` and any other
    subdirectories.
-3. **Finalize** -- stamp ``metadata.json`` as complete and write a new
-   ``success`` file.
+3. **Finalize** -- stamp ``metadata.json`` with the run's status and, only
+   when that status is ``"success"``, write a new ``success`` file.
+
+`Bundle.status` reads a bundle's place in that lifecycle back from storage
+as a `BundleStatus` (``in_progress``, ``success`` or ``failed``), together
+with whether the bundle exists and has ``metadata.json``.
 
 Each bundle type defines an ordered ``partitions`` dict whose keys
 become Hive-style ``key=value`` path segments appended to the root
@@ -55,11 +59,13 @@ classes to supply defaults.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import re
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from enum import StrEnum
 from os import PathLike
 from typing import Any, Protocol, Self, TypeVar
 from urllib.parse import urlparse
@@ -412,6 +418,81 @@ def _resolve_partitions(
     log.info("Resolved bundle base path: %s", path_uri)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
+
+
+class BundleStatus(StrEnum):
+    """Where an existing bundle is in its lifecycle, as reported by `Bundle.status`.
+
+    - ``SUCCESS`` -- the ``success`` marker exists.
+    - ``FAILED`` -- no ``success`` marker, and a ``metadata.json`` section
+      has ``"status": "failed"``.
+    - ``IN_PROGRESS`` -- anything else: being written, or stopped before
+      `Bundle.finalize` (including a rerun that `Bundle.initialize`
+      restarted, and a run finalized with a status other than
+      ``"success"`` or ``"failed"``).
+
+    A `StrEnum`, so members compare equal to (and serialise as) their values,
+    e.g. ``BundleStatus.SUCCESS == "success"``.  A bundle that doesn't exist
+    has no status: `BundleStatusReport.status` is ``None``.
+    """
+
+    IN_PROGRESS = "in_progress"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class BundleStatusReport:
+    """What `Bundle.status` found for one bundle.
+
+    Attributes
+    ----------
+    status : BundleStatus | None
+        The bundle's status, or ``None`` when the bundle doesn't exist.
+    exists : bool
+        Whether any object exists under the bundle's prefix.
+    has_success : bool
+        Whether the ``success`` marker exists.
+    has_metadata : bool
+        Whether ``metadata.json`` exists, even if it can't be parsed.
+    sections : Mapping[str, str | None]
+        The ``status`` of each ``metadata.json`` section, keyed by section
+        name (the DAG id); ``None`` for a section without a string
+        ``status``.  Empty when there is no readable ``metadata.json``.
+    """
+
+    status: BundleStatus | None
+    exists: bool
+    has_success: bool
+    has_metadata: bool
+    sections: Mapping[str, str | None] = field(default_factory=dict, hash=False)
+
+
+def _metadata_section_statuses(body: bytes, uri: str) -> dict[str, str | None]:
+    """Return ``{section: status}`` for the ``metadata.json`` *body* read from *uri*.
+
+    Values that aren't JSON objects (sections) are skipped.  Unparseable
+    JSON, or a document that isn't an object, is logged and gives ``{}``.
+    """
+    try:
+        document = json.loads(body)
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError
+        log.warning("Unreadable metadata.json at %s: %s", uri, exc)
+        return {}
+    if not isinstance(document, dict):
+        log.warning("metadata.json at %s is not a JSON object", uri)
+        return {}
+    statuses: dict[str, str | None] = {}
+    for name, section in document.items():
+        if isinstance(section, dict):
+            status = section.get("status")
+            statuses[name] = status if isinstance(status, str) else None
+    return statuses
 
 
 # ---------------------------------------------------------------------------
@@ -880,12 +961,24 @@ class Bundle:
         *,
         metadata: BundleMetadata,
     ) -> None:
-        """Finalize the bundle: update metadata and write the success file.
+        """Finalize the bundle: stamp metadata and, on success, write the marker.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``.
+        ``base_uri``; ``metadata.finalize(status=status)`` is always called.
+        The ``success`` marker is written only when *status* is
+        ``"success"`` (`BundleStatus.SUCCESS`).  Any other status leaves the
+        bundle without one, so `is_successful` stays ``False`` and partition
+        resolution, `needs_processing` and retention don't treat it as
+        complete; with ``"failed"``, `status` reports `BundleStatus.FAILED`.
         """
         metadata.finalize(status=status)
+        if status != BundleStatus.SUCCESS:
+            log.info(
+                "Finalized %s with status %r; not writing a success file",
+                self.base_uri,
+                status,
+            )
+            return
         bucket, key = self._success_marker()
         self._open_store().write(bucket, key)
         log.info("Wrote success file s3://%s/%s", bucket, key)
@@ -894,6 +987,12 @@ class Bundle:
         """``(bucket, key)`` of the ``success`` marker, parsed from `base_uri`."""
         bucket, prefix = parse_s3_uri(self.base_uri)
         return bucket, success_file_key(prefix)
+
+    def _object_key(self, name: str) -> tuple[str, str]:
+        """``(bucket, key)`` of the object *name* directly under `base_uri`."""
+        bucket, prefix = parse_s3_uri(self.base_uri)
+        prefix = prefix.strip("/")
+        return bucket, f"{prefix}/{name}" if prefix else name
 
     def resolve_partitions(
         self,
@@ -1173,6 +1272,56 @@ class Bundle:
             "rejected": rejected,
             "baseline_kind": None,
         }
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
+
+    def status(self) -> BundleStatusReport:
+        """Read this bundle's lifecycle status from storage.
+
+        The ``success`` marker means `BundleStatus.SUCCESS`.  Without it, a
+        ``metadata.json`` section with ``"status": "failed"`` means
+        `BundleStatus.FAILED`, and anything else `BundleStatus.IN_PROGRESS`.
+        A bundle with no objects at all has status ``None`` and ``exists``
+        ``False``.  See `BundleStatusReport` for the other fields.
+
+        Makes up to three requests on one store: check the marker, read
+        ``metadata.json``, and, only when neither exists, look for any other
+        object under the bundle.  Subclasses that add a status override
+        `_status_report`, which takes that open store.
+        """
+        return self._status_report(self._open_store())
+
+    def _status_report(self, store: BundleStore) -> BundleStatusReport:
+        """Build `status`'s report, making every request on *store*."""
+        bucket, success_key = self._success_marker()
+        _, metadata_key = self._object_key("metadata.json")
+        _, directory = self._object_key("")  # "<base_prefix>/", "" at bucket root
+        has_success = store.exists(bucket, success_key)
+        body = store.read(bucket, metadata_key)
+        has_metadata = body is not None
+        sections = (
+            _metadata_section_statuses(body, f"s3://{bucket}/{metadata_key}")
+            if body is not None
+            else {}
+        )
+        exists = has_success or has_metadata or store.prefix_exists(bucket, directory)
+        if not exists:
+            status = None
+        elif has_success:
+            status = BundleStatus.SUCCESS
+        elif BundleStatus.FAILED in sections.values():
+            status = BundleStatus.FAILED
+        else:
+            status = BundleStatus.IN_PROGRESS
+        return BundleStatusReport(
+            status=status,
+            exists=exists,
+            has_success=has_success,
+            has_metadata=has_metadata,
+            sections=sections,
+        )
 
     # ------------------------------------------------------------------
     # Cleanup / retention
