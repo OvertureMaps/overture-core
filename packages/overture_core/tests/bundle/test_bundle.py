@@ -592,15 +592,61 @@ class TestRetention:
         assert result.deleted_object_count == 1
         assert result.deleted_tables == []
 
-    def test_delete_refuses_empty_prefix(self, s3):
-        with pytest.raises(ValueError, match="empty prefix"):
+    def test_delete_refuses_bundle_at_bucket_root(self, s3):
+        with pytest.raises(ValueError, match="has no partitions"):
             Bundle(bucket="bkt", root_path="").delete()
 
-    def test_delete_refuses_bundle_without_partitions(self, s3):
+    @pytest.mark.parametrize(
+        "bundle",
+        [
+            Bundle(bucket="bkt", root_path="datasets"),
+            Bundle(bucket="bkt", root_path="feeds"),
+            Bundle(bucket="bkt", root_path="feeds", namespace="alice"),
+        ],
+        ids=["datasets", "feeds", "namespace-root"],
+    )
+    def test_delete_refuses_bundle_without_partitions(self, s3, bundle):
         s3.put("bkt", "datasets/provider=p/resource=r/version=1/run=r1/success")
+        s3.put("bkt", "feeds/provider=p/resource=r/version=1/run=r1/success")
+        s3.put("bkt", "alice/feeds/provider=p/resource=r/version=1/run=r1/success")
+        dropper = RecordingDropper()
         with pytest.raises(ValueError, match="has no partitions"):
-            Bundle(bucket="bkt", root_path="datasets").delete(dry_run=True)
-        assert len(s3.keys()) == 1
+            bundle.delete(table_dropper=dropper)
+        assert len(s3.keys()) == 3
+        assert dropper.calls == []
+
+    @pytest.mark.parametrize(
+        ("bundle", "missing"),
+        [
+            (
+                SourceIngestBundle(provider="p", resource="r", bucket="bkt"),
+                "version, run",
+            ),
+            (
+                SourceIngestBundle(
+                    provider="p", resource="r", bucket="bkt", run="r1", namespace="ns"
+                ),
+                "version",
+            ),
+            (
+                Bundle(
+                    bucket="bkt",
+                    root_path="feeds",
+                    partitions={"provider": "p", "resource": ""},
+                ),
+                "resource",
+            ),
+        ],
+        ids=["subclass-unresolved", "subclass-namespace", "generic-empty-value"],
+    )
+    def test_delete_refuses_unset_declared_partitions(self, s3, bundle, missing):
+        for root in ("feeds", "ns/feeds"):
+            s3.put("bkt", f"{root}/provider=p/resource=r/version=1/run=r1/success")
+        dropper = RecordingDropper()
+        with pytest.raises(ValueError, match=f"partition\\(s\\) {missing} have no"):
+            bundle.delete(dry_run=False, table_dropper=dropper)
+        assert len(s3.keys()) == 2
+        assert dropper.calls == []
 
     def test_cleanup_all_checks_success_once_per_bundle(self, s3, monkeypatch):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
@@ -621,16 +667,18 @@ class TestRetention:
         assert len(set(checked)) == 3
 
     def test_is_deletable_uses_success_snapshot(self, s3):
+        now = dt.datetime(2026, 2, 1, tzinfo=dt.timezone.utc)
+        s3.put("bkt", "root/version=1/metadata.json", b"{}")
         old, new = (
             Bundle(bucket="bkt", root_path="root", partitions={"version": v})
             for v in "12"
         )
         group = [old, new]
-        assert old.is_deletable(0, group, successful=[new]) == (
+        assert old.is_deletable(30, group, now=now, successful=[new]) == (
             True,
-            "unsuccessful; superseded by successful bundle ('2',)",
+            "unsuccessful; superseded by ('2',); age 31.0d >= 30d",
         )
-        assert old.is_deletable(0, group, successful=[])[0] is False
+        assert old.is_deletable(30, group, now=now, successful=[])[0] is False
 
 
 # ── Processing checks ────────────────────────────────────────────────────────
@@ -675,6 +723,16 @@ class TestNeedsProcessing:
         rendered = b.base_uri.replace("s3://bkt/", "s3://other/")
         assert b.needs_processing(base_uri=rendered) is False
 
+    def test_similarly_named_artifacts_are_not_success_markers(self, s3):
+        s3.put("bkt", f"{self._PARENT}/run=r1/success.log")
+        s3.put("bkt", f"{self._PARENT}/run=r1/success/part-0")
+        assert self._bundle("r2").needs_processing() is True
+
+    def test_current_run_artifact_is_not_a_rerun(self, s3):
+        s3.put("bkt", f"{self._PARENT}/run=r1/success")
+        s3.put("bkt", f"{self._PARENT}/run=r2/success.log")
+        assert self._bundle("r2").needs_processing() is False
+
 
 class TestBatchHelpers:
     def test_resolve_partitions_batch_picks_latest_per_resource(self, s3):
@@ -703,6 +761,43 @@ class TestBatchHelpers:
     def test_resolve_partitions_batch_rejects_other_layouts(self):
         with pytest.raises(TypeError):
             ThemeAssembleBundle.resolve_partitions_batch(provider="p", bucket="bkt")
+
+    def test_resolve_partitions_batch_requires_exact_layout(self, s3):
+        base = "feeds/provider=p/resource=r"
+        for key in (
+            f"{base}/version=1/run=a/success",
+            f"{base}/version=2/run=b/data/child/success",
+            f"{base}/version=3/run=c/data/success",
+            f"{base}/version=4/success",
+            f"{base}/version=5/run=/success",
+            f"{base}/run=x/version=6/success",
+            f"{base}/version=7/run=d/success.log",
+        ):
+            s3.put("bkt", key)
+        out = SourceIngestBundle.resolve_partitions_batch(provider="p", bucket="bkt")
+        assert out["r"].base_uri == f"s3://bkt/{base}/version=1/run=a"
+        b = SourceIngestBundle(provider="p", resource="r", bucket="bkt")
+        b.resolve_partitions()
+        assert b.base_uri == out["r"].base_uri
+
+    @pytest.mark.parametrize(
+        ("marker", "needs"),
+        [
+            ("run=r2/success", True),
+            ("run=r1/data/success", True),
+            ("run=r1/success.log", True),
+            ("run=r1/success/part-0", True),
+            ("run=r1/success", False),
+        ],
+        ids=["rerun", "nested", "suffix", "subdir", "other-run-done"],
+    )
+    def test_needs_processing_batch_single_marker(self, s3, marker, needs):
+        s3.put("bkt", f"feeds/provider=p/resource=a/version=1/{marker}")
+        b = SourceIngestBundle(
+            provider="p", resource="a", bucket="bkt", version="1", run="r2"
+        )
+        assert b.needs_processing() is needs
+        assert Bundle.needs_processing_batch([b]) == ([b] if needs else [])
 
     def test_needs_processing_batch(self, s3):
         s3.put("bkt", "feeds/provider=p/resource=a/version=1/run=x/success")
@@ -1059,6 +1154,47 @@ class TestRetentionEdgeCases:
         now = dt.datetime(2026, 1, 3, tzinfo=dt.timezone.utc)
         s3.put("bkt", "root/version=1/run=r1/metadata.json", b"{}")
         assert self._bundle("1").age_days(now=now) == 2.0
+
+    def test_recent_incomplete_older_bundle_is_kept(self, s3):
+        # An in-flight rerun: initialize removed success and rewrote metadata.
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        s3.put("bkt", "root/version=2/run=r1/success")
+        s3.put(
+            "bkt",
+            "root/version=1/run=r1/metadata.json",
+            b"{}",
+            lm=now - dt.timedelta(days=1),
+        )
+        old, new = self._bundle("1"), self._bundle("2")
+        assert old.is_deletable(30, [old, new], now=now) == (
+            False,
+            "age 1.0d < min_age_days 30d",
+        )
+        assert old.is_deletable(0, [old, new], now=now) == (
+            True,
+            "unsuccessful; superseded by ('2', 'r1'); age 1.0d >= 0d",
+        )
+
+    def test_incomplete_bundle_without_metadata_is_kept(self, s3):
+        s3.put("bkt", "root/version=2/run=r1/success")
+        s3.put("bkt", "root/version=1/run=r1/data/part-0")
+        old, new = self._bundle("1"), self._bundle("2")
+        assert old.is_deletable(0, [old, new]) == (
+            False,
+            "cannot determine bundle age",
+        )
+
+    def test_cleanup_all_keeps_in_flight_rerun(self, s3):
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        _seed_versions(s3, now)
+        rerun = "ns/feeds/provider=p/resource=r/version=0/run=r1/metadata.json"
+        s3.put("bkt", rerun, b"{}", lm=now)
+        report = SourceIngestBundle.cleanup_all(
+            bucket="bkt", min_age_days=30, dry_run=False, namespace="ns", now=now
+        )
+        deleted = [r.bundle_uri.split("version=")[1][0] for r in report.deleted]
+        assert deleted == ["1"]
+        assert rerun in s3.keys()
 
     def test_retention_order_key_falls_back_to_sorted_partitions(self):
         b = Bundle(
