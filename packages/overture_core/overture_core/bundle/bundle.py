@@ -23,6 +23,23 @@ Each bundle type defines an ordered ``partitions`` dict whose keys
 become Hive-style ``key=value`` path segments appended to the root
 path.
 
+Layout
+------
+Each bundle type declares its layout as class attributes:
+
+- ``BUNDLE_TYPE`` -- the stage name recorded in ``metadata.json``.
+- ``ROOT_PATH`` -- the key prefix bundles of the type live under.
+- ``PARTITION_KEYS`` -- the ordered Hive partition keys below the root.
+- ``COMPONENTS`` -- the `BundleComponent` entries directly under a
+  bundle's base path: ``data/``, ``metadata.json`` and ``success`` for
+  every type, plus the type's own directories and files.  A ``<name>_uri``
+  / ``<name>_prefix`` property pair is generated for every directory
+  component (``changelog_uri``, ``bridgefiles_prefix``, ...).
+
+`overture_core.bundle.registry` indexes the types by ``BUNDLE_TYPE`` and
+``ROOT_PATH``, so a client can go from an S3 path to a typed bundle and
+its components without hardcoding the layout.
+
 Class hierarchy
 ---------------
 - `Bundle` -- base class with ``data`` directory, metadata, and success file.
@@ -30,12 +47,14 @@ Class hierarchy
 - `SourceIngestBundle` -- ingested/normalised dataset, with changelog,
   metrics, and metrics_summary.
 - `ThemeAssembleBundle` -- assembled theme data from multiple datasets, with
-  changelog, metrics, and metrics_summary.
+  changelog, metrics, metrics_summary, and an optional ``summary.md``.
 - `ThemePromoteBundle` -- promoted theme data with bridge files, pmtiles,
-  changelog, metrics, metrics_summary, changelog_internal, and validation.
+  changelog, metrics, metrics_summary, changelog_internal, partition_bboxes,
+  and validation.
 - `ReleaseCandidateBundle` -- release candidate with bridge files, pmtiles,
-  changelog, metrics, and metrics_summary.
-- `ReleaseBundle` -- final published release.
+  changelog, metrics, metrics_summary, partition_bboxes, and registry.  A
+  published release is the candidate that was released: it carries a
+  ``released`` marker and reports `BundleStatus.RELEASED`.
 - `ScratchBundle` -- ephemeral debug/intermediate output, labeled by purpose.
 
 Deployment-specific inputs
@@ -63,10 +82,10 @@ import logging
 import re
 from collections.abc import Callable, Collection, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from os import PathLike
-from typing import Any, Protocol, Self, TypeVar
+from typing import Any, ClassVar, Protocol, Self, TypeVar
 from urllib.parse import urlparse
 
 from overture_core.bundle.store import BundleStore, S3BundleStore
@@ -407,6 +426,8 @@ class BundleStatus(StrEnum):
     """Lifecycle state of an existing bundle, as reported by `Bundle.status`.
 
     - ``SUCCESS`` -- the ``success`` marker exists.
+    - ``RELEASED`` -- `ReleaseCandidateBundle` only: the ``success`` and
+      ``released`` markers both exist.
     - ``FAILED`` -- no marker, and a ``metadata.json`` section has
       ``"status": "failed"``.
     - ``IN_PROGRESS`` -- anything else, e.g. a running or restarted run, or
@@ -416,6 +437,7 @@ class BundleStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     SUCCESS = "success"
     FAILED = "failed"
+    RELEASED = "released"
 
 
 @dataclass(frozen=True)
@@ -537,6 +559,100 @@ def _walk_partitions(
 
 
 # ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+
+
+class ComponentKind(StrEnum):
+    """Whether a `BundleComponent` is a directory or a single file.
+
+    The values match the ``"directory"`` / ``"file"`` entry types of a
+    delimited S3 listing.
+    """
+
+    DIRECTORY = "directory"
+    FILE = "file"
+
+
+@dataclass(frozen=True)
+class BundleComponent:
+    """A named entry directly under a bundle's base path.
+
+    Every bundle type lists its components in ``COMPONENTS``: ``data/``,
+    ``metadata.json`` and ``success`` for every type, plus the type's own,
+    such as ``changelog/`` or ``released``.  A component may be absent from
+    a given bundle (an optional artifact, or a bundle still being written).
+
+    Attributes
+    ----------
+    name : str
+        The entry's name under the base path, without a trailing ``/``
+        (``"data"``, ``"metadata.json"``).
+    kind : ComponentKind
+        Whether the entry is a directory (the default) or a file.
+    """
+
+    name: str
+    kind: ComponentKind = ComponentKind.DIRECTORY
+
+    def __post_init__(self) -> None:
+        if not self.name or "/" in self.name:
+            raise ValueError(
+                f"Component name must be one non-empty path segment, got {self.name!r}"
+            )
+        object.__setattr__(self, "kind", ComponentKind(self.kind))
+
+    @classmethod
+    def directory(cls, name: str) -> BundleComponent:
+        """A directory component named *name*."""
+        return cls(name, ComponentKind.DIRECTORY)
+
+    @classmethod
+    def file(cls, name: str) -> BundleComponent:
+        """A file component named *name*."""
+        return cls(name, ComponentKind.FILE)
+
+    @property
+    def is_directory(self) -> bool:
+        """Whether the component is a directory."""
+        return self.kind is ComponentKind.DIRECTORY
+
+    @property
+    def listing_name(self) -> str:
+        """The name as a delimited listing shows it: ``"data/"``, ``"success"``."""
+        return f"{self.name}/" if self.is_directory else self.name
+
+
+_DATA = BundleComponent.directory("data")
+_METADATA = BundleComponent.file("metadata.json")
+_SUCCESS = BundleComponent.file("success")
+_RELEASED = BundleComponent.file("released")
+_CHANGELOG = BundleComponent.directory("changelog")
+_METRICS = BundleComponent.directory("metrics")
+_METRICS_SUMMARY = BundleComponent.directory("metrics_summary")
+
+
+def _component_accessors(name: str) -> tuple[property, property]:
+    """The generated ``<name>_uri`` and ``<name>_prefix`` properties."""
+
+    def uri(self: Bundle) -> str:
+        return f"{self.base_uri}/{name}"
+
+    def prefix(self: Bundle) -> str:
+        return f"{self.base_prefix}/{name}"
+
+    uri.__name__ = f"{name}_uri"
+    prefix.__name__ = f"{name}_prefix"
+    return (
+        property(uri, doc=f"S3 URI of the ``{name}/`` directory."),
+        property(
+            prefix,
+            doc=f"S3 key prefix (no ``s3://bucket/``) for the ``{name}/`` directory.",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Base Bundle class
 # ---------------------------------------------------------------------------
 
@@ -545,7 +661,7 @@ class Bundle:
     """Base data bundle on S3.
 
     Every bundle has a ``data`` directory, a ``metadata.json`` file, and a
-    ``success`` marker.  Subclasses add extra named directories.
+    ``success`` marker.  Subclasses add components (``COMPONENTS``).
 
     The path is composed of ``root_path`` followed by Hive-style
     ``key=value`` segments for each entry in the ``partitions`` dict.
@@ -574,14 +690,31 @@ class Bundle:
     # Class-level default for subclasses that skip ``Bundle.__init__``.
     store: BundleStore | None = None
 
-    # Bundle root before any namespace; required by discover_all / cleanup_all.
+    # Bundle root before any namespace; required by discover_all, cleanup_all
+    # and the registry.
     ROOT_PATH: str = ""
 
     # Partition key names, in path order.
     PARTITION_KEYS: tuple[str, ...] = ()
 
-    # Bundle subdirectories besides ``data``.
-    _EXTRA_DIRS: tuple[str, ...] = ()
+    # Entries under the base path, in display order.  Subclasses extend it as
+    # ``(*Bundle.COMPONENTS, ...)``.
+    COMPONENTS: ClassVar[tuple[BundleComponent, ...]] = (_DATA, _METADATA, _SUCCESS)
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Add ``<name>_uri`` / ``<name>_prefix`` for each directory component.
+
+        Only for names that are identifiers; an accessor the class already
+        has (such as ``data_uri``) is kept.
+        """
+        super().__init_subclass__(**kwargs)
+        for component in cls.COMPONENTS:
+            if not component.is_directory or not component.name.isidentifier():
+                continue
+            uri, prefix = _component_accessors(component.name)
+            for accessor in (uri, prefix):
+                if not hasattr(cls, accessor.fget.__name__):
+                    setattr(cls, accessor.fget.__name__, accessor)
 
     def __init__(
         self,
@@ -809,6 +942,34 @@ class Bundle:
     def sub_directory(self, name: str) -> str:
         """S3 URI of a named sub-directory inside this bundle."""
         return f"{self.base_uri}/{name.strip('/')}"
+
+    # ------------------------------------------------------------------
+    # Components
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def get_component(cls, name: str) -> BundleComponent:
+        """Return the component of this type named *name*.
+
+        *name* may carry a directory's trailing ``/`` (``"data/"``), as in a
+        listing.  Raises KeyError for a name that isn't in ``COMPONENTS``.
+        """
+        wanted = name.rstrip("/")
+        for component in cls.COMPONENTS:
+            if component.name == wanted:
+                return component
+        raise KeyError(
+            f"{cls.__name__} has no component {name!r}; expected one of "
+            f"{[c.name for c in cls.COMPONENTS]}"
+        )
+
+    def component_uri(self, name: str) -> str:
+        """S3 URI of the component *name* (see `get_component`)."""
+        return f"{self.base_uri}/{self.get_component(name).name}"
+
+    def component_prefix(self, name: str) -> str:
+        """S3 key prefix (no ``s3://bucket/``) of the component *name*."""
+        return f"{self.base_prefix}/{self.get_component(name).name}"
 
     # ------------------------------------------------------------------
     # Static path helpers
@@ -1959,7 +2120,7 @@ class SourceIngestBundle(Bundle):
     BUNDLE_TYPE = "source_ingest"
     ROOT_PATH = "feeds"
     PARTITION_KEYS = ("provider", "resource", "version", "run")
-    _EXTRA_DIRS = ("changelog", "metrics", "metrics_summary")
+    COMPONENTS = (*Bundle.COMPONENTS, _CHANGELOG, _METRICS, _METRICS_SUMMARY)
 
     def __init__(
         self,
@@ -2017,38 +2178,26 @@ class SourceIngestBundle(Bundle):
         values.update({key: value for key, value in identifiers.items() if value})
         return super().from_path(base_path, values, store=store)
 
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
-
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
 
 class ThemeAssembleBundle(Bundle):
-    """Assembled theme data from multiple corpus sources."""
+    """Assembled theme data from multiple corpus sources.
+
+    Path structure: ``theme_stage/theme={theme}/run={run}``
+
+    Besides the changelog and metrics directories, a theme may write a
+    ``summary.md`` report next to ``metadata.json``.
+    """
 
     BUNDLE_TYPE = "theme_assemble"
     ROOT_PATH = "theme_stage"
     PARTITION_KEYS = ("theme", "run")
-    _EXTRA_DIRS = ("changelog", "metrics", "metrics_summary")
+    COMPONENTS = (
+        *Bundle.COMPONENTS,
+        _CHANGELOG,
+        _METRICS,
+        _METRICS_SUMMARY,
+        BundleComponent.file("summary.md"),
+    )
 
     def __init__(
         self,
@@ -2069,46 +2218,26 @@ class ThemeAssembleBundle(Bundle):
             store=store,
         )
 
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
-
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
 
 class ThemePromoteBundle(Bundle):
-    """Promoted theme with supplemental artifacts."""
+    """Promoted theme with supplemental artifacts.
+
+    Path structure: ``theme_promote/theme={theme}/schema={schema}/run={run}``
+    """
 
     BUNDLE_TYPE = "theme_promote"
     ROOT_PATH = "theme_promote"
     PARTITION_KEYS = ("theme", "schema", "run")
-    _EXTRA_DIRS = (
-        "bridgefiles",
-        "pmtiles",
-        "changelog",
-        "metrics",
-        "metrics_summary",
-        "changelog_internal",
-        "validation",
-        "partition_bboxes",
+    COMPONENTS = (
+        *Bundle.COMPONENTS,
+        BundleComponent.directory("bridgefiles"),
+        BundleComponent.directory("pmtiles"),
+        _CHANGELOG,
+        _METRICS,
+        _METRICS_SUMMARY,
+        BundleComponent.directory("changelog_internal"),
+        BundleComponent.directory("validation"),
+        BundleComponent.directory("partition_bboxes"),
     )
 
     def __init__(
@@ -2131,84 +2260,35 @@ class ThemePromoteBundle(Bundle):
             store=store,
         )
 
-    @property
-    def bridgefiles_uri(self) -> str:
-        return f"{self.base_uri}/bridgefiles"
-
-    @property
-    def bridgefiles_prefix(self) -> str:
-        return f"{self.base_prefix}/bridgefiles"
-
-    @property
-    def pmtiles_uri(self) -> str:
-        return f"{self.base_uri}/pmtiles"
-
-    @property
-    def pmtiles_prefix(self) -> str:
-        return f"{self.base_prefix}/pmtiles"
-
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
-
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
-    @property
-    def changelog_internal_uri(self) -> str:
-        return f"{self.base_uri}/changelog_internal"
-
-    @property
-    def changelog_internal_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog_internal"
-
-    @property
-    def partition_bboxes_uri(self) -> str:
-        return f"{self.base_uri}/partition_bboxes"
-
-    @property
-    def partition_bboxes_prefix(self) -> str:
-        return f"{self.base_prefix}/partition_bboxes"
-
-    @property
-    def validation_uri(self) -> str:
-        return f"{self.base_uri}/validation"
-
-    @property
-    def validation_prefix(self) -> str:
-        return f"{self.base_prefix}/validation"
-
 
 class ReleaseCandidateBundle(Bundle):
-    """Release candidate with supplemental artifacts."""
+    """Release candidate with supplemental artifacts.
+
+    Path structure: ``release_candidate/release={release}/run={run}``
+
+    A candidate that is published as the release gets a ``released`` marker
+    next to its ``success`` marker, and `status` then reports
+    `BundleStatus.RELEASED`; `resolve_latest_released` finds the latest such
+    run.  Published releases are represented this way, by the candidate they
+    came from, rather than by a bundle type of their own: the published
+    layout (``release/<version>/...`` beside ``changelog/<version>``,
+    ``bridgefiles/<version>`` and ``registry/<version>``) has no Hive
+    partitions, ``metadata.json`` or ``success`` marker.
+    """
 
     BUNDLE_TYPE = "release_candidate"
     ROOT_PATH = "release_candidate"
     PARTITION_KEYS = ("release", "run")
-    _EXTRA_DIRS = (
-        "bridgefiles",
-        "pmtiles",
-        "changelog",
-        "metrics",
-        "metrics_summary",
-        "partition_bboxes",
+    COMPONENTS = (
+        *Bundle.COMPONENTS,
+        _RELEASED,
+        BundleComponent.directory("bridgefiles"),
+        BundleComponent.directory("pmtiles"),
+        _CHANGELOG,
+        _METRICS,
+        _METRICS_SUMMARY,
+        BundleComponent.directory("partition_bboxes"),
+        BundleComponent.directory("registry"),
     )
 
     def __init__(
@@ -2253,7 +2333,7 @@ class ReleaseCandidateBundle(Bundle):
             root_path=scan_root,
             partition_keys=["release", "run"],
             overrides={"release": release},
-            required_markers=("success", "released"),
+            required_markers=(_SUCCESS.name, _RELEASED.name),
             store=store,
         )
         bundle = cls(
@@ -2271,71 +2351,22 @@ class ReleaseCandidateBundle(Bundle):
         return self._partitions.get("release", "")
 
     @property
-    def bridgefiles_uri(self) -> str:
-        return f"{self.base_uri}/bridgefiles"
+    def released_uri(self) -> str:
+        """S3 URI of the ``released`` marker."""
+        return self.component_uri(_RELEASED.name)
 
-    @property
-    def bridgefiles_prefix(self) -> str:
-        return f"{self.base_prefix}/bridgefiles"
+    def _status_report(self, store: BundleStore) -> BundleStatusReport:
+        """Report `BundleStatus.RELEASED` for a successful, released candidate.
 
-    @property
-    def pmtiles_uri(self) -> str:
-        return f"{self.base_uri}/pmtiles"
-
-    @property
-    def pmtiles_prefix(self) -> str:
-        return f"{self.base_prefix}/pmtiles"
-
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
-
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
-    @property
-    def partition_bboxes_uri(self) -> str:
-        return f"{self.base_uri}/partition_bboxes"
-
-    @property
-    def partition_bboxes_prefix(self) -> str:
-        return f"{self.base_prefix}/partition_bboxes"
-
-    @property
-    def registry_uri(self) -> str:
-        return f"{self.base_uri}/registry"
-
-    @property
-    def registry_prefix(self) -> str:
-        return f"{self.base_prefix}/registry"
-
-
-class ReleaseBundle(Bundle):
-    """Final published release (placeholder).
-
-    Instances take an explicit ``root_path`` and ``partitions``, and
-    `discover_all` / `cleanup_all` raise NotImplementedError.  The path
-    layout is tracked in OvertureMaps/overture-core#102.
-    """
-
-    BUNDLE_TYPE = "release"
+        Adds one request to `Bundle.status`, on the same store: a check for
+        the ``released`` marker, made only when the bundle is successful.
+        """
+        report = super()._status_report(store)
+        if report.status is BundleStatus.SUCCESS and store.exists(
+            *self._object_key(_RELEASED.name)
+        ):
+            return replace(report, status=BundleStatus.RELEASED)
+        return report
 
 
 class ScratchBundle(Bundle):
