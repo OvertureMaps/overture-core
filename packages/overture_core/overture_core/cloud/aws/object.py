@@ -391,24 +391,62 @@ def copy_prefix(
     return CopyResult(files_copied=files_copied, total_bytes=total_bytes)
 
 
+class DeletePrefixError(RuntimeError):
+    """S3 reported per-object failures while deleting a prefix.
+
+    Attributes:
+        deleted: Objects deleted before the failing batch stopped the delete,
+            plus those in that batch that S3 did delete.
+        errors: The ``Errors`` entries S3 returned for the failing batch.
+    """
+
+    def __init__(
+        self, bucket: str, prefix: str, deleted: int, errors: list[dict]
+    ) -> None:
+        first = errors[0]
+        super().__init__(
+            f"Failed to delete {len(errors)} object(s) under s3://{bucket}/{prefix}/ "
+            f"after deleting {deleted}; first failure: {first.get('Key')}: "
+            f"{first.get('Code')} {first.get('Message')}"
+        )
+        self.deleted = deleted
+        self.errors = errors
+
+
 def delete_prefix(bucket: str, prefix: str) -> int:
     """Delete every object under *prefix* in *bucket*.
 
+    *prefix* is treated as a directory: ``a/b`` deletes ``a/b/...`` but not
+    ``a/bc``.  Stops at the first batch in which S3 reports a failure.
+
     Returns:
         The number of objects deleted.
+
+    Raises:
+        ValueError: If *prefix* is empty, which would delete the whole bucket.
+        DeletePrefixError: If S3 failed to delete any object.
     """
-    s3 = boto3.client("s3")
     prefix = prefix.strip("/")
+    if not prefix:
+        raise ValueError(
+            f"Refusing to delete an empty prefix in s3://{bucket}: "
+            "it would delete the whole bucket"
+        )
+    s3 = boto3.client("s3")
 
     deleted = 0
     paginator = s3.get_paginator("list_objects_v2")
-    list_prefix = f"{prefix}/" if prefix else ""
-    for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/"):
         keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if not keys:
             continue
-        s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
-        deleted += len(keys)
+        response = s3.delete_objects(
+            Bucket=bucket, Delete={"Objects": keys, "Quiet": True}
+        )
+        errors = response.get("Errors", [])
+        deleted += len(keys) - len(errors)
+        if errors:
+            raise DeletePrefixError(bucket, prefix, deleted, errors)
 
     return deleted
 

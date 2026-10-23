@@ -64,11 +64,11 @@ from __future__ import annotations
 import datetime
 import logging
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from os import PathLike
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 from urllib.parse import urlparse
 
 from overture_core.cloud.aws.object import (
@@ -129,6 +129,48 @@ def _compose_root(root_path: str, namespace: str = "") -> str:
     root = root_path.strip("/")
     namespace = (namespace or "").strip("/")
     return f"{namespace}/{root}" if namespace else root
+
+
+_DIGIT_RUNS = re.compile(r"(\d+)", re.ASCII)
+
+
+_NaturalKey = tuple[tuple[tuple[int, int | str], ...], str]
+
+
+def _natural_key(value: str) -> _NaturalKey:
+    """Sort key ordering embedded integers numerically: ``v1.9.0 < v1.16.0``.
+
+    Partition values are compared with this key whenever the model picks the
+    newest or older ones (latest resolution, previous-partition lookup,
+    retention).  Fixed-width values such as dates and ``ts_nodash`` run ids
+    order exactly as they do as plain strings; variable-width numbers such as
+    schema versions order numerically.  The raw value breaks ties
+    (``"01"`` vs ``"1"``).
+    """
+    tokens = tuple(
+        (0, int(part)) if i % 2 else (1, part)
+        for i, part in enumerate(_DIGIT_RUNS.split(value))
+        if part
+    )
+    return tokens, value
+
+
+def _split_run_uri(s3_uri: str) -> tuple[str, str, str | None]:
+    """Split a rendered bundle URI into ``(bucket, parent_prefix, run)``.
+
+    *parent_prefix* is the key prefix holding the ``run=`` directories, with
+    a trailing ``/``; everything from the first ``run=`` segment on is
+    dropped.  *run* is that segment's value, or ``None`` when the URI has no
+    ``run=`` segment.
+    """
+    run_match = re.search(r"/run=([^/]+)", s3_uri)
+    parsed = urlparse(re.sub(r"/run=[^/]*(?:/.*)?$", "", s3_uri))
+    parent = parsed.path.strip("/")
+    return (
+        parsed.netloc,
+        f"{parent}/" if parent else "",
+        run_match.group(1) if run_match else None,
+    )
 
 
 def _enrich_inputs_from_dataset(
@@ -243,12 +285,20 @@ def _resolve_partitions(
         """Recursively resolve *keys* under *prefix*.
 
         Returns a dict of resolved values, or ``None`` if no viable
-        path exists.
+        path exists.  On failure, *failure* describes where the search
+        stopped: the deepest explicit value without a valid leaf, or the
+        outermost ``latest`` level that ran out of candidates.
         """
+        nonlocal failure
         if not keys:
             # All keys resolved — verify the leaf is valid.
             valid = _is_valid_leaf(prefix)
             log.debug("Leaf s3://%s/%s valid=%s", bucket, prefix, valid)
+            if not valid:
+                failure = (
+                    f"No bundle with required markers [{markers_desc}] at "
+                    f"s3://{bucket}/{prefix}"
+                )
             return {} if valid else None
 
         key = keys[0]
@@ -273,6 +323,10 @@ def _resolve_partitions(
                         bucket,
                         child_prefix,
                     )
+                    failure = (
+                        f"Override {key}='{override}' missing required markers "
+                        f"[{markers_desc}] at s3://{bucket}/{child_prefix}"
+                    )
                     return None
                 return {key: override}
             deeper = _resolve(child_prefix, remaining)
@@ -294,7 +348,9 @@ def _resolve_partitions(
             bucket,
             prefix,
         )
-        for cand in sorted(candidates, reverse=True):
+        for cand in sorted(
+            candidates, key=lambda c: _natural_key(c.split("=", 1)[1]), reverse=True
+        ):
             val = cand.split("=", 1)[1]
             child_prefix = f"{prefix}{cand}/"
             log.debug("Trying candidate %s='%s'", key, val)
@@ -312,25 +368,19 @@ def _resolve_partitions(
         log.warning(
             "No valid candidate found for %s= under s3://%s/%s", key, bucket, prefix
         )
+        failure = (
+            f"No {key}= directory with required markers [{markers_desc}] found "
+            f"under s3://{bucket}/{prefix} ({len(candidates)} candidate(s) checked)"
+        )
         return None  # nothing found at this level
 
+    markers_desc = ", ".join(repr(m) for m in required_markers) or "none"
+    failure = ""
     base_prefix = f"{root_path.rstrip('/')}/"
     result = _resolve(base_prefix, list(partition_keys))
 
     if result is None:
-        # Build a human-readable error message.
-        first_key = partition_keys[0]
-        ov = overrides.get(first_key, "latest")
-        markers_desc = ", ".join(repr(m) for m in required_markers) or "none"
-        if ov and ov.lower() != "latest":
-            raise PartitionResolutionError(
-                f"Override {first_key}='{ov}' missing required markers [{markers_desc}] "
-                f"in s3://{bucket}/{base_prefix}"
-            )
-        raise PartitionResolutionError(
-            f"No {first_key}= directory with required markers [{markers_desc}] found under "
-            f"s3://{bucket}/{base_prefix}"
-        )
+        raise PartitionResolutionError(failure)
 
     for key, val in result.items():
         log.info("Resolved %s='%s'", key, val)
@@ -513,8 +563,11 @@ class Bundle:
         cls,
         base_path: str,
         partitions: dict[str, str] | None = None,
-    ) -> Bundle:
-        """Create a Bundle from a full ``s3://bucket/root_path`` URI.
+    ) -> Self:
+        """Create a bundle from a full ``s3://bucket/root_path`` URI.
+
+        The URI path is the bundle root as-is (any namespace included).
+        Works on every subclass; see `_from_root`.
 
         Parameters
         ----------
@@ -524,17 +577,10 @@ class Bundle:
             Optional partition key/value pairs.
         """
         parsed = urlparse(base_path)
-        bucket = parsed.netloc
-        root_path = parsed.path.lstrip("/")
-        return cls(
-            bucket=bucket,
-            root_path=root_path,
-            partitions=partitions,
-            namespace="",
-        )
+        return cls._from_root(parsed.netloc, parsed.path.strip("/"), partitions)
 
     @classmethod
-    def from_base_uri(cls, base_uri: str) -> Bundle:
+    def from_base_uri(cls, base_uri: str) -> Self:
         """Create a Bundle by parsing a full partitioned ``s3://`` URI.
 
         Splits Hive-style ``key=value`` segments off the end of the path
@@ -544,7 +590,8 @@ class Bundle:
         ``{"theme": "places", "run": "X"}``.
 
         Raises ValueError for a non-partition segment after partition
-        segments (an ambiguous root).
+        segments (an ambiguous root), or for a partition key the class
+        does not have.
         """
         parsed = urlparse(base_uri.rstrip("/"))
         root_segments: list[str] = []
@@ -560,12 +607,34 @@ class Bundle:
                 )
             else:
                 root_segments.append(segment)
-        return cls(
-            bucket=parsed.netloc,
-            root_path="/".join(root_segments),
-            partitions=partitions,
-            namespace="",
-        )
+        return cls._from_root(parsed.netloc, "/".join(root_segments), partitions)
+
+    @classmethod
+    def _from_root(
+        cls,
+        bucket: str,
+        root_path: str,
+        partitions: dict[str, str] | None,
+    ) -> Self:
+        """Build an instance of *cls* rooted exactly at *root_path*.
+
+        Subclasses take their partitions as named constructor arguments
+        (``PARTITION_KEYS``), so partitions are passed that way; a key the
+        subclass does not have raises ValueError.  No namespace is added.
+        """
+        partitions = dict(partitions or {})
+        if not cls.PARTITION_KEYS:
+            return cls(
+                bucket=bucket, root_path=root_path, partitions=partitions, namespace=""
+            )
+        unknown = sorted(set(partitions) - set(cls.PARTITION_KEYS))
+        if unknown:
+            raise ValueError(
+                f"{cls.__name__} has no partition(s) {unknown}; "
+                f"expected {list(cls.PARTITION_KEYS)}"
+            )
+        values = {key: partitions.get(key, "") for key in cls.PARTITION_KEYS}
+        return cls(bucket=bucket, root_path=root_path, namespace="", **values)
 
     # ------------------------------------------------------------------
     # Path properties
@@ -761,53 +830,38 @@ class Bundle:
         overrides: dict[str, str] | None = None,
         required_markers: tuple[str, ...] = ("success",),
     ) -> None:
-        """Resolve unset partition values by scanning S3 and update this bundle in place.
+        """Resolve partition values by scanning S3 and update this bundle in place.
+
+        Every partition is resolved from the root down.  A set value is used
+        as-is but still has to lead to a bundle with *required_markers*; an
+        unset value resolves to the newest one that does.  When resolution
+        fails, `PartitionResolutionError` names the path where it stopped.
 
         After this call, ``self.base_uri`` reflects the fully-resolved path.
 
         Parameters
         ----------
         overrides : dict[str, str] | None
-            Explicit partition values.  Missing keys or values equal to
-            ``"latest"`` trigger automatic S3 resolution.
+            Explicit partition values, taking precedence over the bundle's
+            own.  ``"latest"`` (or an empty value) triggers automatic S3
+            resolution even for a partition the bundle has set.
         required_markers : tuple[str, ...]
             Marker files the resolved directory must contain.  Defaults to
             ``("success",)``.  Pass ``()`` to require only existence.
         """
-        partition_keys = list(self._partitions.keys())
-
-        effective_overrides: dict[str, str] = {}
-        for key in partition_keys:
-            val = self._partitions.get(key, "")
-            if val:
-                effective_overrides[key] = val
-        if overrides:
-            effective_overrides.update(overrides)
-
-        scan_prefix = self._root_path
-        keys_to_resolve: list[str] = []
-        for key in partition_keys:
-            if key in effective_overrides:
-                keys_to_resolve = partition_keys[partition_keys.index(key) :]
-                break
-            existing = self._partitions.get(key, "")
-            if existing:
-                scan_prefix = f"{scan_prefix}/{key}={existing}"
-            else:
-                keys_to_resolve = partition_keys[partition_keys.index(key) :]
-                break
-
-        if not keys_to_resolve:
+        if not self._partitions:
             return
 
+        overrides = overrides or {}
         resolve_overrides = {
-            k: effective_overrides.get(k, "latest") for k in keys_to_resolve
+            key: overrides.get(key, value or "latest")
+            for key, value in self._partitions.items()
         }
 
         result = _resolve_partitions(
             bucket=self.bucket,
-            root_path=scan_prefix,
-            partition_keys=keys_to_resolve,
+            root_path=self._root_path,
+            partition_keys=list(self._partitions),
             overrides=resolve_overrides,
             required_markers=required_markers,
         )
@@ -990,8 +1044,10 @@ class Bundle:
                 (
                     v
                     for v in _list_values(current_prefix, sibling_key)
-                    if not current_sibling or v < current_sibling
+                    if not current_sibling
+                    or _natural_key(v) < _natural_key(current_sibling)
                 ),
+                key=_natural_key,
                 reverse=True,
             )
             for sibling in siblings:
@@ -1013,8 +1069,11 @@ class Bundle:
 
         # Every prior value, newest first — the order we walk them in.
         candidates = _list_values(scan_prefix, partition_key)
+        current_order = _natural_key(current_value)
         prior_values = sorted(
-            (v for v in candidates if v < current_value), reverse=True
+            (v for v in candidates if _natural_key(v) < current_order),
+            key=_natural_key,
+            reverse=True,
         )
 
         rejected: list[str] = []
@@ -1096,12 +1155,23 @@ class Bundle:
         min_age_days: float,
         siblings: list[Bundle],
         now: datetime.datetime | None = None,
+        *,
+        successful: Collection[Bundle] | None = None,
     ) -> tuple[bool, str]:
         """Decide whether this bundle can be deleted, given peers in its partition group.
 
         ``siblings`` should be all other bundles sharing this bundle's
         ``retention_group_key()``.  This bundle may also appear in the list
         (it is filtered out here).
+
+        ``successful`` is an optional snapshot of the bundles in the group
+        that have a success file.  When omitted, each bundle in the group is
+        checked once (one S3 HEAD each).  Pass the same snapshot when
+        evaluating every bundle of a group, as `cleanup_all` does, to check
+        each bundle once in total and decide against a consistent view.
+
+        Partition values are ordered naturally (`_natural_key`), so schema
+        ``v1.16.0`` is newer than ``v1.9.0``.
 
         Rules (see OvertureMaps/tf-data-platform#4428):
 
@@ -1115,27 +1185,32 @@ class Bundle:
            successful bundle (age is ignored).
         """
         group = [b for b in siblings if b is not self] + [self]
-        successful = [b for b in group if b.is_successful()]
-        if not successful:
+        if successful is None:
+            successful = [b for b in group if b.is_successful()]
+        successful_ids = {id(b) for b in successful}
+        successful_in_group = [b for b in group if id(b) in successful_ids]
+        if not successful_in_group:
             return False, "no successful bundle exists in partition group"
-        latest_successful = max(successful, key=lambda b: b.retention_order_key())
-        latest_key = latest_successful.retention_order_key()
-        self_key = self.retention_order_key()
+        latest_successful = max(
+            successful_in_group, key=lambda b: b._retention_sort_key()
+        )
+        latest_key = latest_successful._retention_sort_key()
+        latest_desc = latest_successful.retention_order_key()
+        self_key = self._retention_sort_key()
+        self_successful = id(self) in successful_ids
 
-        if self is latest_successful or (
-            self_key == latest_key and self.is_successful()
-        ):
+        if self is latest_successful or (self_key == latest_key and self_successful):
             return False, "is the latest successful bundle"
 
         if self_key >= latest_key:
             return False, (
-                f"partition order {self_key!r} is not older than "
-                f"latest successful {latest_key!r}"
+                f"partition order {self.retention_order_key()!r} is not older than "
+                f"latest successful {latest_desc!r}"
             )
 
-        if not self.is_successful():
+        if not self_successful:
             return True, (
-                f"unsuccessful; superseded by successful bundle {latest_key!r}"
+                f"unsuccessful; superseded by successful bundle {latest_desc!r}"
             )
 
         age = self.age_days(now=now)
@@ -1144,12 +1219,15 @@ class Bundle:
         if age < min_age_days:
             return False, (f"age {age:.1f}d < min_age_days {min_age_days}d")
         return True, (
-            f"successful but superseded by {latest_key!r}; "
+            f"successful but superseded by {latest_desc!r}; "
             f"age {age:.1f}d >= {min_age_days}d"
         )
 
     def retention_order_key(self) -> tuple[str, ...]:
-        """Return partition values used to decide which bundle is latest."""
+        """Return partition values used to decide which bundle is latest.
+
+        Compare them with `_natural_key` per value, not as plain strings.
+        """
         values = tuple(
             self._partitions[k]
             for k in _RETENTION_ORDER_PARTITION_KEYS
@@ -1159,6 +1237,10 @@ class Bundle:
             return values
         # Fallback: deterministic order by partition key name
         return tuple(v for _k, v in sorted(self._partitions.items()))
+
+    def _retention_sort_key(self) -> tuple[_NaturalKey, ...]:
+        """`retention_order_key` with each value in natural order."""
+        return tuple(_natural_key(v) for v in self.retention_order_key())
 
     def retention_group_key(self) -> tuple[tuple[str, str], ...]:
         """Return stable partition values used to group cleanup candidates."""
@@ -1190,10 +1272,20 @@ class Bundle:
         Args:
             dry_run: If True, log actions without executing them.
             table_dropper: Optional `TableDropper` for registered tables.
+
+        Raises:
+            ValueError: If the bundle has no partitions (or an empty prefix),
+                because deleting it would remove every bundle under its root.
+            DeletePrefixError: If S3 failed to delete some objects.
         """
         base_prefix = self.base_prefix.strip("/")
         if not base_prefix:
             raise ValueError("Refusing to delete a bundle with an empty prefix")
+        if not self._partitions:
+            raise ValueError(
+                f"Refusing to delete s3://{self.bucket}/{base_prefix}: the bundle "
+                "has no partitions, so this would delete every bundle under it"
+            )
         prefix = f"{base_prefix}/"
 
         deleted_tables: list[str] = []
@@ -1316,11 +1408,15 @@ class Bundle:
 
         report = CleanupReport(bundle_type=cls.BUNDLE_TYPE, dry_run=dry_run)
         for key, group in groups.items():
+            # One success check per bundle, shared by every decision in the
+            # group so they all see the same snapshot.
+            successful = [b for b in group if b.is_successful()]
             for b in group:
                 deletable, reason = b.is_deletable(
                     min_age_days=min_age_days,
                     siblings=group,
                     now=now,
+                    successful=successful,
                 )
                 log.info(
                     "%s -> deletable=%s (%s)",
@@ -1392,36 +1488,26 @@ class Bundle:
                 )
                 return True
 
-        # Extract the current run= value from the rendered URI so we can
-        # detect a rerun of the same run_id.
-        current_run_match = re.search(r"/run=([^/]+)", s3_uri)
-        current_run = current_run_match.group(1) if current_run_match else None
+        # Detect a rerun of the current run_id first, so the answer does not
+        # depend on the order in which S3 lists the run= directories.
+        bucket, prefix, current_run = _split_run_uri(s3_uri)
+        if current_run and prefix_exists(bucket, f"{prefix}run={current_run}/success"):
+            log.info(
+                "Current run='%s' already has a success file — "
+                "allowing rerun at s3://%s/%srun=%s",
+                current_run,
+                bucket,
+                prefix,
+                current_run,
+            )
+            return True
 
-        # Strip the run=<value> segment (and everything after) from the
-        # URI so we can scan all run= directories.
-        parent_uri = re.sub(r"/run=[^/]*(?:/.*)?$", "", s3_uri)
-
-        parsed = urlparse(parent_uri)
-        bucket = parsed.netloc
-        prefix = parsed.path.lstrip("/").rstrip("/") + "/"
-
-        # List all run= directories under the parent prefix and check each
-        # for a success file.
+        # Any other run with a success file means the work is already done.
         for name in list_common_prefixes(bucket, prefix):
             if not name.startswith("run="):
                 continue
             child = f"{prefix}{name}"
             if prefix_exists(bucket, f"{child}/success"):
-                run_val = name.split("=", 1)[1]
-                if current_run and run_val == current_run:
-                    log.info(
-                        "Current run='%s' already has a success file — "
-                        "allowing rerun at s3://%s/%s",
-                        current_run,
-                        bucket,
-                        child,
-                    )
-                    return True
                 log.info("Existing successful run found at s3://%s/%s", bucket, child)
                 return False
 
@@ -1442,9 +1528,9 @@ class Bundle:
         """Discover every resource under ``provider`` and return the latest bundle per resource.
 
         One paginated ``list_objects_v2`` at ``<root>/provider=<X>/`` walks all
-        ``success`` markers, keeping the greatest ``(version, run)`` tuple per
-        resource. Cheap alternative to instantiating one bundle per resource and
-        calling `resolve_partitions` on each.
+        ``success`` markers, keeping the newest ``(version, run)`` per resource
+        in natural order (`_natural_key`). Cheap alternative to instantiating
+        one bundle per resource and calling `resolve_partitions` on each.
 
         Returned bundles are fully resolved (concrete ``version`` and ``run``).
         Only valid for bundle classes partitioned by ``(provider, resource, ...)``.
@@ -1458,6 +1544,7 @@ class Bundle:
         prefix = f"{root}/provider={provider}/"
 
         best: dict[str, tuple[str, str]] = {}
+        best_order: dict[str, tuple[_NaturalKey, _NaturalKey]] = {}
         for key in iter_keys(bucket, prefix):
             if not key.endswith("/success"):
                 continue
@@ -1471,9 +1558,10 @@ class Bundle:
             run = parts.get("run")
             if not (resource and version and run):
                 continue
-            cur = best.get(resource)
-            if cur is None or (version, run) > cur:
+            order = (_natural_key(version), _natural_key(run))
+            if resource not in best_order or order > best_order[resource]:
                 best[resource] = (version, run)
+                best_order[resource] = order
 
         return {
             resource: cls(
@@ -1495,12 +1583,15 @@ class Bundle:
     ) -> list[Bundle]:
         """Batched equivalent of `needs_processing`.
 
-        Returns the subset of ``bundles`` that need processing — same
-        direction as the singular (bundles that would return ``True``).
+        Returns the subset of ``bundles`` that need processing — exactly the
+        bundles for which `needs_processing` would return ``True``: no run
+        under the bundle's parent prefix has a success file, or the
+        bundle's own run does (a rerun).
 
-        Instead of one S3 HEAD per bundle, groups candidates by their shared
-        ``bucket + root + provider=<X>`` prefix and does one paginated
-        ``list_objects_v2`` per group.
+        Instead of S3 calls per bundle, groups candidates by a shared scan
+        prefix (``bucket + root + provider=<X>`` for provider/resource
+        bundles, otherwise the bundle's parent prefix) and does one
+        paginated ``list_objects_v2`` per group.
 
         Assumes ``base_uri`` values are already rendered (no unresolved
         placeholders). Callers constructing bundles with concrete
@@ -1521,46 +1612,43 @@ class Bundle:
         if not bundles:
             return []
 
-        # Group candidates by (bucket, prefix-through-provider). Every
-        # candidate in a group is a single paginated LIST.
-        def _scan_root(b: Bundle) -> tuple[str, str]:
-            parsed = urlparse(b.base_uri)
-            key = parsed.path.lstrip("/")
-            idx = key.find("resource=")
-            prefix = key[:idx] if idx != -1 else key.rstrip("/") + "/"
-            return parsed.netloc, prefix
+        def _scan_prefix(parent: str) -> str:
+            # Widen to the prefix before the first resource= segment so all
+            # resources of one provider share a single LIST.
+            segments = parent.rstrip("/").split("/")
+            for i, seg in enumerate(segments):
+                if seg.startswith("resource="):
+                    return "/".join(segments[:i]) + "/"
+            return parent
 
-        groups: dict[tuple[str, str], list[Bundle]] = {}
-        for b in bundles:
-            groups.setdefault(_scan_root(b), []).append(b)
+        info = [(b, *_split_run_uri(b.base_uri)) for b in bundles]
+        scans = dict.fromkeys(
+            (bucket, _scan_prefix(parent)) for _, bucket, parent, _ in info
+        )
 
-        needs: list[Bundle] = []
-
-        for (bucket, prefix), group in groups.items():
-            completed: set[tuple[str, str]] = set()
+        # (bucket, parent prefix) -> runs under it that have a success file
+        successful: dict[tuple[str, str], set[str]] = {}
+        for bucket, prefix in scans:
             for k in iter_keys(bucket, prefix):
                 if not k.endswith("/success"):
                     continue
-                parts = {
-                    seg.split("=", 1)[0]: seg.split("=", 1)[1]
-                    for seg in k.split("/")
-                    if "=" in seg
-                }
-                r, v = parts.get("resource"), parts.get("version")
-                if r and v:
-                    completed.add((r, v))
-            for b in group:
-                r = b._partitions.get("resource")
-                v = b._partitions.get("version")
-                if (r, v) not in completed:
-                    needs.append(b)
+                head, _, leaf = k[: -len("/success")].rpartition("/")
+                if leaf.startswith("run="):
+                    parent = f"{head}/" if head else ""
+                    successful.setdefault((bucket, parent), set()).add(leaf[4:])
+
+        needs = [
+            b
+            for b, bucket, parent, run in info
+            if not (runs := successful.get((bucket, parent))) or run in runs
+        ]
 
         log.info(
             "needs_processing_batch: %d/%d bundle(s) need processing across "
             "%d scan group(s)",
             len(needs),
             len(bundles),
-            len(groups),
+            len(scans),
         )
         return needs
 
@@ -1759,21 +1847,29 @@ class SourceIngestBundle(Bundle):
     def from_path(
         cls,
         base_path: str,
-        provider: str,
-        resource: str,
+        partitions: dict[str, str] | None = None,
+        *,
+        provider: str = "",
+        resource: str = "",
         version: str = "",
         run: str = "",
-    ) -> SourceIngestBundle:
-        """Create from a full ``s3://`` URI plus source identifiers."""
-        parsed = urlparse(base_path)
-        bucket = parsed.netloc
-        return cls(
-            bucket=bucket,
-            provider=provider,
-            resource=resource,
-            version=version,
-            run=run,
-        )
+    ) -> Self:
+        """Create from a bundle-root ``s3://`` URI plus source identifiers.
+
+        As in `Bundle.from_path`, the URI path is the bundle root (any
+        namespace or custom root is kept); an empty path falls back to
+        ``ROOT_PATH``.  Identifiers given as keyword arguments take
+        precedence over the same keys in *partitions*.
+        """
+        values = dict(partitions or {})
+        identifiers = {
+            "provider": provider,
+            "resource": resource,
+            "version": version,
+            "run": run,
+        }
+        values.update({key: value for key, value in identifiers.items() if value})
+        return super().from_path(base_path, values)
 
     @property
     def changelog_uri(self) -> str:
@@ -2098,6 +2194,7 @@ class ScratchBundle(Bundle):
     """
 
     BUNDLE_TYPE = "scratch"
+    PARTITION_KEYS = ("purpose", "run")
 
     def __init__(
         self,
