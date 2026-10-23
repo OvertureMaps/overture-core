@@ -49,6 +49,8 @@ classes to supply defaults.
   to drop any catalogue tables registered for a bundle.
 - `Bundle.initialize` takes the ``datasets_dir`` used to enrich input
   provenance from the ``overture_core`` Dataset catalogue.
+- ``store`` is the `BundleStore` used for S3 access; ``None`` opens a
+  fresh `S3BundleStore` per operation.
 """
 
 from __future__ import annotations
@@ -60,26 +62,17 @@ from collections.abc import Callable, Collection, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from os import PathLike
-from typing import Any, Protocol, Self
+from typing import Any, Protocol, Self, TypeVar
 from urllib.parse import urlparse
 
-import boto3
-
-from overture_core.cloud.aws.object import (
-    delete_prefix,
-    delete_success_file,
-    iter_keys,
-    list_common_prefixes,
-    object_exists,
-    object_last_modified,
-    parse_s3_uri,
-    prefix_exists,
-    write_success_file,
-)
+from overture_core.bundle.store import BundleStore, S3BundleStore
+from overture_core.cloud.aws.object import parse_s3_uri, success_file_key
 from overture_core.cloud.cloud import Partition
 from overture_core.dataset.dataset import Dataset
 
 log = logging.getLogger(__name__)
+
+_BundleT = TypeVar("_BundleT", bound="Bundle")
 
 
 class PartitionResolutionError(Exception):
@@ -115,6 +108,27 @@ class TableDropper(Protocol):
     """
 
     def __call__(self, bucket: str, base_prefix: str, dry_run: bool) -> list[str]: ...
+
+
+def _store_or_default(store: BundleStore | None) -> BundleStore:
+    """Return *store*, or a fresh `S3BundleStore` for one operation.
+
+    A fresh store per operation (rather than one per module) keeps every
+    request of a walk or check on one boto3 client without holding a client,
+    and its credentials, for the life of the process.
+    """
+    return store if store is not None else S3BundleStore()
+
+
+def _with_store(bundle: _BundleT, store: BundleStore | None) -> _BundleT:
+    """Attach *store* to *bundle* when given, and return the bundle.
+
+    Set as an attribute rather than passed to the constructor, so subclasses
+    whose ``__init__`` doesn't take ``store`` still work.
+    """
+    if store is not None:
+        bundle.store = store
+    return bundle
 
 
 def _compose_root(root_path: str, namespace: str = "") -> str:
@@ -218,7 +232,7 @@ def _resolve_partitions(
     overrides: dict[str, str] | None = None,
     required_markers: tuple[str, ...] = ("success",),
     *,
-    client: Any = None,
+    store: BundleStore | None = None,
 ) -> dict[str, str]:
     """Resolve partition values by scanning S3 directories under *root_path*.
 
@@ -228,15 +242,15 @@ def _resolve_partitions(
     no viable deeper path.
 
     *required_markers* must all exist at the resolved leaf; ``()`` requires
-    only that it has content.  *client* is an optional boto3 S3 client,
-    reused for every request of the walk.
+    only that it has content.  *store* defaults to one fresh
+    `S3BundleStore` for the walk.
 
     Returns a dict mapping each partition key to its resolved value.  Raises
     `PartitionResolutionError`, naming where the search stopped, when no
     viable path exists.
     """
     overrides = overrides or {}
-    s3 = client if client is not None else boto3.client("s3")
+    store = _store_or_default(store)
 
     log.info(
         "Resolving partitions %s under s3://%s/%s (overrides=%s, required_markers=%s)",
@@ -249,7 +263,7 @@ def _resolve_partitions(
 
     def _list_subdirs(prefix: str) -> list[str]:
         """Return immediate subdirectory names under *prefix*."""
-        dirs = list_common_prefixes(bucket, prefix, client=s3)
+        dirs = store.list_children(bucket, prefix)
         log.debug(
             "Listed %d subdirs under s3://%s/%s: %s", len(dirs), bucket, prefix, dirs
         )
@@ -258,11 +272,11 @@ def _resolve_partitions(
     def _is_valid_leaf(prefix: str) -> bool:
         """True if *prefix* has every required marker, or any content if none."""
         for marker in required_markers:
-            if not object_exists(bucket, f"{prefix}{marker}", client=s3):
+            if not store.exists(bucket, f"{prefix}{marker}"):
                 log.debug("Marker %r not found at s3://%s/%s", marker, bucket, prefix)
                 return False
         if not required_markers:
-            exists = prefix_exists(bucket, prefix, client=s3)
+            exists = store.prefix_exists(bucket, prefix)
             log.debug("Directory exists at s3://%s/%s: %s", bucket, prefix, exists)
             return exists
         return True
@@ -434,14 +448,16 @@ def _walk_partitions(
     bucket: str,
     root_prefix: str,
     partition_keys: list[str],
+    *,
+    store: BundleStore | None = None,
 ) -> Iterator[dict[str, str]]:
     """Yield every ``{key: value}`` combination present under *root_prefix*.
 
     Walks Hive-style ``key=value`` directories in *partition_keys* order and
     yields each full match whatever markers it has; `is_deletable` checks
-    success.
+    success.  *store* defaults to one fresh `S3BundleStore` for the walk.
     """
-    s3 = boto3.client("s3")  # one client (and connection pool) for the walk
+    store = _store_or_default(store)
 
     def _walk(prefix: str, remaining: list[str], acc: dict[str, str]):
         if not remaining:
@@ -449,7 +465,7 @@ def _walk_partitions(
             return
         key = remaining[0]
         rest = remaining[1:]
-        for name in list_common_prefixes(bucket, prefix, client=s3):
+        for name in store.list_children(bucket, prefix):
             if not name.startswith(f"{key}="):
                 continue
             value = name.split("=", 1)[1]
@@ -492,9 +508,15 @@ class Bundle:
     namespace : str
         Optional prefix prepended to ``root_path`` (``<namespace>/<root>``),
         e.g. to isolate a developer's bundles.  Empty means no prefix.
+    store : BundleStore | None
+        Keyword-only storage backend for this bundle.  ``None`` (the
+        default) opens a fresh `S3BundleStore` for each operation.
     """
 
     BUNDLE_TYPE: str = "bundle"
+
+    # Class-level default for subclasses that skip ``Bundle.__init__``.
+    store: BundleStore | None = None
 
     # Bundle root before any namespace; required by discover_all / cleanup_all.
     ROOT_PATH: str = ""
@@ -511,10 +533,17 @@ class Bundle:
         root_path: str,
         partitions: dict[str, str] | None = None,
         namespace: str = "",
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         self.bucket = bucket
         self._partitions: dict[str, str] = dict(partitions) if partitions else {}
         self._root_path = _compose_root(root_path, namespace)
+        self.store = store
+
+    def _open_store(self) -> BundleStore:
+        """This bundle's store, or a fresh `S3BundleStore` for one operation."""
+        return _store_or_default(self.store)
 
     # ------------------------------------------------------------------
     # Partition accessors
@@ -548,6 +577,8 @@ class Bundle:
         cls,
         base_path: str,
         partitions: dict[str, str] | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> Self:
         """Create a bundle from a full ``s3://bucket/root_path`` URI.
 
@@ -560,12 +591,16 @@ class Bundle:
             Full S3 URI of the bundle root.
         partitions : dict[str, str] | None
             Optional partition key/value pairs.
+        store : BundleStore | None
+            Optional storage backend for the new bundle.
         """
         parsed = urlparse(base_path)
-        return cls._from_root(parsed.netloc, parsed.path.strip("/"), partitions)
+        return cls._from_root(
+            parsed.netloc, parsed.path.strip("/"), partitions, store=store
+        )
 
     @classmethod
-    def from_base_uri(cls, base_uri: str) -> Self:
+    def from_base_uri(cls, base_uri: str, *, store: BundleStore | None = None) -> Self:
         """Create a Bundle by parsing a full partitioned ``s3://`` URI.
 
         Splits Hive-style ``key=value`` segments off the end of the path
@@ -592,7 +627,9 @@ class Bundle:
                 )
             else:
                 root_segments.append(segment)
-        return cls._from_root(parsed.netloc, "/".join(root_segments), partitions)
+        return cls._from_root(
+            parsed.netloc, "/".join(root_segments), partitions, store=store
+        )
 
     @classmethod
     def _from_root(
@@ -600,6 +637,8 @@ class Bundle:
         bucket: str,
         root_path: str,
         partitions: dict[str, str] | None,
+        *,
+        store: BundleStore | None = None,
     ) -> Self:
         """Build an instance of *cls* rooted exactly at *root_path*.
 
@@ -608,17 +647,19 @@ class Bundle:
         """
         partitions = dict(partitions or {})
         if not cls.PARTITION_KEYS:
-            return cls(
+            bundle = cls(
                 bucket=bucket, root_path=root_path, partitions=partitions, namespace=""
             )
-        unknown = sorted(set(partitions) - set(cls.PARTITION_KEYS))
-        if unknown:
-            raise ValueError(
-                f"{cls.__name__} has no partition(s) {unknown}; "
-                f"expected {list(cls.PARTITION_KEYS)}"
-            )
-        values = {key: partitions.get(key, "") for key in cls.PARTITION_KEYS}
-        return cls(bucket=bucket, root_path=root_path, namespace="", **values)
+        else:
+            unknown = sorted(set(partitions) - set(cls.PARTITION_KEYS))
+            if unknown:
+                raise ValueError(
+                    f"{cls.__name__} has no partition(s) {unknown}; "
+                    f"expected {list(cls.PARTITION_KEYS)}"
+                )
+            values = {key: partitions.get(key, "") for key in cls.PARTITION_KEYS}
+            bundle = cls(bucket=bucket, root_path=root_path, namespace="", **values)
+        return _with_store(bundle, store)
 
     # ------------------------------------------------------------------
     # Path properties
@@ -778,7 +819,13 @@ class Bundle:
         ``provider``/``resource`` are enriched with their Dataset catalogue
         sections.
         """
-        delete_success_file(self.base_uri)
+        bucket, key = self._success_marker()
+        store = self._open_store()
+        if store.exists(bucket, key):
+            store.delete(bucket, key)
+            log.info("Deleted success file s3://%s/%s", bucket, key)
+        else:
+            log.info("No success file at s3://%s/%s; nothing to delete", bucket, key)
 
         input_bundle_info = self._input_bundle_info(input_bundles)
         input_paths = (
@@ -807,7 +854,14 @@ class Bundle:
         ``base_uri``.
         """
         metadata.finalize(status=status)
-        write_success_file(self.base_uri)
+        bucket, key = self._success_marker()
+        self._open_store().write(bucket, key)
+        log.info("Wrote success file s3://%s/%s", bucket, key)
+
+    def _success_marker(self) -> tuple[str, str]:
+        """``(bucket, key)`` of the ``success`` marker, parsed from `base_uri`."""
+        bucket, prefix = parse_s3_uri(self.base_uri)
+        return bucket, success_file_key(prefix)
 
     def resolve_partitions(
         self,
@@ -846,6 +900,7 @@ class Bundle:
             partition_keys=list(self._partitions),
             overrides=resolve_overrides,
             required_markers=required_markers,
+            store=self.store,
         )
 
         for key, val in result.items():
@@ -945,12 +1000,12 @@ class Bundle:
                 )
             scan_prefix = f"{scan_prefix}{key}={val}/"
 
-        s3 = boto3.client("s3")  # one client (and connection pool) for the scan
+        store = self._open_store()  # one store (and client) for the whole scan
 
         def _list_values(prefix: str, key: str) -> list[str]:
             """Non-empty ``key=`` values immediately under *prefix*."""
             values: list[str] = []
-            for name in list_common_prefixes(self.bucket, prefix, client=s3):
+            for name in store.list_children(self.bucket, prefix):
                 if name.startswith(f"{key}="):
                     val = name.split("=", 1)[1]
                     if val:
@@ -967,7 +1022,7 @@ class Bundle:
                 leaf_prefix = f"{base_prefix}{key}={value}/"
                 for marker in required_markers:
                     leaf_key = f"{leaf_prefix}{marker}"
-                    if not object_exists(self.bucket, leaf_key, client=s3):
+                    if not store.exists(self.bucket, leaf_key):
                         log.info("Marker %r absent for %s=%s.", marker, key, value)
                         return None
                 return f"s3://{self.bucket}/{leaf_prefix}data"
@@ -980,7 +1035,7 @@ class Bundle:
                     partition_keys=keys_after,
                     overrides={k: "latest" for k in keys_after},
                     required_markers=required_markers,
-                    client=s3,
+                    store=store,
                 )
             except PartitionResolutionError as exc:
                 log.info("No successful run under %s=%s (%s).", key, value, exc)
@@ -1097,7 +1152,7 @@ class Bundle:
     def is_successful(self) -> bool:
         """Return True if the bundle has a success marker file."""
         _, key = parse_s3_uri(self.success_uri)
-        return object_exists(self.bucket, key)
+        return self._open_store().exists(self.bucket, key)
 
     def age_days(self, now: datetime.datetime | None = None) -> float | None:
         """Age in days from S3 LastModified of the success (or metadata) file.
@@ -1105,9 +1160,10 @@ class Bundle:
         Returns None if neither file exists.  *now* defaults to the current
         UTC time.
         """
+        store = self._open_store()
         for uri in (self.success_uri, self.metadata_uri):
             _, key = parse_s3_uri(uri)
-            last_modified = object_last_modified(self.bucket, key)
+            last_modified = store.last_modified(self.bucket, key)
             if last_modified is None:
                 continue
             now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -1237,7 +1293,8 @@ class Bundle:
                 partition (``PARTITION_KEYS``, else every given partition)
                 has no value, because the delete would then cover more than
                 this one bundle.
-            DeletePrefixError: If S3 failed to delete some objects.
+            DeletePrefixError: If S3 failed to delete some objects (with the
+                default `S3BundleStore`).
         """
         declared = self.PARTITION_KEYS or tuple(self._partitions)
         if not declared:
@@ -1254,6 +1311,7 @@ class Bundle:
             )
         base_prefix = self.base_prefix.strip("/")
         prefix = f"{base_prefix}/"
+        store = self._open_store()
 
         deleted_tables: list[str] = []
         if table_dropper is not None:
@@ -1272,7 +1330,7 @@ class Bundle:
                 )
 
         if dry_run:
-            count = sum(1 for _ in iter_keys(self.bucket, prefix))
+            count = sum(1 for _ in store.iter_keys(self.bucket, prefix))
             log.info(
                 "[dry_run] would delete %d objects under s3://%s/%s (tables: %s)",
                 count,
@@ -1287,7 +1345,7 @@ class Bundle:
                 dry_run=True,
             )
 
-        count = delete_prefix(self.bucket, base_prefix)
+        count = store.delete_prefix(self.bucket, base_prefix)
         log.info(
             "Deleted %d objects under s3://%s/%s (tables: %s)",
             count,
@@ -1311,12 +1369,17 @@ class Bundle:
         cls,
         bucket: str,
         namespace: str = "",
+        *,
+        store: BundleStore | None = None,
     ) -> list[Bundle]:
         """Discover all bundles of this type under ``<namespace>/<ROOT_PATH>``.
 
         Returns one bundle per ``key=value`` combination of ``PARTITION_KEYS``,
         with or without a success marker.  Results are plain `Bundle`
         instances carrying this class's ``BUNDLE_TYPE``.
+
+        The walk uses *store*, or a fresh `S3BundleStore`; only an explicit
+        *store* is attached to the returned bundles.
 
         Raises NotImplementedError unless ``ROOT_PATH`` and ``PARTITION_KEYS``
         are set; such subclasses must override this method.
@@ -1335,8 +1398,9 @@ class Bundle:
             bucket=bucket,
             root_prefix=scan_root,
             partition_keys=list(cls.PARTITION_KEYS),
+            store=_store_or_default(store),
         ):
-            b = Bundle.from_path(root_uri, partitions=partitions)
+            b = Bundle.from_path(root_uri, partitions=partitions, store=store)
             # Preserve the subclass BUNDLE_TYPE for logging / reporting.
             b.BUNDLE_TYPE = cls.BUNDLE_TYPE  # type: ignore[misc]
             results.append(b)
@@ -1351,13 +1415,27 @@ class Bundle:
         namespace: str = "",
         table_dropper: TableDropper | None = None,
         now: datetime.datetime | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> CleanupReport:
         """Discover, evaluate, and (optionally) delete superseded bundles.
 
         See `is_deletable` for the retention rules.  *table_dropper* is
         passed through to `delete` for each deleted bundle.
+
+        An explicit *store* is passed to `discover_all` and used for every
+        check and delete.  Without one, `discover_all` walks with its own
+        default store and the checks and deletes share a second one, so a
+        cleanup opens two S3 clients however many bundles it finds.
         """
-        bundles = cls.discover_all(bucket=bucket, namespace=namespace)
+        discover_kwargs = {} if store is None else {"store": store}
+        bundles = cls.discover_all(
+            bucket=bucket, namespace=namespace, **discover_kwargs
+        )
+        shared = _store_or_default(store)
+        for b in bundles:
+            if b.store is None:
+                b.store = shared
         log.info(
             "Discovered %d bundles of type %s under s3://%s",
             len(bundles),
@@ -1440,9 +1518,9 @@ class Bundle:
 
         # Check the current run first: its own success marker means a rerun.
         bucket, prefix, current_run = _split_run_uri(s3_uri)
-        s3 = boto3.client("s3")  # one client (and connection pool) per check
+        store = self._open_store()  # one store (and client) for the check
         current_marker = f"{prefix}run={current_run}/success"
-        if current_run and object_exists(bucket, current_marker, client=s3):
+        if current_run and store.exists(bucket, current_marker):
             log.info(
                 "Current run='%s' already has a success file — "
                 "allowing rerun at s3://%s/%srun=%s",
@@ -1454,11 +1532,11 @@ class Bundle:
             return True
 
         # Any other run with a success file means the work is already done.
-        for name in list_common_prefixes(bucket, prefix, client=s3):
+        for name in store.list_children(bucket, prefix):
             if not name.startswith("run="):
                 continue
             child = f"{prefix}{name}"
-            if object_exists(bucket, f"{child}/success", client=s3):
+            if store.exists(bucket, f"{child}/success"):
                 log.info("Existing successful run found at s3://%s/%s", bucket, child)
                 return False
 
@@ -1475,6 +1553,8 @@ class Bundle:
         provider: str,
         bucket: str,
         namespace: str = "",
+        *,
+        store: BundleStore | None = None,
     ) -> dict[str, "Bundle"]:
         """Return the latest successful bundle per resource under *provider*.
 
@@ -1484,8 +1564,9 @@ class Bundle:
         exact bundle layout count as markers, e.g.
         ``resource=R/version=V/run=Z/success``.
 
-        Returns a dict of resource to fully resolved bundle.  Raises TypeError
-        unless the class is partitioned by ``(provider, resource, ...)``.
+        Returns a dict of resource to fully resolved bundle, carrying *store*
+        when given.  Raises TypeError unless the class is partitioned by
+        ``(provider, resource, ...)``.
         """
         if cls.PARTITION_KEYS[:2] != ("provider", "resource"):
             raise TypeError(
@@ -1498,7 +1579,7 @@ class Bundle:
 
         best: dict[str, dict[str, str]] = {}
         best_order: dict[str, tuple[_NaturalKey, ...]] = {}
-        for key in iter_keys(bucket, prefix):
+        for key in _store_or_default(store).iter_keys(bucket, prefix):
             segments = key[len(prefix) :].split("/")
             if len(segments) != len(keys) + 1 or segments[-1] != "success":
                 continue
@@ -1516,8 +1597,9 @@ class Bundle:
                     best_order[resource] = order
 
         return {
-            resource: cls(
-                provider=provider, bucket=bucket, namespace=namespace, **values
+            resource: _with_store(
+                cls(provider=provider, bucket=bucket, namespace=namespace, **values),
+                store,
             )
             for resource, values in best.items()
         }
@@ -1527,6 +1609,8 @@ class Bundle:
         cls,
         bundles: list[Bundle],
         partitions: dict[str, str] | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> list[Bundle]:
         """Return the subset of *bundles* for which `needs_processing` is ``True``.
 
@@ -1534,6 +1618,9 @@ class Bundle:
         for provider/resource bundles, else the parent of ``run=``) with one
         paginated ``list_objects_v2`` per group.  ``base_uri`` values must be
         fully rendered.
+
+        Bundles are checked with *store* when given, else their own store;
+        bundles without one share a fresh `S3BundleStore`.
         """
         partitions = partitions or {}
         for key, value in partitions.items():
@@ -1558,27 +1645,39 @@ class Bundle:
                     return "/".join(segments[:i]) + "/"
             return parent
 
-        info = [(b, *_split_run_uri(b.base_uri)) for b in bundles]
+        shared = store
+        stores: dict[int, BundleStore] = {}
+
+        def _store_for(b: Bundle) -> int:
+            nonlocal shared
+            chosen = store if store is not None else b.store
+            if chosen is None:
+                if shared is None:
+                    shared = S3BundleStore()
+                chosen = shared
+            stores[id(chosen)] = chosen
+            return id(chosen)
+
+        info = [(b, _store_for(b), *_split_run_uri(b.base_uri)) for b in bundles]
         scans = dict.fromkeys(
-            (bucket, _scan_prefix(parent)) for _, bucket, parent, _ in info
+            (sid, bucket, _scan_prefix(parent)) for _, sid, bucket, parent, _ in info
         )
 
-        # (bucket, parent prefix) -> runs under it that have a success file
-        successful: dict[tuple[str, str], set[str]] = {}
-        s3 = boto3.client("s3")
-        for bucket, prefix in scans:
-            for k in iter_keys(bucket, prefix, client=s3):
+        # (store, bucket, parent prefix) -> runs under it that have a success file
+        successful: dict[tuple[int, str, str], set[str]] = {}
+        for sid, bucket, prefix in scans:
+            for k in stores[sid].iter_keys(bucket, prefix):
                 if not k.endswith("/success"):
                     continue
                 head, _, leaf = k[: -len("/success")].rpartition("/")
                 if leaf.startswith("run="):
                     parent = f"{head}/" if head else ""
-                    successful.setdefault((bucket, parent), set()).add(leaf[4:])
+                    successful.setdefault((sid, bucket, parent), set()).add(leaf[4:])
 
         needs = [
             b
-            for b, bucket, parent, run in info
-            if not (runs := successful.get((bucket, parent))) or run in runs
+            for b, sid, bucket, parent, run in info
+            if not (runs := successful.get((sid, bucket, parent))) or run in runs
         ]
 
         log.info(
@@ -1703,6 +1802,8 @@ class SourceRawBundle(Bundle):
         run: str = "",
         namespace: str = "",
         root_path: str | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         partitions = {
             "provider": provider,
@@ -1715,6 +1816,7 @@ class SourceRawBundle(Bundle):
             root_path=root_path or self.ROOT_PATH,
             partitions=partitions,
             namespace=namespace,
+            store=store,
         )
         self.provider = provider
         self.resource = resource
@@ -1757,6 +1859,8 @@ class SourceIngestBundle(Bundle):
         run: str = "",
         namespace: str = "",
         root_path: str | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         partitions = {
             "provider": provider,
@@ -1769,6 +1873,7 @@ class SourceIngestBundle(Bundle):
             root_path=root_path or self.ROOT_PATH,
             partitions=partitions,
             namespace=namespace,
+            store=store,
         )
         self.provider = provider
         self.resource = resource
@@ -1783,6 +1888,7 @@ class SourceIngestBundle(Bundle):
         resource: str = "",
         version: str = "",
         run: str = "",
+        store: BundleStore | None = None,
     ) -> Self:
         """Create from a bundle-root ``s3://`` URI plus source identifiers.
 
@@ -1798,7 +1904,7 @@ class SourceIngestBundle(Bundle):
             "run": run,
         }
         values.update({key: value for key, value in identifiers.items() if value})
-        return super().from_path(base_path, values)
+        return super().from_path(base_path, values, store=store)
 
     @property
     def changelog_uri(self) -> str:
@@ -1840,6 +1946,8 @@ class ThemeAssembleBundle(Bundle):
         run: str = "",
         namespace: str = "",
         root_path: str | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         partitions = {"theme": theme, "run": run}
         super().__init__(
@@ -1847,6 +1955,7 @@ class ThemeAssembleBundle(Bundle):
             root_path=root_path or self.ROOT_PATH,
             partitions=partitions,
             namespace=namespace,
+            store=store,
         )
 
     @property
@@ -1899,6 +2008,8 @@ class ThemePromoteBundle(Bundle):
         run: str = "",
         namespace: str = "",
         root_path: str | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         partitions = {"theme": theme, "schema": schema, "run": run}
         super().__init__(
@@ -1906,6 +2017,7 @@ class ThemePromoteBundle(Bundle):
             root_path=root_path or self.ROOT_PATH,
             partitions=partitions,
             namespace=namespace,
+            store=store,
         )
 
     @property
@@ -1995,6 +2107,8 @@ class ReleaseCandidateBundle(Bundle):
         run: str = "",
         namespace: str = "",
         root_path: str = "release_candidate",
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         partitions = {"release": release, "run": run}
         super().__init__(
@@ -2002,6 +2116,7 @@ class ReleaseCandidateBundle(Bundle):
             root_path=root_path,
             partitions=partitions,
             namespace=namespace,
+            store=store,
         )
 
     @classmethod
@@ -2011,12 +2126,16 @@ class ReleaseCandidateBundle(Bundle):
         bucket: str,
         namespace: str = "",
         root_path: str = "release_candidate",
+        *,
+        store: BundleStore | None = None,
     ) -> ReleaseCandidateBundle:
         """Return the latest released run for *release*.
 
         Scans S3 for ``run=`` partitions under ``release={release}``,
         filtering to those that have both a ``success`` and a ``released``
         marker file.  Raises `PartitionResolutionError` when none is found.
+        The scan uses *store* (default: a fresh `S3BundleStore`); an explicit
+        *store* is also attached to the returned bundle.
         """
         scan_root = _compose_root(root_path, namespace)
         result = _resolve_partitions(
@@ -2025,14 +2144,16 @@ class ReleaseCandidateBundle(Bundle):
             partition_keys=["release", "run"],
             overrides={"release": release},
             required_markers=("success", "released"),
+            store=store,
         )
-        return cls(
+        bundle = cls(
             bucket=bucket,
             release=result["release"],
             run=result["run"],
             namespace=namespace,
             root_path=root_path,
         )
+        return _with_store(bundle, store)
 
     @property
     def release(self) -> str:
@@ -2137,6 +2258,8 @@ class ScratchBundle(Bundle):
         run: str = "",
         namespace: str = "",
         root_path: str | None = None,
+        *,
+        store: BundleStore | None = None,
     ) -> None:
         partitions = {"purpose": purpose, "run": run}
         super().__init__(
@@ -2144,4 +2267,5 @@ class ScratchBundle(Bundle):
             root_path=root_path or "scratch",
             partitions=partitions,
             namespace=namespace,
+            store=store,
         )
