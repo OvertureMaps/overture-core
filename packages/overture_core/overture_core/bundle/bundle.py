@@ -71,6 +71,8 @@ from os import PathLike
 from typing import Any, Protocol, Self
 from urllib.parse import urlparse
 
+import boto3
+
 from overture_core.cloud.aws.object import (
     delete_prefix,
     delete_success_file,
@@ -230,6 +232,8 @@ def _resolve_partitions(
     partition_keys: list[str],
     overrides: dict[str, str] | None = None,
     required_markers: tuple[str, ...] = ("success",),
+    *,
+    client: Any = None,
 ) -> dict[str, str]:
     """Resolve partition values by scanning S3 directories.
 
@@ -247,9 +251,13 @@ def _resolve_partitions(
     at one level leads to no viable path at deeper levels, older
     candidates are tried.
 
+    *client* is an optional boto3 S3 client; one is created when omitted,
+    and every request of the walk reuses it.
+
     Returns a dict mapping each partition key to its resolved value.
     """
     overrides = overrides or {}
+    s3 = client if client is not None else boto3.client("s3")
 
     log.info(
         "Resolving partitions %s under s3://%s/%s (overrides=%s, required_markers=%s)",
@@ -262,7 +270,7 @@ def _resolve_partitions(
 
     def _list_subdirs(prefix: str) -> list[str]:
         """Return immediate subdirectory names under *prefix*."""
-        dirs = list_common_prefixes(bucket, prefix)
+        dirs = list_common_prefixes(bucket, prefix, client=s3)
         log.debug(
             "Listed %d subdirs under s3://%s/%s: %s", len(dirs), bucket, prefix, dirs
         )
@@ -271,12 +279,12 @@ def _resolve_partitions(
     def _is_valid_leaf(prefix: str) -> bool:
         """Check whether *prefix* is a valid resolved leaf."""
         for marker in required_markers:
-            if not object_exists(bucket, f"{prefix}{marker}"):
+            if not object_exists(bucket, f"{prefix}{marker}", client=s3):
                 log.debug("Marker %r not found at s3://%s/%s", marker, bucket, prefix)
                 return False
         if not required_markers:
             # No marker requirements — any existing content counts.
-            exists = prefix_exists(bucket, prefix)
+            exists = prefix_exists(bucket, prefix, client=s3)
             log.debug("Directory exists at s3://%s/%s: %s", bucket, prefix, exists)
             return exists
         return True
@@ -460,6 +468,7 @@ def _walk_partitions(
     matched (regardless of marker files); success-status filtering happens
     in ``is_deletable``.
     """
+    s3 = boto3.client("s3")  # one client (and connection pool) for the walk
 
     def _walk(prefix: str, remaining: list[str], acc: dict[str, str]):
         if not remaining:
@@ -467,7 +476,7 @@ def _walk_partitions(
             return
         key = remaining[0]
         rest = remaining[1:]
-        for name in list_common_prefixes(bucket, prefix):
+        for name in list_common_prefixes(bucket, prefix, client=s3):
             if not name.startswith(f"{key}="):
                 continue
             value = name.split("=", 1)[1]
@@ -977,10 +986,12 @@ class Bundle:
                 )
             scan_prefix = f"{scan_prefix}{key}={val}/"
 
+        s3 = boto3.client("s3")  # one client (and connection pool) for the scan
+
         def _list_values(prefix: str, key: str) -> list[str]:
             """Every value present for ``key=`` immediately under *prefix*."""
             values: list[str] = []
-            for name in list_common_prefixes(self.bucket, prefix):
+            for name in list_common_prefixes(self.bucket, prefix, client=s3):
                 if name.startswith(f"{key}="):
                     val = name.split("=", 1)[1]
                     if val:
@@ -997,7 +1008,8 @@ class Bundle:
                 # Target is the last partition — just check for the markers.
                 leaf_prefix = f"{base_prefix}{key}={value}/"
                 for marker in required_markers:
-                    if not object_exists(self.bucket, f"{leaf_prefix}{marker}"):
+                    leaf_key = f"{leaf_prefix}{marker}"
+                    if not object_exists(self.bucket, leaf_key, client=s3):
                         log.info("Marker %r absent for %s=%s.", marker, key, value)
                         return None
                 return f"s3://{self.bucket}/{leaf_prefix}data"
@@ -1014,6 +1026,7 @@ class Bundle:
                     partition_keys=keys_after,
                     overrides={k: "latest" for k in keys_after},
                     required_markers=required_markers,
+                    client=s3,
                 )
             except PartitionResolutionError as exc:
                 log.info("No successful run under %s=%s (%s).", key, value, exc)
@@ -1502,7 +1515,9 @@ class Bundle:
         # depend on the order in which S3 lists the run= directories.  Markers
         # are exact keys: ``success.log`` or ``success/part-0`` do not count.
         bucket, prefix, current_run = _split_run_uri(s3_uri)
-        if current_run and object_exists(bucket, f"{prefix}run={current_run}/success"):
+        s3 = boto3.client("s3")  # one client (and connection pool) per check
+        current_marker = f"{prefix}run={current_run}/success"
+        if current_run and object_exists(bucket, current_marker, client=s3):
             log.info(
                 "Current run='%s' already has a success file — "
                 "allowing rerun at s3://%s/%srun=%s",
@@ -1514,11 +1529,11 @@ class Bundle:
             return True
 
         # Any other run with a success file means the work is already done.
-        for name in list_common_prefixes(bucket, prefix):
+        for name in list_common_prefixes(bucket, prefix, client=s3):
             if not name.startswith("run="):
                 continue
             child = f"{prefix}{name}"
-            if object_exists(bucket, f"{child}/success"):
+            if object_exists(bucket, f"{child}/success", client=s3):
                 log.info("Existing successful run found at s3://%s/%s", bucket, child)
                 return False
 
@@ -1639,8 +1654,9 @@ class Bundle:
 
         # (bucket, parent prefix) -> runs under it that have a success file
         successful: dict[tuple[str, str], set[str]] = {}
+        s3 = boto3.client("s3")
         for bucket, prefix in scans:
-            for k in iter_keys(bucket, prefix):
+            for k in iter_keys(bucket, prefix, client=s3):
                 if not k.endswith("/success"):
                     continue
                 head, _, leaf = k[: -len("/success")].rpartition("/")

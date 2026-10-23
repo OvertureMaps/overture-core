@@ -5,6 +5,7 @@ import logging
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
@@ -16,6 +17,16 @@ from boto3.s3.transfer import TransferConfig
 # copies without saturating a task's network allocation.
 _MULTIPART_CHUNK_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_CONCURRENCY = 10
+
+
+def _s3(client: Any) -> Any:
+    """Return *client*, or a new boto3 S3 client when it is ``None``.
+
+    Each new client opens its own connection pool, so callers making many
+    requests (for example a recursive directory walk) should create one
+    client and pass it to every helper call.
+    """
+    return client if client is not None else boto3.client("s3")
 
 
 def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
@@ -36,10 +47,13 @@ def build_s3_uri(bucket: str, key: str) -> str:
     return f"s3://{bucket}/{key}" if key else f"s3://{bucket}"
 
 
-def object_exists(bucket: str, key: str) -> bool:
-    """Return whether an object exists at ``bucket/key``."""
+def object_exists(bucket: str, key: str, *, client: Any = None) -> bool:
+    """Return whether an object exists at ``bucket/key``.
+
+    *client* is an optional boto3 S3 client to reuse; see `_s3`.
+    """
     try:
-        boto3.client("s3").head_object(Bucket=bucket, Key=key)
+        _s3(client).head_object(Bucket=bucket, Key=key)
         return True
     except botocore.exceptions.ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
@@ -47,13 +61,16 @@ def object_exists(bucket: str, key: str) -> bool:
         raise
 
 
-def object_last_modified(bucket: str, key: str) -> datetime.datetime | None:
+def object_last_modified(
+    bucket: str, key: str, *, client: Any = None
+) -> datetime.datetime | None:
     """Return the ``LastModified`` timestamp of ``bucket/key``, or ``None`` if missing.
 
-    Raises for any error other than a missing key.
+    Raises for any error other than a missing key.  *client* is an optional
+    boto3 S3 client to reuse; see `_s3`.
     """
     try:
-        response = boto3.client("s3").head_object(Bucket=bucket, Key=key)
+        response = _s3(client).head_object(Bucket=bucket, Key=key)
     except botocore.exceptions.ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
             return None
@@ -61,16 +78,15 @@ def object_last_modified(bucket: str, key: str) -> datetime.datetime | None:
     return response.get("LastModified")
 
 
-def prefix_exists(bucket: str, prefix: str) -> bool:
+def prefix_exists(bucket: str, prefix: str, *, client: Any = None) -> bool:
     """Return whether at least one object exists under ``bucket/prefix``.
 
     Unlike :func:`object_exists` (an exact-key check via ``head_object``),
     this checks whether anything lives under a prefix — the S3 equivalent of
-    "does this directory have contents".
+    "does this directory have contents".  *client* is an optional boto3 S3
+    client to reuse; see `_s3`.
     """
-    response = boto3.client("s3").list_objects_v2(
-        Bucket=bucket, Prefix=prefix, MaxKeys=1
-    )
+    response = _s3(client).list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
     return response.get("KeyCount", 0) > 0
 
 
@@ -451,20 +467,21 @@ def delete_prefix(bucket: str, prefix: str) -> int:
     return deleted
 
 
-def iter_keys(bucket: str, prefix: str) -> Iterator[str]:
+def iter_keys(bucket: str, prefix: str, *, client: Any = None) -> Iterator[str]:
     """Yield every object key under *prefix* in *bucket*, recursively.
 
     *prefix* is passed to ``ListObjectsV2`` as-is, so include a trailing
     ``/`` to avoid matching sibling prefixes (``root/v=1`` also matches
-    ``root/v=10``).
+    ``root/v=10``).  *client* is an optional boto3 S3 client to reuse; see
+    `_s3`.
     """
-    paginator = boto3.client("s3").get_paginator("list_objects_v2")
+    paginator = _s3(client).get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             yield obj["Key"]
 
 
-def list_common_prefixes(bucket: str, prefix: str) -> list[str]:
+def list_common_prefixes(bucket: str, prefix: str, *, client: Any = None) -> list[str]:
     """List immediate "subdirectory" names one level under *prefix*.
 
     Paginates ``ListObjectsV2`` with ``Delimiter="/"`` and returns each
@@ -474,8 +491,10 @@ def list_common_prefixes(bucket: str, prefix: str) -> list[str]:
 
     Example: for ``prefix="root/"`` with ``root/version=1/`` and
     ``root/version=2/`` present, returns ``["version=1", "version=2"]``.
+
+    *client* is an optional boto3 S3 client to reuse; see `_s3`.
     """
-    s3 = boto3.client("s3")
+    s3 = _s3(client)
     names: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
