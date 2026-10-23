@@ -339,8 +339,13 @@ def _resolve_partitions(
                 return None
             return {key: override, **deeper}
 
-        # "latest" mode — try candidates from newest to oldest.
-        candidates = [d for d in _list_subdirs(prefix) if d.startswith(f"{key}=")]
+        # "latest" mode — try candidates from newest to oldest.  An empty
+        # value (``key=``) cannot form a bundle path, so it is never a candidate.
+        candidates = [
+            d
+            for d in _list_subdirs(prefix)
+            if d.startswith(f"{key}=") and len(d) > len(key) + 1
+        ]
         log.info(
             "Scanning %d candidate(s) for %s= under s3://%s/%s",
             len(candidates),
@@ -1179,10 +1184,12 @@ class Bundle:
            bundle in the group that has a success file.  If none exists, nothing
            is deletable.
         2. The ``latest_successful`` bundle itself is never deletable.
-        3. Successful bundle: deletable iff it is ordered before the latest
-           successful bundle AND ``age_days >= min_age_days``.
-        4. Non-successful bundle: deletable iff it is ordered before the latest
-           successful bundle (age is ignored).
+        3. Any other bundle ordered before the latest successful bundle is
+           deletable iff ``age_days >= min_age_days``.  Age comes from the
+           ``success`` file, or from ``metadata.json`` for a bundle without
+           one, so a rerun that `initialize` just restarted (success removed,
+           metadata rewritten) is not deleted mid-write.  A bundle with
+           neither file is kept, because its age is unknown.
         """
         group = [b for b in siblings if b is not self] + [self]
         if successful is None:
@@ -1208,19 +1215,14 @@ class Bundle:
                 f"latest successful {latest_desc!r}"
             )
 
-        if not self_successful:
-            return True, (
-                f"unsuccessful; superseded by successful bundle {latest_desc!r}"
-            )
-
         age = self.age_days(now=now)
         if age is None:
             return False, "cannot determine bundle age"
         if age < min_age_days:
             return False, (f"age {age:.1f}d < min_age_days {min_age_days}d")
+        state = "successful" if self_successful else "unsuccessful"
         return True, (
-            f"successful but superseded by {latest_desc!r}; "
-            f"age {age:.1f}d >= {min_age_days}d"
+            f"{state}; superseded by {latest_desc!r}; age {age:.1f}d >= {min_age_days}d"
         )
 
     def retention_order_key(self) -> tuple[str, ...]:
@@ -1274,18 +1276,26 @@ class Bundle:
             table_dropper: Optional `TableDropper` for registered tables.
 
         Raises:
-            ValueError: If the bundle has no partitions (or an empty prefix),
-                because deleting it would remove every bundle under its root.
+            ValueError: If the bundle has no partitions, or any declared
+                partition (``PARTITION_KEYS``, else every given partition)
+                has no value, because the delete would then cover more than
+                this one bundle.
             DeletePrefixError: If S3 failed to delete some objects.
         """
-        base_prefix = self.base_prefix.strip("/")
-        if not base_prefix:
-            raise ValueError("Refusing to delete a bundle with an empty prefix")
-        if not self._partitions:
+        declared = self.PARTITION_KEYS or tuple(self._partitions)
+        if not declared:
             raise ValueError(
-                f"Refusing to delete s3://{self.bucket}/{base_prefix}: the bundle "
-                "has no partitions, so this would delete every bundle under it"
+                f"Refusing to delete {self.root_uri}: the bundle has no "
+                "partitions, so this would delete every bundle under it"
             )
+        missing = [key for key in declared if not self._partitions.get(key)]
+        if missing:
+            raise ValueError(
+                f"Refusing to delete under {self.root_uri}: partition(s) "
+                f"{', '.join(missing)} have no value, so this would delete more "
+                "than one bundle. Resolve the partitions first."
+            )
+        base_prefix = self.base_prefix.strip("/")
         prefix = f"{base_prefix}/"
 
         deleted_tables: list[str] = []
@@ -1489,9 +1499,10 @@ class Bundle:
                 return True
 
         # Detect a rerun of the current run_id first, so the answer does not
-        # depend on the order in which S3 lists the run= directories.
+        # depend on the order in which S3 lists the run= directories.  Markers
+        # are exact keys: ``success.log`` or ``success/part-0`` do not count.
         bucket, prefix, current_run = _split_run_uri(s3_uri)
-        if current_run and prefix_exists(bucket, f"{prefix}run={current_run}/success"):
+        if current_run and object_exists(bucket, f"{prefix}run={current_run}/success"):
             log.info(
                 "Current run='%s' already has a success file — "
                 "allowing rerun at s3://%s/%srun=%s",
@@ -1507,7 +1518,7 @@ class Bundle:
             if not name.startswith("run="):
                 continue
             child = f"{prefix}{name}"
-            if prefix_exists(bucket, f"{child}/success"):
+            if object_exists(bucket, f"{child}/success"):
                 log.info("Existing successful run found at s3://%s/%s", bucket, child)
                 return False
 
@@ -1528,11 +1539,16 @@ class Bundle:
         """Discover every resource under ``provider`` and return the latest bundle per resource.
 
         One paginated ``list_objects_v2`` at ``<root>/provider=<X>/`` walks all
-        ``success`` markers, keeping the newest ``(version, run)`` per resource
-        in natural order (`_natural_key`). Cheap alternative to instantiating
-        one bundle per resource and calling `resolve_partitions` on each.
+        ``success`` markers, keeping the newest bundle per resource in natural
+        order (`_natural_key`) of the partitions after ``resource``. Cheap
+        alternative to instantiating one bundle per resource and calling
+        `resolve_partitions` on each.
 
-        Returned bundles are fully resolved (concrete ``version`` and ``run``).
+        Only keys with the exact bundle layout count, e.g.
+        ``resource=R/version=V/run=Z/success``; a ``success`` object nested
+        deeper (``.../run=Z/data/success``) is not a bundle marker.
+
+        Returned bundles are fully resolved (every partition has a value).
         Only valid for bundle classes partitioned by ``(provider, resource, ...)``.
         """
         if cls.PARTITION_KEYS[:2] != ("provider", "resource"):
@@ -1542,37 +1558,32 @@ class Bundle:
 
         root = _compose_root(cls.ROOT_PATH, namespace)
         prefix = f"{root}/provider={provider}/"
+        keys = cls.PARTITION_KEYS[1:]
 
-        best: dict[str, tuple[str, str]] = {}
-        best_order: dict[str, tuple[_NaturalKey, _NaturalKey]] = {}
+        best: dict[str, dict[str, str]] = {}
+        best_order: dict[str, tuple[_NaturalKey, ...]] = {}
         for key in iter_keys(bucket, prefix):
-            if not key.endswith("/success"):
+            segments = key[len(prefix) :].split("/")
+            if len(segments) != len(keys) + 1 or segments[-1] != "success":
                 continue
-            parts = {
-                seg.split("=", 1)[0]: seg.split("=", 1)[1]
-                for seg in key.split("/")
-                if "=" in seg
-            }
-            resource = parts.get("resource")
-            version = parts.get("version")
-            run = parts.get("run")
-            if not (resource and version and run):
-                continue
-            order = (_natural_key(version), _natural_key(run))
-            if resource not in best_order or order > best_order[resource]:
-                best[resource] = (version, run)
-                best_order[resource] = order
+            values: dict[str, str] = {}
+            for name, segment in zip(keys, segments[:-1], strict=True):
+                seg_key, _, seg_value = segment.partition("=")
+                if seg_key != name or not seg_value:
+                    break
+                values[name] = seg_value
+            else:
+                resource = values["resource"]
+                order = tuple(_natural_key(values[k]) for k in keys[1:])
+                if resource not in best_order or order > best_order[resource]:
+                    best[resource] = values
+                    best_order[resource] = order
 
         return {
             resource: cls(
-                provider=provider,
-                resource=resource,
-                bucket=bucket,
-                version=v,
-                run=r,
-                namespace=namespace,
+                provider=provider, bucket=bucket, namespace=namespace, **values
             )
-            for resource, (v, r) in best.items()
+            for resource, values in best.items()
         }
 
     @classmethod
@@ -2168,7 +2179,13 @@ class ReleaseCandidateBundle(Bundle):
 
 
 class ReleaseBundle(Bundle):
-    """Final published release."""
+    """Final published release (placeholder).
+
+    No path layout is defined yet: there is no ``ROOT_PATH`` or
+    ``PARTITION_KEYS``, so `discover_all` and `cleanup_all` do not apply and
+    instances need an explicit ``root_path`` and ``partitions``.  The layout
+    is tracked in OvertureMaps/overture-core#102.
+    """
 
     BUNDLE_TYPE = "release"
 
