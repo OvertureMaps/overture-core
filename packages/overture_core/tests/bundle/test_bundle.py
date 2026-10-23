@@ -20,6 +20,7 @@ from overture_core.bundle.bundle import (
     SourceRawBundle,
     ThemeAssembleBundle,
     ThemePromoteBundle,
+    _natural_key,
     _resolve_partitions,
 )
 
@@ -225,6 +226,65 @@ class TestSubclasses:
         )
         assert isinstance(b, SourceIngestBundle)
         assert b.base_uri == "s3://bkt/feeds/provider=p/resource=r/version=1/run=r1"
+
+    def test_source_ingest_from_path_keeps_namespace_and_root(self):
+        b = SourceIngestBundle.from_path(
+            "s3://bkt/alice/feeds", provider="p", resource="r", version="1", run="r1"
+        )
+        assert b.base_uri == (
+            "s3://bkt/alice/feeds/provider=p/resource=r/version=1/run=r1"
+        )
+        b2 = SourceIngestBundle.from_path(
+            "s3://bkt/custom/", {"provider": "p", "resource": "r"}, version="2"
+        )
+        assert b2.root_uri == "s3://bkt/custom"
+        assert b2.partitions == {
+            "provider": "p",
+            "resource": "r",
+            "version": "2",
+            "run": "",
+        }
+
+    def test_source_ingest_from_path_without_root_uses_default(self):
+        b = SourceIngestBundle.from_path("s3://bkt", provider="p", resource="r")
+        assert b.root_uri == "s3://bkt/feeds"
+
+    @pytest.mark.parametrize(
+        "bundle",
+        [
+            SourceRawBundle(
+                provider="p", resource="r", bucket="bkt", version="1", run="a"
+            ),
+            SourceIngestBundle(
+                provider="p",
+                resource="r",
+                bucket="bkt",
+                version="1",
+                run="a",
+                namespace="ns",
+            ),
+            ThemeAssembleBundle(theme="t", bucket="bkt", run="a"),
+            ThemePromoteBundle(theme="t", bucket="bkt", schema="v1", run="a"),
+            ReleaseCandidateBundle(bucket="bkt", release="R", run="a"),
+            ScratchBundle(purpose="p", bucket="bkt", run="a", root_path="tmp/x"),
+            Bundle(bucket="bkt", root_path="root", partitions={"k": "v"}),
+        ],
+        ids=lambda b: type(b).__name__,
+    )
+    def test_from_base_uri_and_from_path_round_trip(self, bundle):
+        cls = type(bundle)
+        parsed = cls.from_base_uri(bundle.base_uri)
+        assert type(parsed) is cls
+        assert parsed.base_uri == bundle.base_uri
+        rebuilt = cls.from_path(bundle.root_uri, bundle.partitions)
+        assert type(rebuilt) is cls
+        assert rebuilt.base_uri == bundle.base_uri
+
+    def test_from_base_uri_rejects_unknown_partition(self):
+        with pytest.raises(ValueError, match=r"has no partition\(s\) \['schema'\]"):
+            ThemeAssembleBundle.from_base_uri(
+                "s3://bkt/theme_stage/theme=t/schema=s/run=r"
+            )
 
     def test_theme_assemble(self):
         b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1")
@@ -536,6 +596,42 @@ class TestRetention:
         with pytest.raises(ValueError, match="empty prefix"):
             Bundle(bucket="bkt", root_path="").delete()
 
+    def test_delete_refuses_bundle_without_partitions(self, s3):
+        s3.put("bkt", "datasets/provider=p/resource=r/version=1/run=r1/success")
+        with pytest.raises(ValueError, match="has no partitions"):
+            Bundle(bucket="bkt", root_path="datasets").delete(dry_run=True)
+        assert len(s3.keys()) == 1
+
+    def test_cleanup_all_checks_success_once_per_bundle(self, s3, monkeypatch):
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        _seed_versions(s3, now)
+        checked: list[str] = []
+        original = Bundle.is_successful
+
+        def counting(self):
+            checked.append(self.base_uri)
+            return original(self)
+
+        monkeypatch.setattr(Bundle, "is_successful", counting)
+        report = SourceIngestBundle.cleanup_all(
+            bucket="bkt", min_age_days=30, dry_run=True, namespace="ns", now=now
+        )
+        assert len(report.would_delete) == 2
+        assert len(checked) == 3
+        assert len(set(checked)) == 3
+
+    def test_is_deletable_uses_success_snapshot(self, s3):
+        old, new = (
+            Bundle(bucket="bkt", root_path="root", partitions={"version": v})
+            for v in "12"
+        )
+        group = [old, new]
+        assert old.is_deletable(0, group, successful=[new]) == (
+            True,
+            "unsuccessful; superseded by successful bundle ('2',)",
+        )
+        assert old.is_deletable(0, group, successful=[])[0] is False
+
 
 # ── Processing checks ────────────────────────────────────────────────────────
 
@@ -565,6 +661,12 @@ class TestNeedsProcessing:
     def test_same_run_rerun_returns_true(self, s3):
         s3.put("bkt", f"{self._PARENT}/run=r2/success")
         assert self._bundle().needs_processing() is True
+
+    def test_rerun_returns_true_when_an_earlier_run_also_succeeded(self, s3):
+        s3.put("bkt", f"{self._PARENT}/run=r1/success")
+        s3.put("bkt", f"{self._PARENT}/run=r2/success")
+        assert self._bundle("r2").needs_processing() is True
+        assert self._bundle("r0").needs_processing() is False
 
     def test_explicit_base_uri_is_checked(self, s3):
         s3.put("other", f"{self._PARENT}/run=r1/success")
@@ -616,6 +718,36 @@ class TestBatchHelpers:
             todo,
         ]
         assert Bundle.needs_processing_batch([]) == []
+
+    def test_needs_processing_batch_matches_singular(self, s3):
+        for key in (
+            "feeds/provider=p/resource=a/version=1/run=x/success",
+            "feeds/provider=p/resource=a/version=1/run=y/success",
+            "feeds/provider=p/resource=b/version=1/run=x/data/f",
+            "feeds/provider=p/resource=c/version=10/run=x/success",
+            "theme_stage/theme=places/run=r1/success",
+        ):
+            s3.put("bkt", key)
+
+        def ingest(resource, run, version="1"):
+            return SourceIngestBundle(
+                provider="p", resource=resource, bucket="bkt", version=version, run=run
+            )
+
+        bundles = [
+            ingest("a", "z"),  # another run succeeded -> skip
+            ingest("a", "y"),  # rerun of a successful run -> process
+            ingest("b", "z"),  # no successful run -> process
+            ingest("c", "z"),  # only version=10 succeeded -> process
+            ThemeAssembleBundle(theme="places", bucket="bkt", run="r2"),  # skip
+            ThemeAssembleBundle(theme="places", bucket="bkt", run="r1"),  # rerun
+            ThemeAssembleBundle(theme="roads", bucket="bkt", run="r1"),  # process
+        ]
+        expected = [b for b in bundles if b.needs_processing()]
+        assert [b.base_uri for b in expected] == [
+            bundles[i].base_uri for i in (1, 2, 3, 5, 6)
+        ]
+        assert Bundle.needs_processing_batch(bundles) == expected
 
 
 # ── Path helpers ─────────────────────────────────────────────────────────────
@@ -732,10 +864,30 @@ class TestResolvePartitionsEdgeCases:
 
     def test_override_with_no_viable_deeper_path_raises(self, s3):
         s3.put("bkt", "root/version=1/run=a/data/x")
-        with pytest.raises(PartitionResolutionError, match="Override version='1'"):
+        with pytest.raises(
+            PartitionResolutionError,
+            match=r"No run= directory .* under s3://bkt/root/version=1/ "
+            r"\(1 candidate\(s\) checked\)",
+        ):
             _resolve_partitions(
                 "bkt", "root", ["version", "run"], overrides={"version": "1"}
             )
+
+    def test_fully_set_bundle_without_marker_names_the_leaf(self, s3):
+        s3.put("bkt", "feeds/provider=p/resource=r/version=1/run=r1/data/x")
+        b = SourceIngestBundle(
+            provider="p", resource="r", bucket="bkt", version="1", run="r1"
+        )
+        with pytest.raises(
+            PartitionResolutionError,
+            match=r"Override run='r1' missing required markers \['success'\] at "
+            r"s3://bkt/feeds/provider=p/resource=r/version=1/run=r1",
+        ):
+            b.resolve_partitions()
+
+    def test_resolve_with_no_partition_keys_raises(self, s3):
+        with pytest.raises(PartitionResolutionError, match="No bundle with required"):
+            _resolve_partitions("bkt", "root", [])
 
     def test_latest_with_nothing_found_raises(self, s3):
         with pytest.raises(PartitionResolutionError, match="No version= directory"):
@@ -991,3 +1143,78 @@ class TestScanEdgeCases:
             provider="p", resource="a", bucket="bkt", version="1", run="x"
         )
         assert Bundle.needs_processing_batch([todo]) == [todo]
+
+
+# ── Natural ordering of partition values ─────────────────────────────────────
+
+
+class TestNaturalOrder:
+    def test_natural_key_orders_numbers_numerically(self):
+        values = ["v1.16.0", "v1.9.0", "v1.10.0", "v2.0.0"]
+        assert sorted(values, key=_natural_key) == [
+            "v1.9.0",
+            "v1.10.0",
+            "v1.16.0",
+            "v2.0.0",
+        ]
+
+    def test_natural_key_keeps_fixed_width_order(self):
+        values = [
+            "2026-01-15",
+            "2025-12-31",
+            "20260101T000000",
+            "manual__2026-01-01T00:00:00+00:00",
+            "scheduled__2025-12-01T00:00:00+00:00",
+        ]
+        assert sorted(values, key=_natural_key) == sorted(values)
+        assert _natural_key("01") != _natural_key("1")
+
+    def _promote(self, s3, schema, lm=None):
+        s3.put("bkt", f"theme_promote/theme=t/schema={schema}/run=r1/success", lm=lm)
+
+    def test_resolve_latest_schema(self, s3):
+        for schema in ("v1.9.0", "v1.16.0", "v1.10.0"):
+            self._promote(s3, schema)
+        b = ThemePromoteBundle(theme="t", bucket="bkt")
+        b.resolve_partitions()
+        assert b.partitions == {"theme": "t", "schema": "v1.16.0", "run": "r1"}
+
+    def test_cleanup_keeps_newest_schema(self, s3):
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        old = now - dt.timedelta(days=90)
+        for schema in ("v1.9.0", "v1.16.0"):
+            self._promote(s3, schema, lm=old)
+        report = ThemePromoteBundle.cleanup_all(
+            bucket="bkt", min_age_days=30, dry_run=True, now=now
+        )
+        assert [d.bundle_uri for d in report.would_delete] == [
+            "s3://bkt/theme_promote/theme=t/schema=v1.9.0/run=r1"
+        ]
+        assert [d.bundle_uri for d in report.kept] == [
+            "s3://bkt/theme_promote/theme=t/schema=v1.16.0/run=r1"
+        ]
+
+    def test_find_previous_partition(self, s3):
+        for schema in ("v1.9.0", "v1.10.0", "v1.20.0"):
+            self._promote(s3, schema)
+        b = ThemePromoteBundle(theme="t", bucket="bkt", schema="v1.16.0", run="r1")
+        found = b.find_previous_partition(partition_key="schema")
+        assert found["prior_values"] == ["v1.10.0", "v1.9.0"]
+        assert "schema=v1.10.0" in found["data_uri"]
+
+    def test_same_value_fallback_orders_runs(self, s3):
+        s3.put("bkt", "root/version=1/run=r9/success")
+        s3.put("bkt", "root/version=1/run=r11/success")
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1", "run": "r10"}
+        )
+        found = b.find_previous_partition(same_value_fallback=True)
+        assert found["data_uri"] == "s3://bkt/root/version=1/run=r9/data"
+
+    def test_resolve_partitions_batch(self, s3):
+        for version in ("v1.9.0", "v1.16.0"):
+            s3.put(
+                "bkt", f"feeds/provider=p/resource=a/version={version}/run=r1/success"
+            )
+        out = SourceIngestBundle.resolve_partitions_batch(provider="p", bucket="bkt")
+        assert out["a"].partitions["version"] == "v1.16.0"

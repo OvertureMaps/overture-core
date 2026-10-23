@@ -8,6 +8,7 @@ import pytest
 
 from overture_core.cloud.aws.object import (
     CopyResult,
+    DeletePrefixError,
     build_s3_uri,
     bucket_writable,
     copy_prefix,
@@ -323,13 +324,20 @@ class TestDeletePrefix:
         s3.get_paginator.return_value.paginate.return_value = [
             {"Contents": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}]}
         ]
+        s3.delete_objects.return_value = {}
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
-            deleted = delete_prefix("bucket", "src")
+            deleted = delete_prefix("bucket", "/src/")
 
         assert deleted == 2
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix="src/"
+        )
         s3.delete_objects.assert_called_once_with(
             Bucket="bucket",
-            Delete={"Objects": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}]},
+            Delete={
+                "Objects": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}],
+                "Quiet": True,
+            },
         )
 
     def test_no_objects_skips_delete_call(self):
@@ -340,18 +348,35 @@ class TestDeletePrefix:
         assert deleted == 0
         s3.delete_objects.assert_not_called()
 
-    def test_empty_prefix_deletes_whole_bucket(self):
+    @pytest.mark.parametrize("prefix", ["", "/", "//"])
+    def test_empty_prefix_is_refused(self, prefix):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(ValueError, match="whole bucket"):
+                delete_prefix("bucket", prefix)
+        s3.get_paginator.assert_not_called()
+        s3.delete_objects.assert_not_called()
+
+    def test_per_key_errors_raise_and_stop(self):
         s3 = MagicMock()
         s3.get_paginator.return_value.paginate.return_value = [
-            {"Contents": [{"Key": "a.parquet"}]}
+            {"Contents": [{"Key": "src/a"}, {"Key": "src/b"}]},
+            {"Contents": [{"Key": "src/c"}, {"Key": "src/d"}]},
+            {"Contents": [{"Key": "src/e"}]},
+        ]
+        s3.delete_objects.side_effect = [
+            {},
+            {"Errors": [{"Key": "src/d", "Code": "AccessDenied", "Message": "no"}]},
         ]
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
-            deleted = delete_prefix("bucket", "")
+            with pytest.raises(DeletePrefixError, match="src/d: AccessDenied") as info:
+                delete_prefix("bucket", "src")
 
-        assert deleted == 1
-        s3.get_paginator.return_value.paginate.assert_called_once_with(
-            Bucket="bucket", Prefix=""
-        )
+        assert info.value.deleted == 3
+        assert info.value.errors == [
+            {"Key": "src/d", "Code": "AccessDenied", "Message": "no"}
+        ]
+        assert s3.delete_objects.call_count == 2
 
 
 class TestIterKeys:
