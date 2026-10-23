@@ -1354,3 +1354,83 @@ class TestNaturalOrder:
             )
         out = SourceIngestBundle.resolve_partitions_batch(provider="p", bucket="bkt")
         assert out["a"].partitions["version"] == "v1.16.0"
+
+
+# ── S3 client reuse ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def counted_s3(monkeypatch) -> tuple[FakeS3, list[tuple]]:
+    """``FakeS3`` plus a record of every ``boto3.client`` call."""
+    fake = FakeS3()
+    calls: list[tuple] = []
+
+    def _client(*args, **_kw):
+        calls.append(args)
+        return fake
+
+    monkeypatch.setattr(boto3, "client", _client)
+    return fake, calls
+
+
+class TestClientReuse:
+    """A walk or check opens one S3 client, however many requests it makes."""
+
+    _ROOT = "feeds/provider=p/resource=r"
+
+    def _seed(self, fake: FakeS3) -> None:
+        for version in ("1", "2", "3"):
+            for run in ("a", "b"):
+                fake.put("bkt", f"{self._ROOT}/version={version}/run={run}/success")
+        fake.put("bkt", "feeds/provider=p/resource=s/version=1/run=a/success")
+
+    def test_discover_all(self, counted_s3):
+        fake, calls = counted_s3
+        self._seed(fake)
+        assert len(SourceIngestBundle.discover_all(bucket="bkt")) == 7
+        assert calls == [("s3",)]
+
+    def test_resolve_partitions(self, counted_s3):
+        fake, calls = counted_s3
+        self._seed(fake)
+        fake.put("bkt", f"{self._ROOT}/version=4/run=a/data/f")
+        b = SourceIngestBundle(provider="p", resource="r", bucket="bkt")
+        b.resolve_partitions()
+        assert b.base_uri == f"s3://bkt/{self._ROOT}/version=3/run=b"
+        assert calls == [("s3",)]
+
+    def test_needs_processing(self, counted_s3):
+        fake, calls = counted_s3
+        for run in ("a", "b", "c"):
+            fake.put("bkt", f"{self._ROOT}/version=1/run={run}/data/f")
+        b = SourceIngestBundle(
+            provider="p", resource="r", bucket="bkt", version="1", run="d"
+        )
+        assert b.needs_processing() is True
+        assert calls == [("s3",)]
+
+    def test_find_previous_partition(self, counted_s3):
+        fake, calls = counted_s3
+        self._seed(fake)
+        fake.put("bkt", f"{self._ROOT}/version=3/run=c/data/f")
+        b = SourceIngestBundle(
+            provider="p", resource="r", bucket="bkt", version="4", run="a"
+        )
+        found = b.find_previous_partition()
+        assert found["data_uri"] == f"s3://bkt/{self._ROOT}/version=3/run=b/data"
+        assert calls == [("s3",)]
+
+    def test_needs_processing_batch(self, counted_s3):
+        fake, calls = counted_s3
+        self._seed(fake)
+        bundles = [
+            SourceIngestBundle(
+                provider="p", resource=res, bucket="bkt", version="9", run="z"
+            )
+            for res in ("r", "s")
+        ] + [
+            ThemeAssembleBundle(theme=theme, bucket="bkt", run="z")
+            for theme in ("places", "buildings")
+        ]
+        assert Bundle.needs_processing_batch(bundles) == bundles
+        assert calls == [("s3",)]

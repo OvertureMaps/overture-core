@@ -484,3 +484,34 @@ class TestUploadDirectory:
         with pytest.raises(NotADirectoryError, match="Not a directory"):
             upload_directory(str(missing), "my-bucket")
         s3_client.upload_file.assert_not_called()
+
+
+class TestExplicitClient:
+    """A caller-supplied client is used instead of creating a new one."""
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda c: object_exists("bucket", "key", client=c),
+            lambda c: object_last_modified("bucket", "key", client=c),
+            lambda c: prefix_exists("bucket", "prefix/", client=c),
+            lambda c: list(iter_keys("bucket", "prefix/", client=c)),
+            lambda c: list_common_prefixes("bucket", "prefix/", client=c),
+        ],
+        ids=[
+            "object_exists",
+            "object_last_modified",
+            "prefix_exists",
+            "iter_keys",
+            "list_common_prefixes",
+        ],
+    )
+    def test_uses_given_client(self, call):
+        s3 = MagicMock()
+        s3.head_object.return_value = {"LastModified": None}
+        s3.list_objects_v2.return_value = {"KeyCount": 0}
+        s3.get_paginator.return_value.paginate.return_value = [{}]
+        with patch("overture_core.cloud.aws.object.boto3.client") as factory:
+            call(s3)
+        factory.assert_not_called()
+        assert s3.method_calls
