@@ -455,15 +455,11 @@ class Bundle:
         *,
         metadata: BundleMetadata,
     ) -> None:
-        """Finalize the bundle: stamp metadata and, on success, write the marker.
+        """Stamp metadata with *status*; write the marker if it is ``"success"``.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``; ``metadata.finalize(status=status)`` is always called.
-        The ``success`` marker is written only when *status* is
-        ``"success"`` (`BundleStatus.SUCCESS`).  Any other status leaves the
-        bundle without one, so `is_successful` stays ``False`` and partition
-        resolution, `needs_processing` and retention don't treat it as
-        complete; with ``"failed"``, `status` reports `BundleStatus.FAILED`.
+        ``base_uri``.  Partition resolution, `needs_processing` and retention
+        treat only bundles with the marker as complete.
         """
         metadata.finalize(status=status)
         if status != BundleStatus.SUCCESS:
@@ -772,18 +768,10 @@ class Bundle:
     # ------------------------------------------------------------------
 
     def status(self) -> BundleStatusReport:
-        """Read this bundle's lifecycle status from storage.
+        """Read this bundle's `BundleStatus` and related facts from storage.
 
-        The ``success`` marker means `BundleStatus.SUCCESS`.  Without it, a
-        ``metadata.json`` section with ``"status": "failed"`` means
-        `BundleStatus.FAILED`, and anything else `BundleStatus.IN_PROGRESS`.
-        A bundle with no objects at all has status ``None`` and ``exists``
-        ``False``.  See `BundleStatusReport` for the other fields.
-
-        Makes up to three requests on one store: check the marker, read
-        ``metadata.json``, and, only when neither exists, look for any other
-        object under the bundle.  Subclasses that add a status override
-        `_status_report`, which takes that open store.
+        Subclasses extend `_status_report`, so their requests share the one
+        store opened here.
         """
         return self._status_report(self._open_store())
 

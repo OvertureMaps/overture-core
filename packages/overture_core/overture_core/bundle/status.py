@@ -12,19 +12,13 @@ log = logging.getLogger(__name__)
 
 
 class BundleStatus(StrEnum):
-    """Where an existing bundle is in its lifecycle, as reported by `Bundle.status`.
+    """Lifecycle state of an existing bundle, as reported by `Bundle.status`.
 
     - ``SUCCESS`` -- the ``success`` marker exists.
-    - ``FAILED`` -- no ``success`` marker, and a ``metadata.json`` section
-      has ``"status": "failed"``.
-    - ``IN_PROGRESS`` -- anything else: being written, or stopped before
-      `Bundle.finalize` (including a rerun that `Bundle.initialize`
-      restarted, and a run finalized with a status other than
-      ``"success"`` or ``"failed"``).
-
-    A `StrEnum`, so members compare equal to (and serialise as) their values,
-    e.g. ``BundleStatus.SUCCESS == "success"``.  A bundle that doesn't exist
-    has no status: `BundleStatusReport.status` is ``None``.
+    - ``FAILED`` -- no marker, and a ``metadata.json`` section has
+      ``"status": "failed"``.
+    - ``IN_PROGRESS`` -- anything else, e.g. a running or restarted run, or
+      one finalized with another status.
     """
 
     IN_PROGRESS = "in_progress"
@@ -34,36 +28,21 @@ class BundleStatus(StrEnum):
 
 @dataclass(frozen=True)
 class BundleStatusReport:
-    """What `Bundle.status` found for one bundle.
+    """What `Bundle.status` found for one bundle."""
 
-    Attributes
-    ----------
-    status : BundleStatus | None
-        The bundle's status, or ``None`` when the bundle doesn't exist.
-    exists : bool
-        Whether any object exists under the bundle's prefix.
-    has_success : bool
-        Whether the ``success`` marker exists.
-    has_metadata : bool
-        Whether ``metadata.json`` exists, even if it can't be parsed.
-    sections : Mapping[str, str | None]
-        The ``status`` of each ``metadata.json`` section, keyed by section
-        name (the DAG id); ``None`` for a section without a string
-        ``status``.  Empty when there is no readable ``metadata.json``.
-    """
-
-    status: BundleStatus | None
-    exists: bool
+    status: BundleStatus | None  # None when the bundle doesn't exist
+    exists: bool  # any object under the bundle's prefix
     has_success: bool
-    has_metadata: bool
+    has_metadata: bool  # even if metadata.json can't be parsed
+    # ``status`` of each metadata.json section (DAG id); None if not a string
     sections: Mapping[str, str | None] = field(default_factory=dict, hash=False)
 
 
 def _metadata_section_statuses(body: bytes, uri: str) -> dict[str, str | None]:
-    """Return ``{section: status}`` for the ``metadata.json`` *body* read from *uri*.
+    """Map each section of the ``metadata.json`` *body* to its ``status``.
 
-    Values that aren't JSON objects (sections) are skipped.  Unparseable
-    JSON, or a document that isn't an object, is logged and gives ``{}``.
+    Non-object sections are skipped.  Unparseable or non-object JSON is
+    logged (with *uri*) and gives ``{}``.
     """
     try:
         document = json.loads(body)

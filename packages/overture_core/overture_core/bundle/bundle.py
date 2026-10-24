@@ -14,12 +14,10 @@ Bundles follow a lifecycle:
    bundle is being rebuilt) and create a fresh ``metadata.json``.
 2. **Process** -- the pipeline writes data into ``data/`` and any other
    subdirectories.
-3. **Finalize** -- stamp ``metadata.json`` with the run's status and, only
-   when that status is ``"success"``, write a new ``success`` file.
+3. **Finalize** -- stamp ``metadata.json`` with the run's status and, if it
+   is ``"success"``, write a new ``success`` file.
 
-`Bundle.status` reads a bundle's place in that lifecycle back from storage
-as a `BundleStatus` (``in_progress``, ``success`` or ``failed``), together
-with whether the bundle exists and has ``metadata.json``.
+`Bundle.status` reports where a stored bundle is in this lifecycle.
 
 Each bundle type defines an ordered ``partitions`` dict whose keys
 become Hive-style ``key=value`` path segments appended to the root
