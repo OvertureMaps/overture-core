@@ -37,7 +37,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
 | `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
 | [`dataset`](overture_core/dataset/README.md) | Parsing, validating and rendering provider/resource dataset configs and the license policy, plus the `overture-datasets` CLI. |
-| `bundle` | The pipeline data bundle model: an S3 directory of `data/` plus `metadata.json` and a `success` marker under Hive-style partitions, with its path layout, lifecycle, partition resolution and retention/cleanup. Storage goes through a pluggable `BundleStore` (S3 by default; an in-memory store for tests and offline tools). Orchestrator concerns (default buckets, namespacing, the metadata writer, catalogue table drops) are passed in by the caller. |
+| `bundle` | The pipeline data bundle model: an S3 directory of `data/` plus `metadata.json` and a `success` marker under Hive-style partitions, with its path layout, lifecycle and status, partition resolution and retention/cleanup. Storage goes through a pluggable `BundleStore` (S3 by default; an in-memory store for tests and offline tools). Orchestrator concerns (default buckets, namespacing, the metadata writer, catalogue table drops) are passed in by the caller. |
 
 ## Jobs
 
