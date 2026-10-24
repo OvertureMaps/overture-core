@@ -1,4 +1,4 @@
-"""Tests for the framework-agnostic bundle model."""
+"""Tests for the bundle model."""
 
 import datetime as dt
 import json

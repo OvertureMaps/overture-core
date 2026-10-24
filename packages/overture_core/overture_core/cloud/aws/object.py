@@ -22,9 +22,8 @@ _DEFAULT_MAX_CONCURRENCY = 10
 def _s3(client: Any) -> Any:
     """Return *client*, or a new boto3 S3 client when it is ``None``.
 
-    Each new client opens its own connection pool, so callers making many
-    requests (for example a recursive directory walk) should create one
-    client and pass it to every helper call.
+    Each client opens its own connection pool, so callers making many
+    requests should create one client and pass it to every helper call.
     """
     return client if client is not None else boto3.client("s3")
 
@@ -411,8 +410,8 @@ class DeletePrefixError(RuntimeError):
     """S3 reported per-object failures while deleting a prefix.
 
     Attributes:
-        deleted: Objects deleted before the failing batch stopped the delete,
-            plus those in that batch that S3 did delete.
+        deleted: Number of objects deleted, including those S3 did delete in
+            the failing batch.
         errors: The ``Errors`` entries S3 returned for the failing batch.
     """
 
