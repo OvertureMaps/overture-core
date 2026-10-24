@@ -1,8 +1,7 @@
 """Shared fixtures for the bundle tests.
 
-Bundle tests run against an in-memory `BundleStore`.  `FakeS3` (a boto3
-client stand-in) is only for the tests of the default `S3BundleStore` path:
-client reuse and the store contract.
+Bundle tests use an in-memory `BundleStore`; `FakeS3`, a boto3 client
+stand-in, backs the `S3BundleStore` tests (client reuse, store contract).
 """
 
 import datetime as dt

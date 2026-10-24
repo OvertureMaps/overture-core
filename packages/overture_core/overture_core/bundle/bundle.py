@@ -117,9 +117,8 @@ class TableDropper(Protocol):
 def _store_or_default(store: BundleStore | None) -> BundleStore:
     """Return *store*, or a fresh `S3BundleStore` for one operation.
 
-    A fresh store per operation (rather than one per module) keeps every
-    request of a walk or check on one boto3 client without holding a client,
-    and its credentials, for the life of the process.
+    A per-operation store shares one boto3 client across a walk or check and
+    picks up fresh credentials on the next operation.
     """
     return store if store is not None else S3BundleStore()
 
@@ -127,8 +126,8 @@ def _store_or_default(store: BundleStore | None) -> BundleStore:
 def _with_store(bundle: _BundleT, store: BundleStore | None) -> _BundleT:
     """Attach *store* to *bundle* when given, and return the bundle.
 
-    Set as an attribute rather than passed to the constructor, so subclasses
-    whose ``__init__`` doesn't take ``store`` still work.
+    Assigned as an attribute so it works for subclasses whose ``__init__``
+    has no ``store`` parameter.
     """
     if store is not None:
         bundle.store = store
@@ -551,8 +550,7 @@ class Bundle:
         Optional prefix prepended to ``root_path`` (``<namespace>/<root>``),
         e.g. to isolate a developer's bundles.  Empty means no prefix.
     store : BundleStore | None
-        Keyword-only storage backend for this bundle.  ``None`` (the
-        default) opens a fresh `S3BundleStore` for each operation.
+        Storage backend; ``None`` opens a fresh `S3BundleStore` per operation.
     """
 
     BUNDLE_TYPE: str = "bundle"
@@ -1043,7 +1041,7 @@ class Bundle:
                 )
             scan_prefix = f"{scan_prefix}{key}={val}/"
 
-        store = self._open_store()  # one store (and client) for the whole scan
+        store = self._open_store()  # one client for the whole scan
 
         def _list_values(prefix: str, key: str) -> list[str]:
             """Non-empty ``key=`` values immediately under *prefix*."""
@@ -1332,8 +1330,8 @@ class Bundle:
                 partition (``PARTITION_KEYS``, else every given partition)
                 has no value, because the delete would then cover more than
                 this one bundle.
-            DeletePrefixError: If S3 failed to delete some objects (with the
-                default `S3BundleStore`).
+            DeletePrefixError: If an `S3BundleStore` failed to delete some
+                objects.
         """
         declared = self.PARTITION_KEYS or tuple(self._partitions)
         if not declared:
@@ -1456,11 +1454,10 @@ class Bundle:
         See `is_deletable` for the retention rules.  *table_dropper* is
         passed through to `delete` for each deleted bundle.
 
-        An explicit *store* is passed to `discover_all` and used for every
-        check and delete.  Without one, `discover_all` walks with its own
-        default store and the checks and deletes share a second one, so a
-        cleanup opens two S3 clients however many bundles it finds.
+        An explicit *store* is used for discovery and every check and delete;
+        without one, the checks and deletes share one default store.
         """
+        # Overrides of discover_all may have no ``store`` parameter.
         discover_kwargs = {} if store is None else {"store": store}
         bundles = cls.discover_all(
             bucket=bucket, namespace=namespace, **discover_kwargs
@@ -1551,7 +1548,7 @@ class Bundle:
 
         # Check the current run first: its own success marker means a rerun.
         bucket, prefix, current_run = _split_run_uri(s3_uri)
-        store = self._open_store()  # one store (and client) for the check
+        store = self._open_store()  # one client for the whole check
         if current_run and store.exists(bucket, f"{prefix}run={current_run}/success"):
             log.info(
                 "Current run='%s' already has a success file — "
@@ -1695,7 +1692,7 @@ class Bundle:
             (sid, bucket, _scan_prefix(parent)) for _, sid, bucket, parent, _ in info
         )
 
-        # (store, bucket, parent prefix) -> runs under it that have a success file
+        # (store id, bucket, parent prefix) -> runs under it with a success file
         successful: dict[tuple[int, str, str], set[str]] = {}
         for sid, bucket, prefix in scans:
             for k in stores[sid].iter_keys(bucket, prefix):
@@ -2120,8 +2117,7 @@ class ReleaseCandidateBundle(Bundle):
         Scans S3 for ``run=`` partitions under ``release={release}``,
         filtering to those that have both a ``success`` and a ``released``
         marker file.  Raises `PartitionResolutionError` when none is found.
-        The scan uses *store* (default: a fresh `S3BundleStore`); an explicit
-        *store* is also attached to the returned bundle.
+        An explicit *store* is used for the scan and attached to the result.
         """
         if root_path is None:
             root_path = cls.ROOT_PATH
