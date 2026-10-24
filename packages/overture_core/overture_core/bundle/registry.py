@@ -1,39 +1,15 @@
-"""Registry of bundle types, to go from an S3 path to a typed bundle.
+"""Map S3 paths to bundle types.
 
-Every registered type is a `Bundle` subclass whose class attributes
-describe its layout:
-
-- ``BUNDLE_TYPE`` -- the stage name recorded in ``metadata.json``.
-- ``ROOT_PATH`` -- the key prefix its bundles live under.
-- ``PARTITION_KEYS`` -- the ordered Hive partition keys below the root.
-- ``COMPONENTS`` -- the `BundleComponent` entries under each bundle.
-
-`BundleRegistry` indexes types by ``BUNDLE_TYPE`` and ``ROOT_PATH`` (they
-differ for `ThemeAssembleBundle`: ``theme_assemble`` under ``theme_stage``).
-`BundleRegistry.locate` places a path -- with or without a namespace
-before the root, at any depth -- in a type's hierarchy as a
-`BundleLocation`, and `BundleRegistry.bundle_from_uri` turns a bundle's
-path into an instance of its type.
-
-`DEFAULT_REGISTRY` holds the types in `overture_core.bundle.bundle` that
-have a fixed root: `SourceRawBundle`, `SourceIngestBundle`,
-`ThemeAssembleBundle`, `ThemePromoteBundle` and `ReleaseCandidateBundle`.
-`ScratchBundle` has no ``ROOT_PATH`` and isn't registered.
+`BundleRegistry` indexes `Bundle` subclasses by ``BUNDLE_TYPE`` and
+``ROOT_PATH``, which differ for `ThemeAssembleBundle` (``theme_assemble``
+under ``theme_stage``).
 
 Example
 -------
 >>> from overture_core.bundle.registry import DEFAULT_REGISTRY
 >>> loc = DEFAULT_REGISTRY.locate("s3://bkt/ns/theme_stage/theme=places")
->>> loc.bundle_type.BUNDLE_TYPE, loc.namespace, dict(loc.partitions)
-('theme_assemble', 'ns', {'theme': 'places'})
->>> loc.next_partition_key
-'run'
->>> bundle = DEFAULT_REGISTRY.bundle_from_uri(
-...     "s3://bkt/ns/theme_stage/theme=places/run=r1"
-... )
->>> [c.listing_name for c in bundle.COMPONENTS]  # doctest: +NORMALIZE_WHITESPACE
-['data/', 'metadata.json', 'success', 'changelog/', 'metrics/',
- 'metrics_summary/', 'summary.md']
+>>> loc.bundle_type.BUNDLE_TYPE, loc.namespace, loc.next_partition_key
+('theme_assemble', 'ns', 'run')
 """
 
 from __future__ import annotations
@@ -63,31 +39,16 @@ def _segments(path: str) -> list[str]:
 class BundleLocation:
     """Where a path falls in a registered bundle type's layout.
 
-    A location is *complete* when the path reaches a bundle (it has a value
-    for every partition key) and *partial* when it stops above one, such as
+    *Complete* when the path has every partition (it is at or inside a
+    bundle); *partial* when it stops above one, e.g.
     ``theme_stage/theme=places``.
-
-    Attributes
-    ----------
-    bundle_type : type[Bundle]
-        The registered type whose ``ROOT_PATH`` the path contains.
-    bucket : str
-        The S3 bucket, or ``""`` for a path given as a bare key.
-    namespace : str
-        The key segments before ``ROOT_PATH`` (``"ns"``, ``"a/b"``), or ``""``.
-    partitions : Mapping[str, str]
-        The partition values in the path, in ``PARTITION_KEYS`` order: the
-        first few keys for a partial location, every key for a complete one.
-    relative_path : str
-        What follows a complete location's base path
-        (``"data/part-0.parquet"``), or ``""``.
     """
 
     bundle_type: type[Bundle]
-    bucket: str
-    namespace: str = ""
+    bucket: str  # "" for a bare key
+    namespace: str = ""  # key segments before ROOT_PATH
     partitions: Mapping[str, str] = field(default_factory=dict, hash=False)
-    relative_path: str = ""
+    relative_path: str = ""  # path below a complete location's base path
 
     @property
     def root_prefix(self) -> str:
@@ -101,7 +62,7 @@ class BundleLocation:
 
     @property
     def uri(self) -> str:
-        """URI of the location itself: root, partitions and relative path."""
+        """URI of the location, including any relative path."""
         segments = [self.root_prefix]
         segments += [f"{key}={value}" for key, value in self.partitions.items()]
         if self.relative_path:
@@ -110,23 +71,17 @@ class BundleLocation:
 
     @property
     def is_complete(self) -> bool:
-        """Whether the path has a value for every partition key."""
         return len(self.partitions) == len(self.bundle_type.PARTITION_KEYS)
 
     @property
     def next_partition_key(self) -> str | None:
-        """The partition key one level down, or ``None`` when complete."""
+        """The partition key one level down; ``None`` when complete."""
         keys = self.bundle_type.PARTITION_KEYS
         return None if self.is_complete else keys[len(self.partitions)]
 
     @property
     def component(self) -> BundleComponent | None:
-        """The component ``relative_path`` is in, or ``None``.
-
-        ``None`` when there is no relative path, or when it isn't in one of
-        the type's ``COMPONENTS`` (an unlisted entry, or a path below a
-        file component).
-        """
+        """The listed component ``relative_path`` is in, or ``None``."""
         name, _, rest = self.relative_path.partition("/")
         if not name:
             return None
@@ -139,11 +94,7 @@ class BundleLocation:
         return component
 
     def bundle(self, *, store: BundleStore | None = None) -> Bundle:
-        """Return the bundle at this location, as its registered type.
-
-        *store* is an optional storage backend for the bundle.  Raises
-        ValueError for a partial location.
-        """
+        """Return the bundle at this location; raises ValueError if partial."""
         if not self.is_complete:
             raise ValueError(
                 f"{self.uri} is above a {self.bundle_type.BUNDLE_TYPE} bundle: "
@@ -158,18 +109,10 @@ class BundleLocation:
 
 
 class BundleRegistry:
-    """An immutable set of bundle types, indexed by ``BUNDLE_TYPE`` and ``ROOT_PATH``.
+    """An immutable set of bundle types, iterated in registration order.
 
-    Iterating yields the types in registration order.
-
-    Parameters
-    ----------
-    types : Iterable[type[Bundle]]
-        `Bundle` subclasses, each with a ``ROOT_PATH`` and
-        ``PARTITION_KEYS``.  Raises TypeError for anything else that isn't
-        a `Bundle` subclass, and ValueError for a type without a root or
-        partition keys, or for two types sharing a ``BUNDLE_TYPE`` or
-        ``ROOT_PATH``.
+    Each type needs a ``ROOT_PATH`` and ``PARTITION_KEYS``, and its
+    ``BUNDLE_TYPE`` and ``ROOT_PATH`` must be unique in the registry.
     """
 
     def __init__(self, types: Iterable[type[Bundle]]) -> None:
@@ -218,13 +161,12 @@ class BundleRegistry:
 
     @property
     def types(self) -> tuple[type[Bundle], ...]:
-        """The registered types, in registration order."""
         return self._types
 
     def get(self, name: str) -> type[Bundle]:
         """Return the type whose ``BUNDLE_TYPE`` or ``ROOT_PATH`` is *name*.
 
-        Raises KeyError when no registered type has that name.
+        Raises KeyError if none matches.
         """
         try:
             return self._by_name[name.strip("/")]
@@ -235,19 +177,13 @@ class BundleRegistry:
             ) from None
 
     def locate(self, path: str) -> BundleLocation | None:
-        """Place *path* in a registered type's hierarchy.
+        """Place *path* in a registered type's hierarchy, or return ``None``.
 
-        *path* is an ``s3://bucket/key`` URI or a bare key, at any depth:
-        a type's root (``theme_stage``), a partial position
-        (``theme_stage/theme=places``), a bundle, or an object inside one.
-        Any segments before the root are the namespace.
-
-        Scans the segments left to right for a registered root followed by
-        that type's partitions, as ``key=value`` segments in
-        ``PARTITION_KEYS`` order.  A root whose partitions stop short and
-        are followed by other segments isn't a match (it is part of a
-        namespace), and the scan moves on.  Returns ``None`` when no type
-        matches.  Raises ValueError for a URI scheme other than ``s3``.
+        *path* is an ``s3://`` URI or a bare key at any depth: a root, a
+        partial position, a bundle, or an object inside one.  Segments before
+        the root are the namespace; so is a root followed by a non-partition
+        segment before its last partition.  Raises ValueError for any scheme
+        besides ``s3``.
         """
         bucket, key = "", path
         if "://" in path:
@@ -270,12 +206,10 @@ class BundleRegistry:
         return None
 
     def bundle_from_uri(self, uri: str, *, store: BundleStore | None = None) -> Bundle:
-        """Return the bundle *uri* is in, as its registered type.
+        """Return the bundle *uri* is at or inside, as its registered type.
 
-        *uri* is the bundle's base URI or any path inside the bundle (see
-        `locate`).  *store* is an optional storage backend for the bundle.
-        Raises ValueError when no registered type matches, or when *uri*
-        stops above a bundle.
+        Raises ValueError if *uri* is under no registered root or stops above
+        a bundle.
         """
         location = self.locate(uri)
         if location is None:
