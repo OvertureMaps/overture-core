@@ -1,5 +1,6 @@
 """Unit tests for S3 object and prefix utilities."""
 
+import datetime
 from unittest.mock import MagicMock, patch
 
 import botocore.exceptions
@@ -7,14 +8,17 @@ import pytest
 
 from overture_core.cloud.aws.object import (
     CopyResult,
+    DeletePrefixError,
     build_s3_uri,
     bucket_writable,
     copy_prefix,
     delete_object,
     delete_prefix,
     get_object_bytes,
+    iter_keys,
     list_common_prefixes,
     object_exists,
+    object_last_modified,
     parse_s3_uri,
     prefix_exists,
     put_object,
@@ -91,6 +95,31 @@ class TestObjectExists:
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             with pytest.raises(botocore.exceptions.ClientError):
                 object_exists("bucket", "key")
+
+
+class TestObjectLastModified:
+    def test_returns_last_modified(self):
+        stamp = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+        s3 = MagicMock()
+        s3.head_object.return_value = {"LastModified": stamp}
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert object_last_modified("bucket", "key") == stamp
+        s3.head_object.assert_called_once_with(Bucket="bucket", Key="key")
+
+    def test_none_on_404(self):
+        s3 = MagicMock()
+        s3.head_object.side_effect = _not_found_error("HeadObject")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert object_last_modified("bucket", "key") is None
+
+    def test_reraises_other_client_errors(self):
+        s3 = MagicMock()
+        s3.head_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                object_last_modified("bucket", "key")
 
 
 class TestPrefixExists:
@@ -295,13 +324,20 @@ class TestDeletePrefix:
         s3.get_paginator.return_value.paginate.return_value = [
             {"Contents": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}]}
         ]
+        s3.delete_objects.return_value = {}
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
-            deleted = delete_prefix("bucket", "src")
+            deleted = delete_prefix("bucket", "/src/")
 
         assert deleted == 2
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix="src/"
+        )
         s3.delete_objects.assert_called_once_with(
             Bucket="bucket",
-            Delete={"Objects": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}]},
+            Delete={
+                "Objects": [{"Key": "src/a.parquet"}, {"Key": "src/b.parquet"}],
+                "Quiet": True,
+            },
         )
 
     def test_no_objects_skips_delete_call(self):
@@ -312,17 +348,52 @@ class TestDeletePrefix:
         assert deleted == 0
         s3.delete_objects.assert_not_called()
 
-    def test_empty_prefix_deletes_whole_bucket(self):
+    @pytest.mark.parametrize("prefix", ["", "/", "//"])
+    def test_empty_prefix_is_refused(self, prefix):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(ValueError, match="whole bucket"):
+                delete_prefix("bucket", prefix)
+        s3.get_paginator.assert_not_called()
+        s3.delete_objects.assert_not_called()
+
+    def test_per_key_errors_raise_and_stop(self):
         s3 = MagicMock()
         s3.get_paginator.return_value.paginate.return_value = [
-            {"Contents": [{"Key": "a.parquet"}]}
+            {"Contents": [{"Key": "src/a"}, {"Key": "src/b"}]},
+            {"Contents": [{"Key": "src/c"}, {"Key": "src/d"}]},
+            {"Contents": [{"Key": "src/e"}]},
+        ]
+        s3.delete_objects.side_effect = [
+            {},
+            {"Errors": [{"Key": "src/d", "Code": "AccessDenied", "Message": "no"}]},
         ]
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
-            deleted = delete_prefix("bucket", "")
+            with pytest.raises(DeletePrefixError, match="src/d: AccessDenied") as info:
+                delete_prefix("bucket", "src")
 
-        assert deleted == 1
+        assert info.value.deleted == 3
+        assert info.value.errors == [
+            {"Key": "src/d", "Code": "AccessDenied", "Message": "no"}
+        ]
+        assert s3.delete_objects.call_count == 2
+
+
+class TestIterKeys:
+    def test_yields_keys_across_pages(self):
+        s3 = MagicMock()
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "root/a"}, {"Key": "root/b/c"}]},
+            {},
+            {"Contents": [{"Key": "root/d"}]},
+        ]
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            keys = list(iter_keys("bucket", "root/"))
+
+        assert keys == ["root/a", "root/b/c", "root/d"]
+        s3.get_paginator.assert_called_once_with("list_objects_v2")
         s3.get_paginator.return_value.paginate.assert_called_once_with(
-            Bucket="bucket", Prefix=""
+            Bucket="bucket", Prefix="root/"
         )
 
 
@@ -413,3 +484,34 @@ class TestUploadDirectory:
         with pytest.raises(NotADirectoryError, match="Not a directory"):
             upload_directory(str(missing), "my-bucket")
         s3_client.upload_file.assert_not_called()
+
+
+class TestExplicitClient:
+    """A caller-supplied client is used instead of creating a new one."""
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda c: object_exists("bucket", "key", client=c),
+            lambda c: object_last_modified("bucket", "key", client=c),
+            lambda c: prefix_exists("bucket", "prefix/", client=c),
+            lambda c: list(iter_keys("bucket", "prefix/", client=c)),
+            lambda c: list_common_prefixes("bucket", "prefix/", client=c),
+        ],
+        ids=[
+            "object_exists",
+            "object_last_modified",
+            "prefix_exists",
+            "iter_keys",
+            "list_common_prefixes",
+        ],
+    )
+    def test_uses_given_client(self, call):
+        s3 = MagicMock()
+        s3.head_object.return_value = {"LastModified": None}
+        s3.list_objects_v2.return_value = {"KeyCount": 0}
+        s3.get_paginator.return_value.paginate.return_value = [{}]
+        with patch("overture_core.cloud.aws.object.boto3.client") as factory:
+            call(s3)
+        factory.assert_not_called()
+        assert s3.method_calls
