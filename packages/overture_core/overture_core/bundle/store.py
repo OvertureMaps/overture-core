@@ -1,19 +1,15 @@
 """Storage backends for the bundle model.
 
-`overture_core.bundle.bundle` never calls S3 directly: every existence
-check, listing, read, write and delete goes through a `BundleStore`.  Two
-implementations ship here:
+`overture_core.bundle.bundle` does all its object storage access through a
+`BundleStore`:
 
 - `S3BundleStore` -- the default, backed by `overture_core.cloud.aws.object`.
-  It opens one boto3 client lazily and reuses it for every call, so a walk
-  over thousands of prefixes shares one connection pool.
-- `InMemoryBundleStore` -- a dict-backed store for tests and for tools that
-  want to drive the model without AWS.
+- `InMemoryBundleStore` -- dict-backed, for tests and offline tools.
 
-Every method takes an explicit *bucket*, so one store can serve bundles in
-several buckets.  Keys and prefixes are bucket-relative and ``/``-delimited.
-A bundle's components (``data/``, ``changelog/``, ...) are its immediate
-children: list them with `BundleStore.list_children` and find one with
+Every method takes an explicit *bucket*, so one store can serve several
+buckets.  Keys and prefixes are bucket-relative and ``/``-delimited.  A
+bundle's components (``data/``, ``changelog/``, ...) are the children of its
+base prefix: list them with `BundleStore.list_children` and test one with
 `BundleStore.prefix_exists` on ``<base_prefix>/<component>/``.
 """
 
@@ -58,9 +54,9 @@ class BundleStore(Protocol):
     def list_children(self, bucket: str, prefix: str) -> list[str]:
         """Return the immediate "subdirectory" names one level under *prefix*.
 
-        Names have no *prefix* and no trailing ``/``, are sorted, and skip
-        empty segments and the ``$folder$`` placeholder.  *prefix* is matched
-        as-is, so end it with ``/``.
+        Names exclude *prefix* and the trailing ``/`` and are sorted; empty
+        segments and the ``$folder$`` placeholder are skipped.  *prefix* is
+        matched as-is, so end it with ``/``.
         """
         ...
 
@@ -103,10 +99,9 @@ class BundleStore(Protocol):
 class S3BundleStore:
     """`BundleStore` backed by S3 through `overture_core.cloud.aws.object`.
 
-    Pass *client* to reuse an existing boto3 S3 client; otherwise one is
-    created on first use and reused for the life of the store.  Each new
-    client opens its own connection pool, so create one store per unit of
-    work (a walk, a cleanup, a batch check) rather than one per request.
+    Uses *client* if given, else creates one on first use and keeps it for
+    the life of the store.  Each client has its own connection pool, so share
+    one store across a unit of work (a walk, a cleanup, a batch check).
     """
 
     def __init__(self, *, client: Any = None) -> None:
@@ -162,10 +157,9 @@ def _utcnow() -> datetime.datetime:
 class InMemoryBundleStore:
     """Dict-backed `BundleStore` for tests and offline tools.
 
-    Objects live in memory, keyed by ``(bucket, key)``, with the time they
-    were written.  *clock* supplies that time (default: now, in UTC); pass
-    ``last_modified=`` to `write` to seed a specific one.  Listings are
-    sorted, like S3's.  `presigned_url` returns an opaque ``memory://`` URL.
+    *clock* stamps each write (default: now, in UTC); `write` also takes
+    ``last_modified=`` to seed one.  Listings are sorted, like S3's.
+    `presigned_url` returns an opaque ``memory://`` URL.
     """
 
     def __init__(self, *, clock: Callable[[], datetime.datetime] | None = None) -> None:

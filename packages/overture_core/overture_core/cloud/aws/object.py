@@ -351,9 +351,9 @@ def presigned_url(
 ) -> str:
     """Return a presigned ``GetObject`` URL for ``bucket/key``.
 
-    The URL is signed locally with the caller's credentials and grants
-    read access for *expires_in* seconds; nothing checks that the object
-    exists.  *client* is an optional boto3 S3 client to reuse; see `_s3`.
+    Signed locally with the caller's credentials and valid for *expires_in*
+    seconds; S3 checks the object only when the URL is used.  *client* is an
+    optional boto3 S3 client to reuse; see `_s3`.
     """
     return _s3(client).generate_presigned_url(
         "get_object",
