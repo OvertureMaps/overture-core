@@ -21,6 +21,7 @@ from overture_core.cloud.aws.object import (
     object_last_modified,
     parse_s3_uri,
     prefix_exists,
+    presigned_url,
     put_object,
     upload_directory,
     write_marker,
@@ -267,6 +268,24 @@ class TestPutObject:
         )
 
 
+class TestPresignedUrl:
+    def test_signs_get_object(self):
+        s3 = MagicMock()
+        s3.generate_presigned_url.return_value = "https://signed"
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert presigned_url("bucket", "a/b.json") == "https://signed"
+        s3.generate_presigned_url.assert_called_once_with(
+            "get_object",
+            Params={"Bucket": "bucket", "Key": "a/b.json"},
+            ExpiresIn=3600,
+        )
+
+    def test_custom_expiry(self):
+        s3 = MagicMock()
+        presigned_url("bucket", "key", expires_in=60, client=s3)
+        assert s3.generate_presigned_url.call_args.kwargs["ExpiresIn"] == 60
+
+
 class TestCopyPrefix:
     def test_copies_all_objects_under_prefix(self):
         s3 = MagicMock()
@@ -497,6 +516,12 @@ class TestExplicitClient:
             lambda c: prefix_exists("bucket", "prefix/", client=c),
             lambda c: list(iter_keys("bucket", "prefix/", client=c)),
             lambda c: list_common_prefixes("bucket", "prefix/", client=c),
+            lambda c: delete_object("bucket", "key", client=c),
+            lambda c: write_marker("bucket", "key", client=c),
+            lambda c: get_object_bytes("bucket", "key", client=c),
+            lambda c: put_object("bucket", "key", b"x", client=c),
+            lambda c: presigned_url("bucket", "key", client=c),
+            lambda c: delete_prefix("bucket", "prefix", client=c),
         ],
         ids=[
             "object_exists",
@@ -504,13 +529,22 @@ class TestExplicitClient:
             "prefix_exists",
             "iter_keys",
             "list_common_prefixes",
+            "delete_object",
+            "write_marker",
+            "get_object_bytes",
+            "put_object",
+            "presigned_url",
+            "delete_prefix",
         ],
     )
     def test_uses_given_client(self, call):
         s3 = MagicMock()
         s3.head_object.return_value = {"LastModified": None}
         s3.list_objects_v2.return_value = {"KeyCount": 0}
-        s3.get_paginator.return_value.paginate.return_value = [{}]
+        s3.get_paginator.return_value.paginate.return_value = [
+            {"Contents": [{"Key": "prefix/a"}]}
+        ]
+        s3.delete_objects.return_value = {}
         with patch("overture_core.cloud.aws.object.boto3.client") as factory:
             call(s3)
         factory.assert_not_called()
