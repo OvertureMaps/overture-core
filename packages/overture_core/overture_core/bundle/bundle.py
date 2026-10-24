@@ -36,27 +36,19 @@ Class hierarchy
 - `ReleaseBundle` -- final published release.
 - `ScratchBundle` -- ephemeral debug/intermediate output, labeled by purpose.
 
-Framework-agnostic model
-------------------------
-This module has no dependency on Airflow, Jinja, environment variables, or
-any deployment-specific bucket names; S3 access goes through
-`overture_core.cloud.aws.object`.  Everything deployment-specific is passed
-in explicitly:
+Deployment-specific inputs
+--------------------------
+These are passed in explicitly; orchestrators can subclass the bundle
+classes to supply defaults.
 
-- ``bucket`` and ``namespace`` are plain constructor arguments.  A non-empty
+- ``bucket`` and ``namespace`` are constructor arguments.  A non-empty
   ``namespace`` is prepended to the root path (``<namespace>/<root>``).
 - `Bundle.initialize` / `Bundle.finalize` take a `BundleMetadata` writer
-  (and the batch variants a ``metadata_factory``) instead of building one.
+  (the batch variants take a ``metadata_factory``).
 - `Bundle.delete` / `Bundle.cleanup_all` take an optional `TableDropper`
   to drop any catalogue tables registered for a bundle.
 - `Bundle.initialize` takes the ``datasets_dir`` used to enrich input
   provenance from the ``overture_core`` Dataset catalogue.
-- `Bundle.needs_processing` checks a rendered URI (``self.base_uri`` or an
-  explicit ``base_uri``).
-
-Orchestrator-specific adapters subclass these classes to supply default
-buckets, a per-user namespace, a metadata writer, and a table dropper (e.g.
-tf-data-platform's Airflow adapter, ``overture_airflow.bundle_model``).
 """
 
 from __future__ import annotations
@@ -97,8 +89,7 @@ class PartitionResolutionError(Exception):
 class BundleMetadata(Protocol):
     """Writer for a bundle's ``metadata.json``, injected into the lifecycle methods.
 
-    Each instance is bound to one bundle's ``base_uri``.  tf-data-platform's
-    Airflow adapter supplies ``overture_airflow.metadata.Metadata``.
+    Each instance is bound to one bundle's ``base_uri``.
     """
 
     def init(
@@ -142,12 +133,9 @@ _NaturalKey = tuple[tuple[tuple[int, int | str], ...], str]
 def _natural_key(value: str) -> _NaturalKey:
     """Sort key ordering embedded integers numerically: ``v1.9.0 < v1.16.0``.
 
-    Partition values are compared with this key whenever the model picks the
-    newest or older ones (latest resolution, previous-partition lookup,
-    retention).  Fixed-width values such as dates and ``ts_nodash`` run ids
-    order exactly as they do as plain strings; variable-width numbers such as
-    schema versions order numerically.  The raw value breaks ties
-    (``"01"`` vs ``"1"``).
+    Used wherever partition values are ordered.  Fixed-width values (dates,
+    ``ts_nodash`` run ids) keep their plain-string order; the raw value breaks
+    ties (``"01"`` vs ``"1"``).
     """
     tokens = tuple(
         (0, int(part)) if i % 2 else (1, part)
@@ -180,15 +168,12 @@ def _enrich_inputs_from_dataset(
     input_bundles: list[dict[str, str]],
     datasets_dir: str | PathLike[str],
 ) -> None:
-    """Enrich input entries with Dataset catalogue information.
+    """Add Dataset catalogue ``provider``/``resource`` sections to metadata inputs.
 
-    For every input that does not already carry top-level ``provider`` and
-    ``resource`` sections and whose corresponding *input_bundles* entry
-    carries ``provider`` and ``resource``, look up the Dataset under
-    *datasets_dir* and store the full provider and resource sections so
-    downstream consumers have provenance data.
+    An input is enriched when it lacks either section and its *input_bundles*
+    entry names a provider and resource.  A failed catalogue lookup is logged
+    as a warning.
     """
-    # Build a lookup: path -> bundle info dict
     bundle_lookup = {b["path"]: b for b in input_bundles}
 
     section = metadata.read_dag_section()
@@ -197,7 +182,7 @@ def _enrich_inputs_from_dataset(
 
     for entry in inputs:
         if "provider" in entry and "resource" in entry:
-            continue  # already carries catalogue provenance — nothing to enrich
+            continue
         path = entry.get("path", "")
         bundle_info = bundle_lookup.get(path, {})
         provider = bundle_info.get("provider", "")
@@ -235,26 +220,20 @@ def _resolve_partitions(
     *,
     client: Any = None,
 ) -> dict[str, str]:
-    """Resolve partition values by scanning S3 directories.
+    """Resolve partition values by scanning S3 directories under *root_path*.
 
-    For each key in *partition_keys* (processed in order), if the
-    corresponding entry in *overrides* is missing or ``"latest"``,
-    the latest ``key=<value>`` directory is discovered under the
-    current scan prefix.  Otherwise the override value is used
-    directly.
+    Keys in *partition_keys* are resolved in order.  An *overrides* value is
+    used as-is; a missing or ``"latest"`` value picks the newest
+    ``key=<value>`` directory, backtracking to older candidates when one has
+    no viable deeper path.
 
-    *required_markers* names marker files that must all be present at the
-    resolved leaf.  Defaults to ``("success",)``.  Pass ``()`` to require
-    only that the directory exists.
+    *required_markers* must all exist at the resolved leaf; ``()`` requires
+    only that it has content.  *client* is an optional boto3 S3 client,
+    reused for every request of the walk.
 
-    Non-terminal partitions use backtracking: if the latest candidate
-    at one level leads to no viable path at deeper levels, older
-    candidates are tried.
-
-    *client* is an optional boto3 S3 client; one is created when omitted,
-    and every request of the walk reuses it.
-
-    Returns a dict mapping each partition key to its resolved value.
+    Returns a dict mapping each partition key to its resolved value.  Raises
+    `PartitionResolutionError`, naming where the search stopped, when no
+    viable path exists.
     """
     overrides = overrides or {}
     s3 = client if client is not None else boto3.client("s3")
@@ -277,13 +256,12 @@ def _resolve_partitions(
         return dirs
 
     def _is_valid_leaf(prefix: str) -> bool:
-        """Check whether *prefix* is a valid resolved leaf."""
+        """True if *prefix* has every required marker, or any content if none."""
         for marker in required_markers:
             if not object_exists(bucket, f"{prefix}{marker}", client=s3):
                 log.debug("Marker %r not found at s3://%s/%s", marker, bucket, prefix)
                 return False
         if not required_markers:
-            # No marker requirements — any existing content counts.
             exists = prefix_exists(bucket, prefix, client=s3)
             log.debug("Directory exists at s3://%s/%s: %s", bucket, prefix, exists)
             return exists
@@ -292,14 +270,12 @@ def _resolve_partitions(
     def _resolve(prefix: str, keys: list[str]) -> dict[str, str] | None:
         """Recursively resolve *keys* under *prefix*.
 
-        Returns a dict of resolved values, or ``None`` if no viable
-        path exists.  On failure, *failure* describes where the search
-        stopped: the deepest explicit value without a valid leaf, or the
-        outermost ``latest`` level that ran out of candidates.
+        Returns the resolved values, or ``None`` with *failure* set to where
+        the search stopped: the deepest explicit value without a valid leaf,
+        or the outermost ``latest`` level that ran out of candidates.
         """
         nonlocal failure
         if not keys:
-            # All keys resolved — verify the leaf is valid.
             valid = _is_valid_leaf(prefix)
             log.debug("Leaf s3://%s/%s valid=%s", bucket, prefix, valid)
             if not valid:
@@ -315,7 +291,6 @@ def _resolve_partitions(
         override = overrides.get(key, "latest")
 
         if override and override.lower() != "latest":
-            # Explicit value — descend directly.
             child_prefix = f"{prefix}{key}={override}/"
             log.info(
                 "Using override %s='%s', descending into s3://%s/%s",
@@ -347,8 +322,7 @@ def _resolve_partitions(
                 return None
             return {key: override, **deeper}
 
-        # "latest" mode — try candidates from newest to oldest.  An empty
-        # value (``key=``) cannot form a bundle path, so it is never a candidate.
+        # "latest": newest first; an empty value (``key=``) can't form a bundle path.
         candidates = [
             d
             for d in _list_subdirs(prefix)
@@ -385,7 +359,7 @@ def _resolve_partitions(
             f"No {key}= directory with required markers [{markers_desc}] found "
             f"under s3://{bucket}/{prefix} ({len(candidates)} candidate(s) checked)"
         )
-        return None  # nothing found at this level
+        return None
 
     markers_desc = ", ".join(repr(m) for m in required_markers) or "none"
     failure = ""
@@ -463,10 +437,9 @@ def _walk_partitions(
 ) -> Iterator[dict[str, str]]:
     """Yield every ``{key: value}`` combination present under *root_prefix*.
 
-    Walks Hive-style ``key=value`` directories in ``partition_keys`` order.
-    A bundle is considered present whenever *all* partition keys have been
-    matched (regardless of marker files); success-status filtering happens
-    in ``is_deletable``.
+    Walks Hive-style ``key=value`` directories in *partition_keys* order and
+    yields each full match whatever markers it has; `is_deletable` checks
+    success.
     """
     s3 = boto3.client("s3")  # one client (and connection pool) for the walk
 
@@ -503,7 +476,8 @@ class Bundle:
 
     The path is composed of ``root_path`` followed by Hive-style
     ``key=value`` segments for each entry in the ``partitions`` dict.
-    Partition values that are empty strings are omitted from the path.
+    Partition path properties raise ValueError while any value is empty;
+    call `resolve_partitions` first.
 
     Parameters
     ----------
@@ -513,8 +487,8 @@ class Bundle:
         S3 key prefix before any partition segments
         (e.g. ``"datasets"``, ``"feeds"``).
     partitions : dict[str, str] | None
-        Ordered mapping of partition key to value.  Each non-empty
-        entry becomes a ``key=value`` path segment.
+        Ordered mapping of partition key to value.  Each entry becomes a
+        ``key=value`` path segment.
     namespace : str
         Optional prefix prepended to ``root_path`` (``<namespace>/<root>``),
         e.g. to isolate a developer's bundles.  Empty means no prefix.
@@ -522,16 +496,13 @@ class Bundle:
 
     BUNDLE_TYPE: str = "bundle"
 
-    # S3 key prefix (before any namespace) where bundles of this type are rooted.
-    # Subclasses override.  Empty means the subclass does not participate in
-    # generic discovery / cleanup.
+    # Bundle root before any namespace; required by discover_all / cleanup_all.
     ROOT_PATH: str = ""
 
-    # Ordered tuple of partition key names appended as Hive segments.
-    # Subclasses override.
+    # Partition key names, in path order.
     PARTITION_KEYS: tuple[str, ...] = ()
 
-    # Additional directory names beyond ``data``.  Subclasses override this.
+    # Bundle subdirectories besides ``data``.
     _EXTRA_DIRS: tuple[str, ...] = ()
 
     def __init__(
@@ -580,8 +551,8 @@ class Bundle:
     ) -> Self:
         """Create a bundle from a full ``s3://bucket/root_path`` URI.
 
-        The URI path is the bundle root as-is (any namespace included).
-        Works on every subclass; see `_from_root`.
+        The URI path is the bundle root as-is (any namespace included); see
+        `_from_root` for how subclasses take *partitions*.
 
         Parameters
         ----------
@@ -604,8 +575,8 @@ class Bundle:
         ``{"theme": "places", "run": "X"}``.
 
         Raises ValueError for a non-partition segment after partition
-        segments (an ambiguous root), or for a partition key the class
-        does not have.
+        segments (an ambiguous root), or for a key outside the subclass's
+        ``PARTITION_KEYS``.
         """
         parsed = urlparse(base_uri.rstrip("/"))
         root_segments: list[str] = []
@@ -632,9 +603,8 @@ class Bundle:
     ) -> Self:
         """Build an instance of *cls* rooted exactly at *root_path*.
 
-        Subclasses take their partitions as named constructor arguments
-        (``PARTITION_KEYS``), so partitions are passed that way; a key the
-        subclass does not have raises ValueError.  No namespace is added.
+        Subclasses receive partitions as ``PARTITION_KEYS`` keyword
+        arguments; any other key raises ValueError.
         """
         partitions = dict(partitions or {})
         if not cls.PARTITION_KEYS:
@@ -769,7 +739,7 @@ class Bundle:
         return path
 
     # ------------------------------------------------------------------
-    # Plain Python lifecycle methods
+    # Lifecycle methods
     # ------------------------------------------------------------------
 
     def _input_bundle_info(
@@ -851,8 +821,6 @@ class Bundle:
         unset value resolves to the newest one that does.  When resolution
         fails, `PartitionResolutionError` names the path where it stopped.
 
-        After this call, ``self.base_uri`` reflects the fully-resolved path.
-
         Parameters
         ----------
         overrides : dict[str, str] | None
@@ -889,13 +857,10 @@ class Bundle:
         required_markers: tuple[str, ...] = ("success",),
         same_value_fallback: bool = False,
     ) -> str | None:
-        """Find the most recent usable prior *partition_key* and return its data URI.
+        """Return the ``data_uri`` from `find_previous_partition`, or ``None``.
 
-        Thin wrapper over `find_previous_partition` for callers that only
-        need the URI.  Returns ``None`` both when no prior partition exists and
-        when none of them are usable — use `find_previous_partition` when
-        those two cases must be told apart, or when the caller needs to know
-        which kind of baseline it got back.
+        Use `find_previous_partition` to tell "no prior partition" from "none
+        usable", or to get the baseline kind.
         """
         return self.find_previous_partition(
             partition_key=partition_key,
@@ -911,40 +876,31 @@ class Bundle:
     ) -> dict:
         """Find the most recent usable prior value for *partition_key*.
 
-        Scans S3 for all values of *partition_key* under the current bundle's
-        prefix and walks them newest-first, returning the first whose remaining
-        partitions (e.g. ``run``) resolve and whose *required_markers* are all
-        present.  A prior value missing its markers is skipped rather than
-        ending the search, so one missing success marker doesn't hide an older
-        good baseline behind it.
+        Prior values under the current bundle's prefix are tried newest
+        first; the first whose later partitions (e.g. ``run``) resolve with
+        all *required_markers* wins.  An unusable value is skipped and the
+        search continues with older ones.
 
-        When *same_value_fallback* is set and nothing older is usable, the
-        search widens to the sub-partitions of the **current** value — the
-        newest successful earlier ``run=`` under the current ``version=``, say.
-        That is a different comparison (same source snapshot, different
-        pipeline run), so it is reported back as ``baseline_kind="same"`` and
-        callers are expected to label it rather than pass it off as a
-        version-over-version diff.  Retention makes this worth having: bucket
-        expiration removes older ``version=`` prefixes long before the current
-        version's earlier runs age out.
+        With *same_value_fallback*, if no older value is usable, the newest
+        usable earlier sub-partition under the **current** value is used
+        (e.g. an earlier ``run=`` of the same ``version=``).  That compares
+        one source snapshot across two pipeline runs, so it is reported as
+        ``baseline_kind="same"`` and callers should label it as such.  It
+        covers buckets whose expiration has removed the older values.
 
         Returns a dict with:
 
         ``data_uri``
-            ``data/`` URI of the resolved bundle, or ``None`` if nothing usable
-            was found.
+            ``data/`` URI of the resolved bundle, or ``None``.
         ``prior_values``
-            Every prior value found, newest first — empty only when this is
-            genuinely the first partition.
+            Every prior value found, newest first; empty for a first partition.
         ``rejected``
-            Prior values that were skipped for lack of a marker or a resolvable
-            run.  ``data_uri is None`` with a non-empty ``rejected`` means prior
-            data exists but none of it was marked successful, which is an
-            anomaly rather than a first run.
+            Prior values skipped for lack of a marker or a resolvable run.
+            ``data_uri is None`` with a non-empty ``rejected`` means prior
+            data exists but none succeeded: an anomaly, not a first run.
         ``baseline_kind``
-            ``"previous"`` when ``data_uri`` came from an older *partition_key*
-            value, ``"same"`` when it came from the same-value fallback, and
-            ``None`` when nothing was found.
+            ``"previous"`` (older *partition_key* value), ``"same"``
+            (same-value fallback), or ``None`` when nothing was found.
 
         Parameters
         ----------
@@ -954,10 +910,14 @@ class Bundle:
             Marker files the resolved directory must contain.  Defaults to
             ``("success",)``.  Pass ``()`` to require only existence.
         same_value_fallback : bool
-            When no older value is usable, fall back to the newest successful
-            earlier sub-partition under the current value.  Off by default:
-            the two baselines answer different questions, so a caller has to
-            opt in and handle the distinction.
+            Enable the same-value fallback.  Opt-in because it measures a
+            different thing from a previous-value baseline.
+
+        Raises
+        ------
+        ValueError
+            If *partition_key* is not a partition, or it or an earlier
+            partition has no value.
         """
         partition_keys = list(self._partitions.keys())
         if partition_key not in partition_keys:
@@ -973,7 +933,6 @@ class Bundle:
                 f"calling resolve_previous_partition()."
             )
 
-        # Build scan prefix up to (but not including) the target partition
         scan_prefix = f"{self._root_path}/"
         for key in partition_keys:
             if key == partition_key:
@@ -989,7 +948,7 @@ class Bundle:
         s3 = boto3.client("s3")  # one client (and connection pool) for the scan
 
         def _list_values(prefix: str, key: str) -> list[str]:
-            """Every value present for ``key=`` immediately under *prefix*."""
+            """Non-empty ``key=`` values immediately under *prefix*."""
             values: list[str] = []
             for name in list_common_prefixes(self.bucket, prefix, client=s3):
                 if name.startswith(f"{key}="):
@@ -1005,7 +964,6 @@ class Bundle:
         ) -> str | None:
             """Resolved data URI for one candidate value, or None if unusable."""
             if not keys_after:
-                # Target is the last partition — just check for the markers.
                 leaf_prefix = f"{base_prefix}{key}={value}/"
                 for marker in required_markers:
                     leaf_key = f"{leaf_prefix}{marker}"
@@ -1014,10 +972,6 @@ class Bundle:
                         return None
                 return f"s3://{self.bucket}/{leaf_prefix}data"
 
-            # Resolve remaining partitions using the standard resolver.
-            # _resolve_partitions raises rather than returning None when nothing
-            # under this value has the required markers; that's this value being
-            # unusable, not a fatal error, so we swallow it and try an older one.
             resolve_prefix = f"{base_prefix}{key}={value}"
             try:
                 result = _resolve_partitions(
@@ -1042,21 +996,13 @@ class Bundle:
             return f"s3://{self.bucket}/{resolve_prefix}/{suffix}/data"
 
         def _same_value_baseline() -> str | None:
-            """Newest usable earlier sub-partition under the *current* value.
-
-            Only reached when nothing older than *current_value* survived —
-            typically because bucket expiration removed it while the current
-            value's earlier runs are still around.  Compares the same source
-            snapshot across two pipeline runs, which is a different measurement
-            from version-over-version churn; the caller labels it as such.
-            """
+            """Data URI of the newest usable earlier sibling under *current_value*."""
             if not remaining_keys:
                 return None
             sibling_key = remaining_keys[0]
             deeper_keys = remaining_keys[1:]
             current_prefix = f"{scan_prefix}{partition_key}={current_value}/"
-            # Only look *behind* the current run — the bundle being written now
-            # is not its own baseline.
+            # Earlier siblings only: the current bundle is the one being written.
             current_sibling = self._partitions.get(sibling_key, "")
             siblings = sorted(
                 (
@@ -1085,7 +1031,6 @@ class Bundle:
                     return data_uri
             return None
 
-        # Every prior value, newest first — the order we walk them in.
         candidates = _list_values(scan_prefix, partition_key)
         current_order = _natural_key(current_value)
         prior_values = sorted(
@@ -1157,7 +1102,8 @@ class Bundle:
     def age_days(self, now: datetime.datetime | None = None) -> float | None:
         """Age in days from S3 LastModified of the success (or metadata) file.
 
-        Returns None if neither file exists.  ``now`` is injectable for tests.
+        Returns None if neither file exists.  *now* defaults to the current
+        UTC time.
         """
         for uri in (self.success_uri, self.metadata_uri):
             _, key = parse_s3_uri(uri)
@@ -1178,15 +1124,13 @@ class Bundle:
     ) -> tuple[bool, str]:
         """Decide whether this bundle can be deleted, given peers in its partition group.
 
-        ``siblings`` should be all other bundles sharing this bundle's
-        ``retention_group_key()``.  This bundle may also appear in the list
-        (it is filtered out here).
+        ``siblings`` should be all bundles sharing this bundle's
+        ``retention_group_key()``; it may include this bundle.
 
-        ``successful`` is an optional snapshot of the bundles in the group
-        that have a success file.  When omitted, each bundle in the group is
-        checked once (one S3 HEAD each).  Pass the same snapshot when
-        evaluating every bundle of a group, as `cleanup_all` does, to check
-        each bundle once in total and decide against a consistent view.
+        ``successful`` is an optional snapshot of the group's bundles that
+        have a success file; when omitted, each is checked with an S3 HEAD.
+        Share one snapshot across a group, as `cleanup_all` does, for
+        consistent decisions.
 
         Partition values are ordered naturally (`_natural_key`), so schema
         ``v1.16.0`` is newer than ``v1.9.0``.
@@ -1200,9 +1144,11 @@ class Bundle:
         3. Any other bundle ordered before the latest successful bundle is
            deletable iff ``age_days >= min_age_days``.  Age comes from the
            ``success`` file, or from ``metadata.json`` for a bundle without
-           one, so a rerun that `initialize` just restarted (success removed,
-           metadata rewritten) is not deleted mid-write.  A bundle with
-           neither file is kept, because its age is unknown.
+           one, so a rerun that `initialize` just restarted is kept while it
+           writes.  A bundle with neither file is kept, because its age is
+           unknown.
+
+        Returns ``(deletable, reason)``.
         """
         group = [b for b in siblings if b is not self] + [self]
         if successful is None:
@@ -1241,7 +1187,7 @@ class Bundle:
     def retention_order_key(self) -> tuple[str, ...]:
         """Return partition values used to decide which bundle is latest.
 
-        Compare them with `_natural_key` per value, not as plain strings.
+        Compare each value with `_natural_key`.
         """
         values = tuple(
             self._partitions[k]
@@ -1278,11 +1224,9 @@ class Bundle:
     ) -> DeleteResult:
         """Delete this bundle's S3 objects and optionally its catalogue tables.
 
-        Idempotent: safe to call on an already-deleted bundle.
-
-        When *table_dropper* is given it is called first to drop any tables
-        registered for this bundle.  Table drops are best-effort: a failure
-        is logged and the S3 delete still proceeds.
+        Idempotent: safe to call on an already-deleted bundle.  *table_dropper*
+        runs first and is best-effort: a failure is logged and the S3 delete
+        proceeds.
 
         Args:
             dry_run: If True, log actions without executing them.
@@ -1368,16 +1312,14 @@ class Bundle:
         bucket: str,
         namespace: str = "",
     ) -> list[Bundle]:
-        """Discover all bundles of this type under the standard root prefix.
+        """Discover all bundles of this type under ``<namespace>/<ROOT_PATH>``.
 
-        Walks ``bucket/<namespace>/<ROOT_PATH>`` expanding every
-        ``key=value`` combination for the ordered ``PARTITION_KEYS``.
-        Returns instances constructed via `Bundle.from_path`, so the
-        results are always concrete ``Bundle`` objects (subclass-specific
-        constructor arguments are not required).
+        Returns one bundle per ``key=value`` combination of ``PARTITION_KEYS``,
+        with or without a success marker.  Results are plain `Bundle`
+        instances carrying this class's ``BUNDLE_TYPE``.
 
-        Subclasses without a defined ``ROOT_PATH`` / ``PARTITION_KEYS``
-        cannot be discovered generically and must override this method.
+        Raises NotImplementedError unless ``ROOT_PATH`` and ``PARTITION_KEYS``
+        are set; such subclasses must override this method.
         """
         if not cls.ROOT_PATH or not cls.PARTITION_KEYS:
             raise NotImplementedError(
@@ -1423,16 +1365,14 @@ class Bundle:
             bucket,
         )
 
-        # Group by stable partitions so different versions/runs of the same
-        # logical bundle land together.
+        # Versions/runs of the same logical bundle share a group.
         groups: dict[tuple[tuple[str, str], ...], list[Bundle]] = {}
         for b in bundles:
             groups.setdefault(b.retention_group_key(), []).append(b)
 
         report = CleanupReport(bundle_type=cls.BUNDLE_TYPE, dry_run=dry_run)
         for key, group in groups.items():
-            # One success check per bundle, shared by every decision in the
-            # group so they all see the same snapshot.
+            # One success snapshot per group, shared by every decision in it.
             successful = [b for b in group if b.is_successful()]
             for b in group:
                 deletable, reason = b.is_deletable(
@@ -1470,37 +1410,24 @@ class Bundle:
     ) -> bool:
         """Determine whether data processing should proceed for this bundle.
 
-        Returns ``True`` (proceed) in any of these cases:
-
-        - Any override value is not ``"latest"``.
-        - The current run's directory already has a success file (this
-          run_id was used before — allow reprocessing).
-        - No ``run=`` directory under the bundle's version path has a
-          success file.
-
-        Returns ``False`` (skip downstream) only when all overrides are
-        ``"latest"`` **and** a *different* run already completed
-        successfully.
+        Returns ``True`` (proceed) when any *partitions* value other than
+        ``"latest"`` is set, when the current run already has a success
+        marker (a rerun), or when no sibling ``run=`` has one.  Returns
+        ``False`` (skip downstream) when another run already succeeded.
+        Only the exact ``run=<id>/success`` key counts as a marker.
 
         Parameters
         ----------
         partitions : dict[str, str] | None
-            Partition overrides.  If any value is not ``"latest"``,
-            processing is forced regardless of S3 state.
+            Partition overrides; any value other than ``"latest"`` forces
+            processing.
         base_uri : str | None
             Fully rendered bundle URI to check.  Defaults to
             ``self.base_uri``; pass an explicit value when ``base_uri``
             contains placeholders that the caller has rendered.
-
-        Returns
-        -------
-        bool
-            ``True`` when processing should proceed.  ``False`` to
-            short-circuit (skip) the downstream tasks.
         """
         s3_uri = base_uri if base_uri is not None else self.base_uri
 
-        # If any override is not "latest", force reprocessing.
         for key, value in (partitions or {}).items():
             if value and value.lower() != "latest":
                 log.info(
@@ -1511,9 +1438,7 @@ class Bundle:
                 )
                 return True
 
-        # Detect a rerun of the current run_id first, so the answer does not
-        # depend on the order in which S3 lists the run= directories.  Markers
-        # are exact keys: ``success.log`` or ``success/part-0`` do not count.
+        # Check the current run first: its own success marker means a rerun.
         bucket, prefix, current_run = _split_run_uri(s3_uri)
         s3 = boto3.client("s3")  # one client (and connection pool) per check
         current_marker = f"{prefix}run={current_run}/success"
@@ -1551,20 +1476,16 @@ class Bundle:
         bucket: str,
         namespace: str = "",
     ) -> dict[str, "Bundle"]:
-        """Discover every resource under ``provider`` and return the latest bundle per resource.
+        """Return the latest successful bundle per resource under *provider*.
 
-        One paginated ``list_objects_v2`` at ``<root>/provider=<X>/`` walks all
-        ``success`` markers, keeping the newest bundle per resource in natural
-        order (`_natural_key`) of the partitions after ``resource``. Cheap
-        alternative to instantiating one bundle per resource and calling
-        `resolve_partitions` on each.
+        One paginated ``list_objects_v2`` over ``<root>/provider=<X>/`` replaces
+        a `resolve_partitions` call per resource.  Bundles are ordered by the
+        partitions after ``resource`` (`_natural_key`).  Only keys with the
+        exact bundle layout count as markers, e.g.
+        ``resource=R/version=V/run=Z/success``.
 
-        Only keys with the exact bundle layout count, e.g.
-        ``resource=R/version=V/run=Z/success``; a ``success`` object nested
-        deeper (``.../run=Z/data/success``) is not a bundle marker.
-
-        Returned bundles are fully resolved (every partition has a value).
-        Only valid for bundle classes partitioned by ``(provider, resource, ...)``.
+        Returns a dict of resource to fully resolved bundle.  Raises TypeError
+        unless the class is partitioned by ``(provider, resource, ...)``.
         """
         if cls.PARTITION_KEYS[:2] != ("provider", "resource"):
             raise TypeError(
@@ -1607,21 +1528,12 @@ class Bundle:
         bundles: list[Bundle],
         partitions: dict[str, str] | None = None,
     ) -> list[Bundle]:
-        """Batched equivalent of `needs_processing`.
+        """Return the subset of *bundles* for which `needs_processing` is ``True``.
 
-        Returns the subset of ``bundles`` that need processing — exactly the
-        bundles for which `needs_processing` would return ``True``: no run
-        under the bundle's parent prefix has a success file, or the
-        bundle's own run does (a rerun).
-
-        Instead of S3 calls per bundle, groups candidates by a shared scan
-        prefix (``bucket + root + provider=<X>`` for provider/resource
-        bundles, otherwise the bundle's parent prefix) and does one
-        paginated ``list_objects_v2`` per group.
-
-        Assumes ``base_uri`` values are already rendered (no unresolved
-        placeholders). Callers constructing bundles with concrete
-        ``bucket`` and ``version`` get this automatically.
+        Bundles are grouped by a shared scan prefix (``<root>/provider=<X>/``
+        for provider/resource bundles, else the parent of ``run=``) with one
+        paginated ``list_objects_v2`` per group.  ``base_uri`` values must be
+        fully rendered.
         """
         partitions = partitions or {}
         for key, value in partitions.items():
@@ -1639,8 +1551,7 @@ class Bundle:
             return []
 
         def _scan_prefix(parent: str) -> str:
-            # Widen to the prefix before the first resource= segment so all
-            # resources of one provider share a single LIST.
+            # Cut at ``resource=`` so all of a provider's resources share one LIST.
             segments = parent.rstrip("/").split("/")
             for i, seg in enumerate(segments):
                 if seg.startswith("resource="):
@@ -1691,16 +1602,11 @@ class Bundle:
         datasets_dir: str | PathLike[str] | None = None,
         max_workers: int = 32,
     ) -> None:
-        """Batched equivalent of `initialize`.
+        """Run `initialize` on every bundle across *max_workers* threads.
 
-        Calls ``initialize`` on every bundle in ``bundles`` with the same
-        shared arguments, parallelised across ``max_workers`` threads (each
-        ``initialize`` is ~3 sequential S3 calls).  *metadata_factory* is
-        called once per bundle to build its `BundleMetadata` writer.
-
-        All bundles receive the same ``input_bundles``, ``capture_variables``,
-        ``custom_metadata`` and ``datasets_dir``. Use the singular
-        `initialize` when candidates need per-bundle metadata.
+        All bundles share the other arguments; *metadata_factory* builds each
+        bundle's `BundleMetadata` writer.  Every bundle is attempted, then the
+        first failure is re-raised.
         """
         if not bundles:
             return
@@ -1728,13 +1634,10 @@ class Bundle:
         status: str = "success",
         max_workers: int = 32,
     ) -> None:
-        """Batched equivalent of `finalize`.
+        """Run `finalize` on every bundle across *max_workers* threads.
 
-        Calls ``finalize`` on every bundle in ``bundles`` with the same
-        ``status``, parallelised across ``max_workers`` threads.
-        *metadata_factory* is called once per bundle.  Each ``finalize`` is
-        2 tiny S3 PUTs (metadata + success marker), so a large batch
-        finishes in about the same time as one.
+        *metadata_factory* builds each bundle's `BundleMetadata` writer.
+        Every bundle is attempted, then the first failure is re-raised.
         """
         if not bundles:
             return
@@ -1883,10 +1786,9 @@ class SourceIngestBundle(Bundle):
     ) -> Self:
         """Create from a bundle-root ``s3://`` URI plus source identifiers.
 
-        As in `Bundle.from_path`, the URI path is the bundle root (any
-        namespace or custom root is kept); an empty path falls back to
-        ``ROOT_PATH``.  Identifiers given as keyword arguments take
-        precedence over the same keys in *partitions*.
+        As in `Bundle.from_path`, the URI path is the bundle root; an empty
+        path falls back to ``ROOT_PATH``.  Non-empty identifier keywords
+        override the same keys in *partitions*.
         """
         values = dict(partitions or {})
         identifiers = {
@@ -2197,10 +2099,9 @@ class ReleaseCandidateBundle(Bundle):
 class ReleaseBundle(Bundle):
     """Final published release (placeholder).
 
-    No path layout is defined yet: there is no ``ROOT_PATH`` or
-    ``PARTITION_KEYS``, so `discover_all` and `cleanup_all` do not apply and
-    instances need an explicit ``root_path`` and ``partitions``.  The layout
-    is tracked in OvertureMaps/overture-core#102.
+    Instances take an explicit ``root_path`` and ``partitions``, and
+    `discover_all` / `cleanup_all` raise NotImplementedError.  The path
+    layout is tracked in OvertureMaps/overture-core#102.
     """
 
     BUNDLE_TYPE = "release"
