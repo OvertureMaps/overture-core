@@ -81,10 +81,9 @@ class RecordingDropper:
 
 
 class StoreMetadata:
-    """`BundleMetadata` that keeps one DAG's section of ``metadata.json`` in a store.
+    """`BundleMetadata` keeping one DAG's ``metadata.json`` section in a store.
 
-    Mirrors tf-data-platform's ``Metadata``: ``init`` sets ``"running"`` and
-    ``finalize`` sets the given status, each a read-modify-write of the file.
+    Mirrors tf-data-platform's ``Metadata``.
     """
 
     def __init__(self, bundle: Bundle, dag_id: str = "dag") -> None:
@@ -389,8 +388,6 @@ class TestLifecycle:
 
     @pytest.mark.parametrize("status", ["failed", BundleStatus.FAILED, "partial"])
     def test_finalize_without_success_writes_no_marker(self, store, status):
-        # Regression: finalize used to write the marker whatever the status,
-        # so a failed run looked successful.
         meta = RecordingMetadata()
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
         b.finalize(status=status, metadata=meta)
@@ -519,7 +516,6 @@ class TestStatus:
         )
 
     def test_success_marker_wins_over_failed_metadata(self, store):
-        # As left by a finalize(status="failed") from before the marker fix.
         store.write("bkt", f"{_RUN}/success")
         store.write("bkt", f"{_RUN}/metadata.json", _metadata(dag={"status": "failed"}))
         report = self._bundle(store).status()
