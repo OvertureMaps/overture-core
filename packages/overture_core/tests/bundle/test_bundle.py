@@ -1557,7 +1557,7 @@ class TestStoreInjection:
         assert rc.store is store
 
     def test_cleanup_all_with_discover_all_override(self, counted_s3):
-        """An override without ``store`` (like tf-data-platform's adapter) still works."""
+        """Overrides with no ``store`` parameter, like tf-data-platform's adapter, work."""
         fake, calls = counted_s3
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
         for run in ("r1", "r2"):
