@@ -65,25 +65,34 @@ def resolve_s3_access(spark: SparkSession, uri: str) -> S3Access:
     Reads the Hadoop conf (which includes ``spark.hadoop.*`` settings), where
     each ``fs.s3a.bucket.<bucket>.<key>`` overrides ``fs.s3a.<key>``:
     ``assumed.role.arn``, else ``access.key`` and ``secret.key``, plus
-    ``endpoint.region``. Returns ``S3Access()`` for non-S3 URIs.
+    ``endpoint.region``. A bucket's own keys also win over a global role.
+    Returns ``S3Access()`` for non-S3 URIs.
     """
     url = urlparse(uri)
     if url.scheme not in ("s3", "s3a") or not url.netloc:
         return S3Access()
     conf = spark._jsc.hadoopConfiguration()
+    bucket, default = f"fs.s3a.bucket.{url.netloc}.", "fs.s3a."
 
-    def get(key: str) -> str | None:
-        for name in (f"fs.s3a.bucket.{url.netloc}.{key}", f"fs.s3a.{key}"):
-            value = (conf.get(name) or "").strip()
+    def get(key: str, *prefixes: str) -> str | None:
+        for prefix in prefixes or (bucket, default):
+            value = (conf.get(prefix + key) or "").strip()
             if value:
                 return value
         return None
 
     region = get("endpoint.region")
-    if role_arn := get("assumed.role.arn"):
-        return S3Access(region=region, role_arn=role_arn)
     access_key, secret_key = get("access.key"), get("secret.key")
-    if access_key and secret_key:
+    has_keys = bool(access_key and secret_key)
+    bucket_keys = has_keys and bool(
+        get("access.key", bucket) or get("secret.key", bucket)
+    )
+    role_arn = get("assumed.role.arn", bucket)
+    if not role_arn and not bucket_keys:
+        role_arn = get("assumed.role.arn", default)
+    if role_arn:
+        return S3Access(region=region, role_arn=role_arn)
+    if has_keys:
         return S3Access(region=region, access_key=access_key, secret_key=secret_key)
     return S3Access(region=region)
 

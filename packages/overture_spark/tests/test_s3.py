@@ -133,15 +133,55 @@ def test_resolve_falls_back_to_global():
     )
 
 
-def test_resolve_role_wins_over_keys():
-    spark = _spark(
+@pytest.mark.parametrize(
+    "conf",
+    [
         {
             "fs.s3a.bucket.bucket.assumed.role.arn": ROLE_ARN,
             "fs.s3a.access.key": "key",
             "fs.s3a.secret.key": "secret",
-        }
+        },
+        {
+            "fs.s3a.bucket.bucket.assumed.role.arn": ROLE_ARN,
+            "fs.s3a.bucket.bucket.access.key": "key",
+            "fs.s3a.bucket.bucket.secret.key": "secret",
+        },
+        {
+            "fs.s3a.assumed.role.arn": ROLE_ARN,
+            "fs.s3a.access.key": "key",
+            "fs.s3a.secret.key": "secret",
+        },
+        {
+            "fs.s3a.assumed.role.arn": ROLE_ARN,
+            "fs.s3a.bucket.bucket.access.key": "lone-key",
+        },
+    ],
+)
+def test_resolve_role_wins_over_keys_at_the_same_or_wider_scope(conf):
+    assert resolve_s3_access(_spark(conf), "s3a://bucket/out") == S3Access(
+        role_arn=ROLE_ARN
     )
-    assert resolve_s3_access(spark, "s3a://bucket/out") == S3Access(role_arn=ROLE_ARN)
+
+
+@pytest.mark.parametrize(
+    "conf",
+    [
+        {
+            "fs.s3a.assumed.role.arn": ROLE_ARN,
+            "fs.s3a.bucket.bucket.access.key": "key",
+            "fs.s3a.bucket.bucket.secret.key": "secret",
+        },
+        {
+            "fs.s3a.assumed.role.arn": ROLE_ARN,
+            "fs.s3a.bucket.bucket.access.key": "key",
+            "fs.s3a.secret.key": "secret",
+        },
+    ],
+)
+def test_resolve_bucket_keys_win_over_global_role(conf):
+    assert resolve_s3_access(_spark(conf), "s3a://bucket/out") == S3Access(
+        access_key="key", secret_key="secret"
+    )
 
 
 @pytest.mark.parametrize(
@@ -283,39 +323,55 @@ def test_boto3_session_role_needs_source_credentials():
 # pyarrow_s3_filesystem
 
 
-def _options(filesystem) -> dict:
-    return filesystem.__reduce__()[1][0]
+@pytest.fixture
+def pyarrow_kwargs(monkeypatch):
+    """Keyword arguments of each S3FileSystem built; still built for real."""
+    from pyarrow import fs
+
+    calls = []
+    real = fs.S3FileSystem
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(fs, "S3FileSystem", spy)
+    return calls
 
 
-def test_pyarrow_s3_filesystem_default_chain():
+def test_pyarrow_s3_filesystem_default_chain(pyarrow_kwargs):
     filesystem = pyarrow_s3_filesystem(S3Access(region="eu-west-1"))
     assert filesystem.region == "eu-west-1"
-    options = _options(filesystem)
-    assert not options["access_key"]
-    assert not options["role_arn"]
+    assert pyarrow_kwargs == [
+        {"access_key": None, "secret_key": None, "region": "eu-west-1"}
+    ]
 
 
-def test_pyarrow_s3_filesystem_static_keys():
+def test_pyarrow_s3_filesystem_static_keys(pyarrow_kwargs):
     access = S3Access(region="eu-west-1", access_key="key", secret_key="secret")
-    options = _options(pyarrow_s3_filesystem(access))
-    assert (options["access_key"], options["secret_key"]) == ("key", "secret")
-    assert not options["role_arn"]
+    pyarrow_s3_filesystem(access)
+    assert pyarrow_kwargs == [
+        {"access_key": "key", "secret_key": "secret", "region": "eu-west-1"}
+    ]
 
 
-def test_pyarrow_s3_filesystem_assumes_role(monkeypatch):
+def test_pyarrow_s3_filesystem_assumes_role(monkeypatch, pyarrow_kwargs):
     monkeypatch.setenv(EXTERNAL_ID_ENV, "external-id")
     filesystem = pyarrow_s3_filesystem(S3Access(region="eu-west-1", role_arn=ROLE_ARN))
     assert filesystem.region == "eu-west-1"
-    options = _options(filesystem)
-    assert options["role_arn"] == ROLE_ARN
-    assert options["external_id"] == "external-id"
-    assert options["session_name"] == "overture-spark"
-    assert not options["access_key"]
+    assert pyarrow_kwargs == [
+        {
+            "role_arn": ROLE_ARN,
+            "session_name": "overture-spark",
+            "external_id": "external-id",
+            "region": "eu-west-1",
+        }
+    ]
 
 
-def test_pyarrow_s3_filesystem_assumes_role_without_external_id():
-    filesystem = pyarrow_s3_filesystem(S3Access(region="eu-west-1", role_arn=ROLE_ARN))
-    assert not _options(filesystem)["external_id"]
+def test_pyarrow_s3_filesystem_assumes_role_without_external_id(pyarrow_kwargs):
+    pyarrow_s3_filesystem(S3Access(region="eu-west-1", role_arn=ROLE_ARN))
+    assert pyarrow_kwargs[0]["external_id"] is None
 
 
 def test_pyarrow_s3_filesystem_is_cached():
