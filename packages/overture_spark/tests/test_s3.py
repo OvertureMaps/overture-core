@@ -64,7 +64,9 @@ def _spark(hadoop_conf: dict[str, str]):
 
 
 def test_s3_access_hides_secrets_from_repr():
-    access = S3Access(region="us-west-2", access_key="key", secret_key="secret")
+    access = S3Access(
+        region="us-west-2", access_key="key", secret_key="secret", session_token="token"
+    )
     assert repr(access) == "S3Access(region='us-west-2', role_arn=None)"
 
 
@@ -78,6 +80,11 @@ def test_s3_access_is_picklable_and_hashable():
 def test_s3_access_requires_both_keys(keys):
     with pytest.raises(ValueError, match="together"):
         S3Access(**keys)
+
+
+def test_s3_access_session_token_requires_keys():
+    with pytest.raises(ValueError, match="session_token"):
+        S3Access(session_token="token")
 
 
 # resolve_s3_access
@@ -206,6 +213,35 @@ def test_resolve_static_keys(conf):
     assert access == S3Access(access_key="key", secret_key="secret")
 
 
+@pytest.mark.parametrize(
+    "conf",
+    [
+        {
+            "fs.s3a.bucket.bucket.access.key": "key",
+            "fs.s3a.bucket.bucket.secret.key": "secret",
+            "fs.s3a.bucket.bucket.session.token": "token",
+        },
+        {
+            "fs.s3a.access.key": "key",
+            "fs.s3a.secret.key": "secret",
+            "fs.s3a.session.token": "global-token",
+            "fs.s3a.bucket.bucket.session.token": "token",
+        },
+    ],
+)
+def test_resolve_temporary_keys(conf):
+    """S3A's TemporaryAWSCredentialsProvider also needs ``session.token``."""
+    access = resolve_s3_access(_spark(conf), "s3://bucket/out")
+    assert access == S3Access(
+        access_key="key", secret_key="secret", session_token="token"
+    )
+
+
+def test_resolve_ignores_a_session_token_without_keys():
+    spark = _spark({"fs.s3a.session.token": "token", "fs.s3a.access.key": "key"})
+    assert resolve_s3_access(spark, "s3://bucket/out") == S3Access()
+
+
 def test_resolve_ignores_a_lone_key():
     spark = _spark(
         {
@@ -263,6 +299,13 @@ def test_boto3_session_static_keys(monkeypatch):
     session = boto3_session(S3Access(access_key="key", secret_key="secret"))
     credentials = session.get_credentials()
     assert (credentials.access_key, credentials.secret_key) == ("key", "secret")
+    assert credentials.token is None
+
+
+def test_boto3_session_temporary_keys():
+    access = S3Access(access_key="key", secret_key="secret", session_token="token")
+    credentials = boto3_session(access).get_credentials()
+    assert (credentials.access_key, credentials.token) == ("key", "token")
 
 
 def test_boto3_session_is_cached():
@@ -372,6 +415,20 @@ def test_s3_client_and_role_refresh_create_clients_under_the_lock(monkeypatch):
     assert not s3._CLIENT_LOCK.locked()
 
 
+def test_s3_client_looks_up_the_session_under_the_lock(monkeypatch):
+    """Cold workers' threads share one session, so one set of credentials."""
+    locked = []
+    real = s3.boto3_session
+
+    def spy(access):
+        locked.append(s3._CLIENT_LOCK.locked())
+        return real(access)
+
+    monkeypatch.setattr(s3, "boto3_session", spy)
+    s3_client(S3Access(region="eu-west-1"))
+    assert locked == [True]
+
+
 @pytest.mark.usefixtures("source_credentials")
 def test_s3_client_from_threads():
     access = S3Access(region="eu-west-1", role_arn=ROLE_ARN)
@@ -379,6 +436,7 @@ def test_s3_client_from_threads():
         clients = list(pool.map(lambda _: s3_client(access), range(16)))
     assert len({id(client) for client in clients}) == 16
     assert {client.meta.region_name for client in clients} == {"eu-west-1"}
+    assert len({id(client._request_signer._credentials) for client in clients}) == 1
 
 
 # pyarrow_s3_filesystem
@@ -404,15 +462,31 @@ def test_pyarrow_s3_filesystem_default_chain(pyarrow_kwargs):
     filesystem = pyarrow_s3_filesystem(S3Access(region="eu-west-1"))
     assert filesystem.region == "eu-west-1"
     assert pyarrow_kwargs == [
-        {"access_key": None, "secret_key": None, "region": "eu-west-1"}
+        {
+            "access_key": None,
+            "secret_key": None,
+            "session_token": None,
+            "region": "eu-west-1",
+        }
     ]
 
 
-def test_pyarrow_s3_filesystem_static_keys(pyarrow_kwargs):
-    access = S3Access(region="eu-west-1", access_key="key", secret_key="secret")
+@pytest.mark.parametrize("session_token", [None, "token"])
+def test_pyarrow_s3_filesystem_static_keys(pyarrow_kwargs, session_token):
+    access = S3Access(
+        region="eu-west-1",
+        access_key="key",
+        secret_key="secret",
+        session_token=session_token,
+    )
     pyarrow_s3_filesystem(access)
     assert pyarrow_kwargs == [
-        {"access_key": "key", "secret_key": "secret", "region": "eu-west-1"}
+        {
+            "access_key": "key",
+            "secret_key": "secret",
+            "session_token": session_token,
+            "region": "eu-west-1",
+        }
     ]
 
 

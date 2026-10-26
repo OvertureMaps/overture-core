@@ -42,7 +42,7 @@ def write_partition(batches):
     ...
 ```
 
-`resolve_s3_access` returns S3A's assumed role (`assumed.role.arn`), else its static keys (`access.key`/`secret.key`), plus `endpoint.region`, each preferring the per-bucket setting; a bucket's own keys also win over a global role. Clients assume the role with the Wherobots external ID (`WBC_STINT_ASSUME_ROLE_EXTERNAL_ID`, if set) and refresh it; with nothing configured (e.g. Glue) they use the default credential chain. `boto3_session` and `pyarrow_s3_filesystem` are cached per process; `s3_client(access, **client_kwargs)` builds an S3 client from the cached session and is safe to call from several threads. `boto3`/`pyarrow` are imported lazily: install them yourself or with `overture-spark[s3]`.
+`resolve_s3_access` returns S3A's assumed role (`assumed.role.arn`), else its static keys (`access.key`/`secret.key`, with `session.token` if set), plus `endpoint.region`, each preferring the per-bucket setting; a bucket's own keys also win over a global role. Clients assume the role with the Wherobots external ID (`WBC_STINT_ASSUME_ROLE_EXTERNAL_ID`, if set) and refresh it; with nothing configured (e.g. Glue) they use the default credential chain. `boto3_session` and `pyarrow_s3_filesystem` are cached per process; `s3_client(access, **client_kwargs)` builds an S3 client from the cached session and is safe to call from several threads. `boto3`/`pyarrow` are imported lazily: install them yourself or with `overture-spark[s3]`.
 
 ## Testing locally
 

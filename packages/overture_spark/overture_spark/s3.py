@@ -50,20 +50,24 @@ _CLIENT_LOCK = threading.Lock()
 class S3Access:
     """How Python clients should authenticate to a bucket.
 
-    An assumed role if ``role_arn`` is set, else static keys if set, else the
-    default credential chain. ``region`` is ``None`` to let each SDK pick its
-    default. Picklable and hashable, so it can be shipped to Python workers
-    and used as a cache key.
+    An assumed role if ``role_arn`` is set, else static keys if set (with
+    ``session_token`` if they're temporary), else the default credential
+    chain. ``region`` is ``None`` to let each SDK pick its default. Picklable
+    and hashable, so it can be shipped to Python workers and used as a cache
+    key.
     """
 
     region: str | None = None
     role_arn: str | None = None
     access_key: str | None = field(default=None, repr=False)
     secret_key: str | None = field(default=None, repr=False)
+    session_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if (self.access_key is None) != (self.secret_key is None):
             raise ValueError("access_key and secret_key must be set together")
+        if self.session_token is not None and self.access_key is None:
+            raise ValueError("session_token needs access_key and secret_key")
 
 
 def resolve_s3_access(spark: SparkSession, uri: str) -> S3Access:
@@ -71,9 +75,9 @@ def resolve_s3_access(spark: SparkSession, uri: str) -> S3Access:
 
     Reads the Hadoop conf (which includes ``spark.hadoop.*`` settings), where
     each ``fs.s3a.bucket.<bucket>.<key>`` overrides ``fs.s3a.<key>``:
-    ``assumed.role.arn``, else ``access.key`` and ``secret.key``, plus
-    ``endpoint.region``. A bucket's own keys also win over a global role.
-    Returns ``S3Access()`` for non-S3 URIs.
+    ``assumed.role.arn``, else ``access.key`` and ``secret.key`` (with
+    ``session.token`` if set), plus ``endpoint.region``. A bucket's own keys
+    also win over a global role. Returns ``S3Access()`` for non-S3 URIs.
     """
     url = urlparse(uri)
     if url.scheme not in ("s3", "s3a") or not url.netloc:
@@ -100,7 +104,12 @@ def resolve_s3_access(spark: SparkSession, uri: str) -> S3Access:
     if role_arn:
         return S3Access(region=region, role_arn=role_arn)
     if has_keys:
-        return S3Access(region=region, access_key=access_key, secret_key=secret_key)
+        return S3Access(
+            region=region,
+            access_key=access_key,
+            secret_key=secret_key,
+            session_token=get("session.token"),
+        )
     return S3Access(region=region)
 
 
@@ -123,6 +132,7 @@ def boto3_session(access: S3Access) -> boto3.Session:
     return boto3.Session(
         aws_access_key_id=access.access_key,
         aws_secret_access_key=access.secret_key,
+        aws_session_token=access.session_token,
         region_name=access.region,
     )
 
@@ -155,6 +165,7 @@ def pyarrow_s3_filesystem(access: S3Access) -> pyarrow.fs.S3FileSystem:
     return fs.S3FileSystem(
         access_key=access.access_key,
         secret_key=access.secret_key,
+        session_token=access.session_token,
         region=access.region,
     )
 
