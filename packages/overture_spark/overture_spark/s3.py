@@ -131,9 +131,8 @@ def s3_client(access: S3Access, **client_kwargs) -> botocore.client.BaseClient:
     """boto3 S3 client for ``access``, built from the cached session.
 
     Sessions aren't thread-safe, so client creation is serialized."""
-    session = boto3_session(access)
     with _CLIENT_LOCK:
-        return session.client("s3", **client_kwargs)
+        return boto3_session(access).client("s3", **client_kwargs)
 
 
 @functools.cache
