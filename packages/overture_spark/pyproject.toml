@@ -38,9 +38,16 @@ sql-spark = [
     "pandas>=2.2.2,<3",
     "moto[server]>=5.0.25",
 ]
+# overture_spark.s3 imports these lazily; only jobs that reach S3 from Python
+# (not through Spark's S3A) need them. pyarrow 16 is the first with NumPy 2.
+s3 = [
+    "boto3>=1.28",
+    "pyarrow>=16",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
+    "overture-spark[s3]",
 ]
 
 [build-system]

@@ -8,6 +8,7 @@ Portable, framework-agnostic runtime helpers for Overture's Spark jobs. Moved fr
 It contains:
 - `SparkSedonaJob` (in `job.py`) — cluster-side base class for jobs: platform detection, parameter parsing, logging, and the Sedona `SparkSession` lifecycle. Subclass it and implement `execute_job()`.
 - `test_area` — helpers for a job's optional `test_area` param (a bbox or WKT polygon that scopes a dev/test run to a small region instead of the full planet).
+- `s3` — S3 credentials for Python clients (boto3, PyArrow) that need the same access as Spark's S3A, e.g. on Wherobots, where only S3A gets the storage-integration role.
 
 ## Writing a job
 
@@ -24,6 +25,24 @@ class CollectionJob(SparkSedonaJob):
 ```
 
 `getSparkSedonaSession` (in `overture_spark/__init__.py`) is the one call in this package that actually needs a real Spark/Sedona session — it, and everything downstream of it, imports `pyspark`/`apache-sedona` lazily and only there. Platform detection, version/JAR helpers, and `SparkSedonaJob`'s parameter/logging logic are plain Python and importable without either installed.
+
+## Reaching S3 from Python
+
+Spark's S3A can have per-bucket credentials (`fs.s3a.bucket.<bucket>.*`) that boto3 and PyArrow don't see. Resolve them on the driver, ship the picklable `S3Access` to Python workers, and build clients there:
+
+```python
+from overture_spark.s3 import boto3_session, pyarrow_s3_filesystem, resolve_s3_access
+
+access = resolve_s3_access(spark, "s3a://bucket/prefix")  # driver only
+
+
+def write_partition(batches):
+    filesystem = pyarrow_s3_filesystem(access)  # paths are "bucket/key"
+    s3 = boto3_session(access).client("s3")
+    ...
+```
+
+`resolve_s3_access` returns S3A's assumed role (`assumed.role.arn`), else its static keys (`access.key`/`secret.key`), plus `endpoint.region`, each preferring the per-bucket setting. Clients assume the role with the Wherobots external ID (`WBC_STINT_ASSUME_ROLE_EXTERNAL_ID`, if set) and refresh it; with nothing configured (e.g. Glue) they use the default credential chain. Clients are cached per process. `boto3`/`pyarrow` are imported lazily: install them yourself or with `overture-spark[s3]`.
 
 ## Testing locally
 
