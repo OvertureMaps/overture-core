@@ -23,6 +23,7 @@ directly or with ``overture-spark[s3]``.
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import threading
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
     import botocore.session
     import pyarrow.fs
     from pyspark.sql import SparkSession
+
+log = logging.getLogger(__name__)
 
 # Wherobots sets this on every pod; its storage-integration role requires it.
 _EXTERNAL_ID_ENV = "WBC_STINT_ASSUME_ROLE_EXTERNAL_ID"
@@ -147,7 +150,7 @@ def pyarrow_s3_filesystem(access: S3Access) -> pyarrow.fs.S3FileSystem:
         return fs.S3FileSystem(
             role_arn=access.role_arn,
             session_name=_SESSION_NAME,
-            external_id=os.environ.get(_EXTERNAL_ID_ENV),
+            external_id=_external_id(access.role_arn),
             region=access.region,
         )
     return fs.S3FileSystem(
@@ -155,6 +158,17 @@ def pyarrow_s3_filesystem(access: S3Access) -> pyarrow.fs.S3FileSystem:
         secret_key=access.secret_key,
         region=access.region,
     )
+
+
+def _external_id(role_arn: str) -> str | None:
+    external_id = os.environ.get(_EXTERNAL_ID_ENV)
+    log.debug(
+        "Assuming %s %s an external ID from $%s",
+        role_arn,
+        "with" if external_id else "without",
+        _EXTERNAL_ID_ENV,
+    )
+    return external_id
 
 
 def _assumed_role_session(role_arn: str) -> botocore.session.Session:
@@ -169,7 +183,7 @@ def _assumed_role_session(role_arn: str) -> botocore.session.Session:
 
     session = botocore.session.Session()
     extra_args = {"RoleSessionName": _SESSION_NAME}
-    if external_id := os.environ.get(_EXTERNAL_ID_ENV):
+    if external_id := _external_id(role_arn):
         extra_args["ExternalId"] = external_id
 
     def create_client(*args, **kwargs):

@@ -1,3 +1,4 @@
+import logging
 import os
 import pickle
 import sys
@@ -442,6 +443,22 @@ def test_pyarrow_s3_filesystem_is_cached():
 
 def test_imports_sdks_lazily():
     assert not {"boto3", "botocore", "pyarrow"} & set(vars(s3))
+
+
+@pytest.mark.parametrize("external_id", ["secret-external-id", None])
+def test_logs_whether_the_external_id_is_set(monkeypatch, caplog, external_id):
+    if external_id:
+        monkeypatch.setenv(EXTERNAL_ID_ENV, external_id)
+    access = S3Access(region="eu-west-1", role_arn=ROLE_ARN)
+    with caplog.at_level(logging.DEBUG, logger=s3.__name__):
+        boto3_session(access)
+        pyarrow_s3_filesystem(access)
+
+    found = "with" if external_id else "without"
+    expected = f"Assuming {ROLE_ARN} {found} an external ID from ${EXTERNAL_ID_ENV}"
+    messages = [r.getMessage() for r in caplog.records if r.name == s3.__name__]
+    assert messages == [expected, expected]
+    assert "secret-external-id" not in caplog.text
 
 
 # Spark
