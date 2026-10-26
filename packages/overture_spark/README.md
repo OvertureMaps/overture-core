@@ -31,18 +31,18 @@ class CollectionJob(SparkSedonaJob):
 Spark's S3A can have per-bucket credentials (`fs.s3a.bucket.<bucket>.*`) that boto3 and PyArrow don't see. Resolve them on the driver, ship the picklable `S3Access` to Python workers, and build clients there:
 
 ```python
-from overture_spark.s3 import boto3_session, pyarrow_s3_filesystem, resolve_s3_access
+from overture_spark.s3 import pyarrow_s3_filesystem, resolve_s3_access, s3_client
 
 access = resolve_s3_access(spark, "s3a://bucket/prefix")  # driver only
 
 
 def write_partition(batches):
     filesystem = pyarrow_s3_filesystem(access)  # paths are "bucket/key"
-    s3 = boto3_session(access).client("s3")
+    s3 = s3_client(access)
     ...
 ```
 
-`resolve_s3_access` returns S3A's assumed role (`assumed.role.arn`), else its static keys (`access.key`/`secret.key`), plus `endpoint.region`, each preferring the per-bucket setting; a bucket's own keys also win over a global role. Clients assume the role with the Wherobots external ID (`WBC_STINT_ASSUME_ROLE_EXTERNAL_ID`, if set) and refresh it; with nothing configured (e.g. Glue) they use the default credential chain. Clients are cached per process. `boto3`/`pyarrow` are imported lazily: install them yourself or with `overture-spark[s3]`.
+`resolve_s3_access` returns S3A's assumed role (`assumed.role.arn`), else its static keys (`access.key`/`secret.key`), plus `endpoint.region`, each preferring the per-bucket setting; a bucket's own keys also win over a global role. Clients assume the role with the Wherobots external ID (`WBC_STINT_ASSUME_ROLE_EXTERNAL_ID`, if set) and refresh it; with nothing configured (e.g. Glue) they use the default credential chain. `boto3_session` and `pyarrow_s3_filesystem` are cached per process; `s3_client(access, **client_kwargs)` builds an S3 client from the cached session and is safe to call from several threads. `boto3`/`pyarrow` are imported lazily: install them yourself or with `overture-spark[s3]`.
 
 ## Testing locally
 

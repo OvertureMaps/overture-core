@@ -1,12 +1,14 @@
 import os
 import pickle
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 import pytest
 from botocore.awsrequest import AWSResponse
+from botocore.credentials import RefreshableCredentials
 
 from overture_spark import s3
 from overture_spark.s3 import (
@@ -14,6 +16,7 @@ from overture_spark.s3 import (
     boto3_session,
     pyarrow_s3_filesystem,
     resolve_s3_access,
+    s3_client,
 )
 
 try:
@@ -320,6 +323,63 @@ def test_boto3_session_role_needs_source_credentials():
     assert session.get_credentials() is None
 
 
+# s3_client
+
+
+def test_s3_client_uses_the_cached_session():
+    access = S3Access(region="eu-west-1", access_key="key", secret_key="secret")
+    client = s3_client(access, endpoint_url="http://localhost:9000")
+
+    assert client.meta.service_model.service_name == "s3"
+    assert client.meta.region_name == "eu-west-1"
+    assert client.meta.endpoint_url == "http://localhost:9000"
+    credentials = client._request_signer._credentials
+    assert credentials is boto3_session(access).get_credentials()
+    assert credentials.access_key == "key"
+
+
+@pytest.mark.usefixtures("source_credentials")
+def test_s3_client_gets_refreshable_assumed_role_without_calling_sts():
+    access = S3Access(region="eu-west-1", role_arn=ROLE_ARN)
+    requests = _fake_sts(boto3_session(access), [("assumed", timedelta(hours=1))])
+
+    credentials = s3_client(access)._request_signer._credentials
+
+    assert isinstance(credentials, RefreshableCredentials)
+    assert credentials.method == "assume-role"
+    assert credentials is boto3_session(access).get_credentials()
+    assert requests == []
+
+
+@pytest.mark.usefixtures("source_credentials")
+def test_s3_client_and_role_refresh_create_clients_under_the_lock(monkeypatch):
+    access = S3Access(region="eu-west-1", role_arn=ROLE_ARN)
+    session = boto3_session(access)
+    _fake_sts(session, [("assumed", timedelta(hours=1))])
+    created = []
+    create_client = session._session.create_client
+
+    def spy(service_name, *args, **kwargs):
+        created.append((service_name, s3._CLIENT_LOCK.locked()))
+        return create_client(service_name, *args, **kwargs)
+
+    monkeypatch.setattr(session._session, "create_client", spy)
+
+    credentials = s3_client(access)._request_signer._credentials
+    assert credentials.get_frozen_credentials().access_key == "assumed"
+    assert created == [("s3", True), ("sts", True)]
+    assert not s3._CLIENT_LOCK.locked()
+
+
+@pytest.mark.usefixtures("source_credentials")
+def test_s3_client_from_threads():
+    access = S3Access(region="eu-west-1", role_arn=ROLE_ARN)
+    with ThreadPoolExecutor(8) as pool:
+        clients = list(pool.map(lambda _: s3_client(access), range(16)))
+    assert len({id(client) for client in clients}) == 16
+    assert {client.meta.region_name for client in clients} == {"eu-west-1"}
+
+
 # pyarrow_s3_filesystem
 
 
@@ -418,11 +478,12 @@ def test_resolve_in_spark_and_use_on_workers(monkeypatch):
             .map(
                 lambda a: (
                     boto3_session(a).region_name,
+                    s3_client(a).meta.region_name,
                     pyarrow_s3_filesystem(a).region,
                 )
             )
             .collect()
         )
-        assert regions == [("eu-west-1", "eu-west-1")]
+        assert regions == [("eu-west-1", "eu-west-1", "eu-west-1")]
     finally:
         spark.stop()

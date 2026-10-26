@@ -10,7 +10,7 @@ it there::
     access = resolve_s3_access(spark, "s3a://bucket/prefix")
 
     def upload(rows):
-        s3 = boto3_session(access).client("s3")
+        s3 = s3_client(access)
         ...
 
     df.foreachPartition(upload)
@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import functools
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     import boto3
+    import botocore.client
     import botocore.session
     import pyarrow.fs
     from pyspark.sql import SparkSession
@@ -37,6 +39,8 @@ if TYPE_CHECKING:
 # Wherobots sets this on every pod; its storage-integration role requires it.
 _EXTERNAL_ID_ENV = "WBC_STINT_ASSUME_ROLE_EXTERNAL_ID"
 _SESSION_NAME = "overture-spark"
+# Serializes client creation from the cached sessions, which aren't thread-safe.
+_CLIENT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -103,8 +107,8 @@ def boto3_session(access: S3Access) -> boto3.Session:
 
     With ``role_arn``, it assumes the role on first use, with the default
     chain's credentials and the Wherobots external ID if set, and refreshes
-    before expiry. Sessions aren't thread-safe: create clients from it on one
-    thread, then share the clients.
+    before expiry. Sessions aren't thread-safe: use :func:`s3_client` to
+    create S3 clients from several threads.
     """
     import boto3
 
@@ -118,6 +122,15 @@ def boto3_session(access: S3Access) -> boto3.Session:
         aws_secret_access_key=access.secret_key,
         region_name=access.region,
     )
+
+
+def s3_client(access: S3Access, **client_kwargs) -> botocore.client.BaseClient:
+    """boto3 S3 client for ``access``, built from the cached session.
+
+    Sessions aren't thread-safe, so client creation is serialized."""
+    session = boto3_session(access)
+    with _CLIENT_LOCK:
+        return session.client("s3", **client_kwargs)
 
 
 @functools.cache
@@ -159,6 +172,11 @@ def _assumed_role_session(role_arn: str) -> botocore.session.Session:
     if external_id := os.environ.get(_EXTERNAL_ID_ENV):
         extra_args["ExternalId"] = external_id
 
+    def create_client(*args, **kwargs):
+        # Refreshes run on whichever thread needs credentials.
+        with _CLIENT_LOCK:
+            return session.create_client(*args, **kwargs)
+
     class AssumedRole(CredentialProvider):
         METHOD = "assume-role"
 
@@ -168,7 +186,7 @@ def _assumed_role_session(role_arn: str) -> botocore.session.Session:
                 return None
             fetcher = AssumeRoleCredentialFetcher(
                 # Calls STS with explicit source credentials, in the session's region.
-                client_creator=session.create_client,
+                client_creator=create_client,
                 source_credentials=source,
                 role_arn=role_arn,
                 extra_args=extra_args,
