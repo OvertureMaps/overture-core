@@ -13,7 +13,6 @@ from overture_core.bundle.bundle import (
     CleanupReport,
     DeleteResult,
     PartitionResolutionError,
-    ReleaseBundle,
     ReleaseCandidateBundle,
     ScratchBundle,
     SourceIngestBundle,
@@ -311,8 +310,22 @@ class TestSubclasses:
         assert b.base_uri == "s3://bkt/scratch/purpose=debug/run=r1"
         assert b.BUNDLE_TYPE == "scratch"
 
-    def test_release_bundle_type(self):
-        assert ReleaseBundle.BUNDLE_TYPE == "release"
+    @pytest.mark.parametrize(
+        "cls",
+        [
+            SourceRawBundle,
+            SourceIngestBundle,
+            ThemeAssembleBundle,
+            ThemePromoteBundle,
+            ReleaseCandidateBundle,
+            ScratchBundle,
+        ],
+    )
+    def test_from_base_uri_keeps_bucket_root(self, cls):
+        segments = "/".join(f"{k}=x" for k in cls.PARTITION_KEYS)
+        b = cls.from_base_uri(f"s3://bkt/{segments}")
+        assert b.root_prefix == ""
+        assert b.base_uri == f"s3://bkt/{segments}"
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -413,6 +426,29 @@ class TestLifecycle:
             "scratch/purpose=b/run=r1/success",
         } <= s3.keys()
 
+    @pytest.mark.parametrize("action", ["initialize_batch", "finalize_batch"])
+    def test_batch_logs_every_failure_and_raises_first(self, s3, action, caplog):
+        bundles = [ScratchBundle(purpose=p, bucket="bkt", run="r1") for p in "abc"]
+
+        class Boom(RecordingMetadata):
+            def init(self, *args, **kwargs):
+                raise RuntimeError(self.name)
+
+            def finalize(self, status="success"):
+                raise RuntimeError(self.name)
+
+        def factory(b):
+            purpose = b.partitions["purpose"]
+            m = Boom() if purpose != "b" else RecordingMetadata()
+            m.name = f"boom {purpose}"
+            return m
+
+        with pytest.raises(RuntimeError, match="boom a"):
+            getattr(Bundle, action)(bundles, metadata_factory=factory, max_workers=3)
+        messages = [r.getMessage() for r in caplog.records]
+        assert sum("failed for ScratchBundle" in m for m in messages) == 2
+        assert any("failed for 2/3 bundle(s)" in m for m in messages)
+
     def test_batch_noop_on_empty(self):
         Bundle.initialize_batch([], metadata_factory=lambda b: RecordingMetadata())
         Bundle.finalize_batch([], metadata_factory=lambda b: RecordingMetadata())
@@ -431,6 +467,15 @@ class TestResolvePartitions:
         b = SourceIngestBundle(provider="p", resource="r", bucket="bkt")
         b.resolve_partitions()
         assert (b.version, b.run) == ("2", "a")
+
+    def test_resolve_at_bucket_root(self, s3):
+        for run in ("r1", "r2"):
+            s3.put("bkt", f"run={run}/success")
+        assert _resolve_partitions("bkt", "", ["run"], {}) == {"run": "r2"}
+        b = Bundle.from_base_uri("s3://bkt/run=")
+        b.resolve_partitions()
+        assert (b.base_prefix, b.base_uri) == ("run=r2", "s3://bkt/run=r2")
+        assert b.is_successful()
 
     def test_override_and_missing_raise(self, s3):
         s3.put("bkt", "root/version=1/success")
@@ -506,12 +551,12 @@ class TestRetention:
         assert SourceIngestBundle.discover_all(bucket="bkt") == []
         found = SourceIngestBundle.discover_all(bucket="bkt", namespace="ns")
         assert sorted(b.partitions["version"] for b in found) == ["0", "1", "2"]
-        assert all(b.BUNDLE_TYPE == "source_ingest" for b in found)
+        assert all(type(b) is SourceIngestBundle for b in found)
         assert all(b.root_uri == "s3://bkt/ns/feeds" for b in found)
 
     def test_discover_all_requires_root_and_keys(self):
         with pytest.raises(NotImplementedError):
-            ReleaseBundle.discover_all(bucket="bkt")
+            Bundle.discover_all(bucket="bkt")
 
     def test_cleanup_all_dry_run(self, s3):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
@@ -591,6 +636,35 @@ class TestRetention:
         result = b.delete(table_dropper=RecordingDropper(fail=True))
         assert result.deleted_object_count == 1
         assert result.deleted_tables == []
+
+    def test_from_base_uri_at_bucket_root_deletes_that_bundle(self, s3):
+        s3.put("bkt", "theme=places/run=X/data/a.parquet")
+        s3.put("bkt", "theme=places/run=X/success")
+        s3.put("bkt", "theme_stage/theme=places/run=X/success")
+        b = ThemeAssembleBundle.from_base_uri("s3://bkt/theme=places/run=X")
+        assert b.base_uri == "s3://bkt/theme=places/run=X"
+        assert b.delete().deleted_object_count == 2
+        assert s3.keys() == {"theme_stage/theme=places/run=X/success"}
+
+    def test_scratch_bundles_are_discoverable(self, s3):
+        s3.put("bkt", "scratch/purpose=p/run=r1/success")
+        found = ScratchBundle.discover_all(bucket="bkt")
+        assert [b.base_uri for b in found] == ["s3://bkt/scratch/purpose=p/run=r1"]
+        assert type(found[0]) is ScratchBundle
+
+    def test_is_deletable_matches_successful_by_location(self, s3):
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        s3.put("bkt", "root/version=0/success", lm=now - dt.timedelta(days=60))
+        bs = [
+            Bundle(bucket="bkt", root_path="root", partitions={"version": v})
+            for v in "01"
+        ]
+        latest = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+        assert bs[0].is_deletable(30, bs, now=now, successful=[latest])[0] is True
+        assert bs[1].is_deletable(30, bs, now=now, successful=[latest]) == (
+            False,
+            "is the latest successful bundle",
+        )
 
     def test_delete_refuses_bundle_at_bucket_root(self, s3):
         with pytest.raises(ValueError, match="has no partitions"):
@@ -1196,11 +1270,11 @@ class TestRetentionEdgeCases:
         assert deleted == ["1"]
         assert rerun in s3.keys()
 
-    def test_retention_order_key_falls_back_to_sorted_partitions(self):
+    def test_retention_order_key_without_order_partitions_is_empty(self):
         b = Bundle(
             bucket="bkt", root_path="root", partitions={"purpose": "p", "date": "d"}
         )
-        assert b.retention_order_key() == ("d", "p")
+        assert b.retention_order_key() == ()
 
     def test_cleanup_report_summary(self):
         report = CleanupReport(bundle_type="t", dry_run=False)
