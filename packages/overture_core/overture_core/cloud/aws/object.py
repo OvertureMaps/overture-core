@@ -147,6 +147,9 @@ def write_marker(bucket: str, key: str, *, client: Any = None) -> None:
 
 SUCCESS_FILE_NAME = "success"
 
+# Directory placeholder object some S3 tools write; never a real child.
+FOLDER_PLACEHOLDER = "$folder$"
+
 
 def success_file_key(prefix: str) -> str:
     """Return the key of the ``success`` marker for a partition *prefix*.
@@ -527,7 +530,7 @@ def list_common_prefixes(bucket: str, prefix: str, *, client: Any = None) -> lis
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
             name = cp["Prefix"][len(prefix) :].rstrip("/")
-            if name and name != "$folder$":
+            if name and name != FOLDER_PLACEHOLDER:
                 names.append(name)
     return names
 

@@ -1,8 +1,11 @@
 """Contract tests for the `BundleStore` implementations."""
 
 import datetime as dt
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
+import boto3
 import pytest
 
 from overture_core.bundle.store import BundleStore, InMemoryBundleStore, S3BundleStore
@@ -121,6 +124,23 @@ class TestInMemoryBundleStore:
         store.write("b", "k", last_modified=old)
         assert store.last_modified("b", "k") == old
 
+    def test_stamps_are_stored_in_utc(self, store):
+        eastern = dt.timezone(dt.timedelta(hours=-5))
+        store.write("b", "k", last_modified=dt.datetime(2020, 1, 1, tzinfo=eastern))
+        stamp = store.last_modified("b", "k")
+        assert stamp.tzinfo is dt.timezone.utc
+        assert stamp == dt.datetime(2020, 1, 1, 5, tzinfo=dt.timezone.utc)
+
+    def test_rejects_naive_last_modified(self, store):
+        with pytest.raises(ValueError, match="timezone-aware"):
+            store.write("b", "k", last_modified=dt.datetime(2020, 1, 1))
+        assert store.exists("b", "k") is False
+
+    def test_rejects_naive_clock(self):
+        store = InMemoryBundleStore(clock=lambda: dt.datetime(2020, 1, 1))
+        with pytest.raises(ValueError, match="timezone-aware"):
+            store.write("b", "k")
+
     def test_presigned_url_is_opaque(self, store):
         assert (
             store.presigned_url("b", "a/part 0")
@@ -149,12 +169,27 @@ class TestS3BundleStore:
         assert store.client is fake
         assert calls == [("s3",)]
 
-    def test_concurrent_first_use_opens_one_client(self, counted_s3):
-        _, calls = counted_s3
+    def test_concurrent_first_use_opens_one_client(self, monkeypatch, fake_s3):
+        calls: list[tuple] = []
+
+        def _slow_client(*args, **_kw):
+            calls.append(args)
+            time.sleep(0.05)  # widen the window for a second creator
+            return fake_s3
+
+        monkeypatch.setattr(boto3, "client", _slow_client)
         store = S3BundleStore()
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(lambda _: store.exists("b", "k"), range(32)))
+        workers = 8
+        start = threading.Barrier(workers)
+
+        def _first_use(_):
+            start.wait()
+            return store.client
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            clients = list(pool.map(_first_use, range(workers)))
         assert calls == [("s3",)]
+        assert all(c is fake_s3 for c in clients)
 
     def test_each_store_opens_its_own_client(self, counted_s3):
         _, calls = counted_s3

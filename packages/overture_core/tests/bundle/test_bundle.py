@@ -1562,6 +1562,19 @@ class TestClientReuse:
         assert b.age_days() is None  # two lookups, both missing
         assert calls == [("s3",)] * 3
 
+    @pytest.mark.parametrize("action", ["initialize_batch", "finalize_batch"])
+    def test_batch_shares_one_client(self, counted_s3, store, action):
+        _, calls = counted_s3
+        own = ScratchBundle(purpose="own", bucket="bkt", run="r1", store=store)
+        bundles = [
+            ScratchBundle(purpose=p, bucket="bkt", run="r1") for p in "abcdef"
+        ] + [own]
+        getattr(Bundle, action)(
+            bundles, metadata_factory=lambda b: RecordingMetadata(), max_workers=4
+        )
+        assert calls == [("s3",)]
+        assert [b.store for b in bundles] == [None] * 6 + [store]
+
     def test_explicit_s3_store_opens_no_client(self, counted_s3):
         fake, calls = counted_s3
         self._seed(fake)

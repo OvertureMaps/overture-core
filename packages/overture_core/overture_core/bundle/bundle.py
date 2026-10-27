@@ -129,6 +129,21 @@ def _with_store(bundle: _BundleT, store: BundleStore | None) -> _BundleT:
     return bundle
 
 
+def _share_store(
+    bundles: list[Bundle], store: BundleStore | None = None
+) -> list[Bundle]:
+    """Attach *store*, or one new `S3BundleStore`, to each storeless bundle.
+
+    Returns the bundles it attached to.
+    """
+    storeless = [b for b in bundles if b.store is None]
+    if storeless:
+        shared = _store_or_default(store)
+        for b in storeless:
+            b.store = shared
+    return storeless
+
+
 def _compose_root(root_path: str, namespace: str = "") -> str:
     """Join an optional *namespace* and *root_path* into a bundle root prefix."""
     root = root_path.strip("/")
@@ -491,11 +506,17 @@ def _run_batch(
 ) -> None:
     """Run *fn* on every bundle across *max_workers* threads.
 
-    Every bundle is attempted.  Each failure is logged, then the first one in
+    Bundles without a store share one `S3BundleStore` for the batch.  Every
+    bundle is attempted.  Each failure is logged, then the first one in
     *bundles* order is re-raised.
     """
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [(b, pool.submit(fn, b)) for b in bundles]
+    lent = _share_store(bundles)
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [(b, pool.submit(fn, b)) for b in bundles]
+    finally:
+        for b in lent:
+            b.store = None
     failures = [(b, exc) for b, f in futures if (exc := f.exception()) is not None]
     for b, exc in failures:
         log.error("%s failed for %r", action, b, exc_info=exc)
@@ -1159,8 +1180,8 @@ class Bundle:
 
     def is_successful(self) -> bool:
         """Return True if the bundle has a success marker file."""
-        _, key = parse_s3_uri(self.success_uri)
-        return self._open_store().exists(self.bucket, key)
+        bucket, key = self._success_marker()
+        return self._open_store().exists(bucket, key)
 
     def age_days(self, now: datetime.datetime | None = None) -> float | None:
         """Age in days from S3 LastModified of the success (or metadata) file.
@@ -1432,10 +1453,7 @@ class Bundle:
         bundles = cls.discover_all(
             bucket=bucket, namespace=namespace, **discover_kwargs
         )
-        shared = _store_or_default(store)
-        for b in bundles:
-            if b.store is None:
-                b.store = shared
+        _share_store(bundles, store)
         log.info(
             "Discovered %d bundles of type %s under s3://%s",
             len(bundles),
