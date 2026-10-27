@@ -48,5 +48,5 @@ covers it; only add a new row/module when nothing existing fits.
 
 ## Future work
 
-- **Bundle-owned schema accessor** — now that `ReleaseCandidateBundle` lives in `bundle.bundle`, move `read_schema_version_from_rc_bundle` onto it as `resolved_schema_version()`; single-release mode's schema read shrinks to one line.
+- **Bundle-owned schema accessor** — move `read_schema_version_from_rc_bundle` onto `bundle.bundle.ReleaseCandidateBundle` as `resolved_schema_version()`; single-release mode's schema read shrinks to one line.
 - **Upstream `build_release_catalog`** — file a PR against [OvertureMaps/stac](https://github.com/OvertureMaps/stac) exposing this as a public API (their CLI already does the exact call sequence). When it lands, our wrapper collapses.

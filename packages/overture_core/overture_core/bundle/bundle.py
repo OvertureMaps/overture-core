@@ -33,7 +33,6 @@ Class hierarchy
   changelog, metrics, metrics_summary, changelog_internal, and validation.
 - `ReleaseCandidateBundle` -- release candidate with bridge files, pmtiles,
   changelog, metrics, and metrics_summary.
-- `ReleaseBundle` -- final published release.
 - `ScratchBundle` -- ephemeral debug/intermediate output, labeled by purpose.
 
 Deployment-specific inputs
@@ -57,7 +56,7 @@ import datetime
 import logging
 import re
 from collections.abc import Callable, Collection, Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from os import PathLike
 from typing import Any, Protocol, Self
@@ -124,6 +123,12 @@ def _compose_root(root_path: str, namespace: str = "") -> str:
     return f"{namespace}/{root}" if namespace else root
 
 
+def _dir_prefix(path: str) -> str:
+    """*path* as a key prefix ending in ``/``; ``""`` for the bucket root."""
+    path = path.rstrip("/")
+    return f"{path}/" if path else ""
+
+
 _DIGIT_RUNS = re.compile(r"(\d+)", re.ASCII)
 
 
@@ -158,7 +163,7 @@ def _split_run_uri(s3_uri: str) -> tuple[str, str, str | None]:
     parent = parsed.path.strip("/")
     return (
         parsed.netloc,
-        f"{parent}/" if parent else "",
+        _dir_prefix(parent),
         run_match.group(1) if run_match else None,
     )
 
@@ -363,7 +368,7 @@ def _resolve_partitions(
 
     markers_desc = ", ".join(repr(m) for m in required_markers) or "none"
     failure = ""
-    base_prefix = f"{root_path.rstrip('/')}/"
+    base_prefix = _dir_prefix(root_path)
     result = _resolve(base_prefix, list(partition_keys))
 
     if result is None:
@@ -460,7 +465,28 @@ def _walk_partitions(
             yield from _walk(child_prefix, rest, acc)
             acc.pop(key, None)
 
-    yield from _walk(f"{root_prefix.rstrip('/')}/", partition_keys, {})
+    yield from _walk(_dir_prefix(root_prefix), partition_keys, {})
+
+
+def _run_batch(
+    action: str,
+    fn: Callable[[Bundle], None],
+    bundles: list[Bundle],
+    max_workers: int,
+) -> None:
+    """Run *fn* on every bundle across *max_workers* threads.
+
+    Every bundle is attempted.  Each failure is logged, then the first one in
+    *bundles* order is re-raised.
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [(b, pool.submit(fn, b)) for b in bundles]
+    failures = [(b, exc) for b, f in futures if (exc := f.exception()) is not None]
+    for b, exc in failures:
+        log.error("%s failed for %r", action, b, exc_info=exc)
+    if failures:
+        log.error("%s failed for %d/%d bundle(s)", action, len(failures), len(bundles))
+        raise failures[0][1]
 
 
 # ---------------------------------------------------------------------------
@@ -636,21 +662,25 @@ class Bundle:
             f"s3://{self.bucket}/{self._root_path}" if self.bucket else self._root_path
         )
 
-    def prefix_through_partition(self, last_partition: str) -> str:
-        """S3 key prefix through (up to and including) the specified partition."""
-        if last_partition not in self._partitions.keys():
-            raise ValueError(f"Partition '{last_partition}' is not a partition")
-        prefix = self._root_path
+    def _prefix(self, last_partition: str | None = None) -> str:
+        """Key prefix of the root plus partition segments up to *last_partition*."""
+        segments = [self._root_path] if self._root_path else []
         for key, value in self._partitions.items():
             if not value:
                 raise ValueError(
                     f"Partition '{key}' has no value — call resolve_partitions() "
                     f"before accessing path properties on {type(self).__name__!r}."
                 )
-            prefix = f"{prefix}/{key}={value}"
+            segments.append(f"{key}={value}")
             if key == last_partition:
                 break
-        return prefix
+        return "/".join(segments)
+
+    def prefix_through_partition(self, last_partition: str) -> str:
+        """S3 key prefix through (up to and including) the specified partition."""
+        if last_partition not in self._partitions.keys():
+            raise ValueError(f"Partition '{last_partition}' is not a partition")
+        return self._prefix(last_partition)
 
     def uri_through_partition(self, last_partition: str) -> str:
         """S3 URI through (up to and including) the specified partition."""
@@ -664,30 +694,13 @@ class Bundle:
         templated URI), ``root_path`` is used as-is so the caller can render
         it later.
         """
-        prefix = (
-            f"s3://{self.bucket}/{self._root_path}" if self.bucket else self._root_path
-        )
-        for key, value in self._partitions.items():
-            if not value:
-                raise ValueError(
-                    f"Partition '{key}' has no value — call resolve_partitions() "
-                    f"before accessing path properties on {type(self).__name__!r}."
-                )
-            prefix = f"{prefix}/{key}={value}"
-        return prefix
+        prefix = self._prefix()
+        return f"s3://{self.bucket}/{prefix}" if self.bucket else prefix
 
     @property
     def base_prefix(self) -> str:
         """S3 key prefix (no ``s3://bucket/``) including partition segments."""
-        prefix = self._root_path
-        for key, value in self._partitions.items():
-            if not value:
-                raise ValueError(
-                    f"Partition '{key}' has no value — call resolve_partitions() "
-                    f"before accessing path properties on {type(self).__name__!r}."
-                )
-            prefix = f"{prefix}/{key}={value}"
-        return prefix
+        return self._prefix()
 
     @property
     def data_uri(self) -> str:
@@ -933,7 +946,7 @@ class Bundle:
                 f"calling resolve_previous_partition()."
             )
 
-        scan_prefix = f"{self._root_path}/"
+        scan_prefix = _dir_prefix(self._root_path)
         for key in partition_keys:
             if key == partition_key:
                 break
@@ -984,9 +997,6 @@ class Bundle:
                 )
             except PartitionResolutionError as exc:
                 log.info("No successful run under %s=%s (%s).", key, value, exc)
-                return None
-            if result is None:
-                log.info("No successful run found for %s=%s.", key, value)
                 return None
 
             suffix = "/".join(
@@ -1135,7 +1145,7 @@ class Bundle:
         Partition values are ordered naturally (`_natural_key`), so schema
         ``v1.16.0`` is newer than ``v1.9.0``.
 
-        Rules (see OvertureMaps/tf-data-platform#4428):
+        Rules:
 
         1. Identify ``latest_successful`` = highest ``retention_order_key()``
            bundle in the group that has a success file.  If none exists, nothing
@@ -1153,8 +1163,8 @@ class Bundle:
         group = [b for b in siblings if b is not self] + [self]
         if successful is None:
             successful = [b for b in group if b.is_successful()]
-        successful_ids = {id(b) for b in successful}
-        successful_in_group = [b for b in group if id(b) in successful_ids]
+        successful_keys = {b._identity() for b in successful}
+        successful_in_group = [b for b in group if b._identity() in successful_keys]
         if not successful_in_group:
             return False, "no successful bundle exists in partition group"
         latest_successful = max(
@@ -1163,7 +1173,7 @@ class Bundle:
         latest_key = latest_successful._retention_sort_key()
         latest_desc = latest_successful.retention_order_key()
         self_key = self._retention_sort_key()
-        self_successful = id(self) in successful_ids
+        self_successful = self._identity() in successful_keys
 
         if self is latest_successful or (self_key == latest_key and self_successful):
             return False, "is the latest successful bundle"
@@ -1189,15 +1199,14 @@ class Bundle:
 
         Compare each value with `_natural_key`.
         """
-        values = tuple(
+        return tuple(
             self._partitions[k]
             for k in _RETENTION_ORDER_PARTITION_KEYS
             if k in self._partitions
         )
-        if values:
-            return values
-        # Fallback: deterministic order by partition key name
-        return tuple(v for _k, v in sorted(self._partitions.items()))
+
+    def _identity(self) -> tuple[str, str]:
+        return (self.bucket, self.base_prefix)
 
     def _retention_sort_key(self) -> tuple[_NaturalKey, ...]:
         """`retention_order_key` with each value in natural order."""
@@ -1311,12 +1320,11 @@ class Bundle:
         cls,
         bucket: str,
         namespace: str = "",
-    ) -> list[Bundle]:
+    ) -> list[Self]:
         """Discover all bundles of this type under ``<namespace>/<ROOT_PATH>``.
 
-        Returns one bundle per ``key=value`` combination of ``PARTITION_KEYS``,
-        with or without a success marker.  Results are plain `Bundle`
-        instances carrying this class's ``BUNDLE_TYPE``.
+        Returns one ``cls`` instance per ``key=value`` combination of
+        ``PARTITION_KEYS``, with or without a success marker.
 
         Raises NotImplementedError unless ``ROOT_PATH`` and ``PARTITION_KEYS``
         are set; such subclasses must override this method.
@@ -1328,19 +1336,14 @@ class Bundle:
             )
 
         scan_root = _compose_root(cls.ROOT_PATH, namespace)
-
-        results: list[Bundle] = []
-        root_uri = f"s3://{bucket}/{scan_root}"
-        for partitions in _walk_partitions(
-            bucket=bucket,
-            root_prefix=scan_root,
-            partition_keys=list(cls.PARTITION_KEYS),
-        ):
-            b = Bundle.from_path(root_uri, partitions=partitions)
-            # Preserve the subclass BUNDLE_TYPE for logging / reporting.
-            b.BUNDLE_TYPE = cls.BUNDLE_TYPE  # type: ignore[misc]
-            results.append(b)
-        return results
+        return [
+            cls._from_root(bucket, scan_root, partitions)
+            for partitions in _walk_partitions(
+                bucket=bucket,
+                root_prefix=scan_root,
+                partition_keys=list(cls.PARTITION_KEYS),
+            )
+        ]
 
     @classmethod
     def cleanup_all(
@@ -1478,8 +1481,8 @@ class Bundle:
     ) -> dict[str, "Bundle"]:
         """Return the latest successful bundle per resource under *provider*.
 
-        One paginated ``list_objects_v2`` over ``<root>/provider=<X>/`` replaces
-        a `resolve_partitions` call per resource.  Bundles are ordered by the
+        Uses one paginated ``list_objects_v2`` over ``<root>/provider=<X>/``.
+        Bundles are ordered by the
         partitions after ``resource`` (`_natural_key`).  Only keys with the
         exact bundle layout count as markers, e.g.
         ``resource=R/version=V/run=Z/success``.
@@ -1605,8 +1608,7 @@ class Bundle:
         """Run `initialize` on every bundle across *max_workers* threads.
 
         All bundles share the other arguments; *metadata_factory* builds each
-        bundle's `BundleMetadata` writer.  Every bundle is attempted, then the
-        first failure is re-raised.
+        bundle's `BundleMetadata` writer.  See `_run_batch` for failures.
         """
         if not bundles:
             return
@@ -1620,10 +1622,7 @@ class Bundle:
                 datasets_dir=datasets_dir,
             )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(_one, b) for b in bundles]
-            for f in as_completed(futures):
-                f.result()
+        _run_batch("initialize", _one, bundles, max_workers)
 
     @classmethod
     def finalize_batch(
@@ -1636,8 +1635,8 @@ class Bundle:
     ) -> None:
         """Run `finalize` on every bundle across *max_workers* threads.
 
-        *metadata_factory* builds each bundle's `BundleMetadata` writer.
-        Every bundle is attempted, then the first failure is re-raised.
+        *metadata_factory* builds each bundle's `BundleMetadata` writer.  See
+        `_run_batch` for failures.
         """
         if not bundles:
             return
@@ -1645,10 +1644,7 @@ class Bundle:
         def _one(b: Bundle) -> None:
             b.finalize(status=status, metadata=metadata_factory(b))
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(_one, b) for b in bundles]
-            for f in as_completed(futures):
-                f.result()
+        _run_batch("finalize", _one, bundles, max_workers)
 
     # ------------------------------------------------------------------
     # Dunder
@@ -1712,7 +1708,7 @@ class SourceRawBundle(Bundle):
         }
         super().__init__(
             bucket=bucket,
-            root_path=root_path or self.ROOT_PATH,
+            root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
         )
@@ -1766,7 +1762,7 @@ class SourceIngestBundle(Bundle):
         }
         super().__init__(
             bucket=bucket,
-            root_path=root_path or self.ROOT_PATH,
+            root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
         )
@@ -1798,7 +1794,9 @@ class SourceIngestBundle(Bundle):
             "run": run,
         }
         values.update({key: value for key, value in identifiers.items() if value})
-        return super().from_path(base_path, values)
+        parsed = urlparse(base_path)
+        root = parsed.path.strip("/") or cls.ROOT_PATH
+        return cls._from_root(parsed.netloc, root, values)
 
     @property
     def changelog_uri(self) -> str:
@@ -1844,7 +1842,7 @@ class ThemeAssembleBundle(Bundle):
         partitions = {"theme": theme, "run": run}
         super().__init__(
             bucket=bucket,
-            root_path=root_path or self.ROOT_PATH,
+            root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
         )
@@ -1903,7 +1901,7 @@ class ThemePromoteBundle(Bundle):
         partitions = {"theme": theme, "schema": schema, "run": run}
         super().__init__(
             bucket=bucket,
-            root_path=root_path or self.ROOT_PATH,
+            root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
         )
@@ -2022,7 +2020,7 @@ class ReleaseCandidateBundle(Bundle):
         result = _resolve_partitions(
             bucket=bucket,
             root_path=scan_root,
-            partition_keys=["release", "run"],
+            partition_keys=list(cls.PARTITION_KEYS),
             overrides={"release": release},
             required_markers=("success", "released"),
         )
@@ -2096,19 +2094,8 @@ class ReleaseCandidateBundle(Bundle):
         return f"{self.base_prefix}/registry"
 
 
-class ReleaseBundle(Bundle):
-    """Final published release (placeholder).
-
-    Instances take an explicit ``root_path`` and ``partitions``, and
-    `discover_all` / `cleanup_all` raise NotImplementedError.  The path
-    layout is tracked in OvertureMaps/overture-core#102.
-    """
-
-    BUNDLE_TYPE = "release"
-
-
 class ScratchBundle(Bundle):
-    """Ephemeral debug or intermediate output, labeled by purpose and deletable any time.
+    """Ephemeral debug or intermediate output, labeled by purpose.
 
     Path structure: ``scratch/purpose={purpose}/run={run}``
 
@@ -2128,6 +2115,7 @@ class ScratchBundle(Bundle):
     """
 
     BUNDLE_TYPE = "scratch"
+    ROOT_PATH = "scratch"
     PARTITION_KEYS = ("purpose", "run")
 
     def __init__(
@@ -2141,7 +2129,7 @@ class ScratchBundle(Bundle):
         partitions = {"purpose": purpose, "run": run}
         super().__init__(
             bucket=bucket,
-            root_path=root_path or "scratch",
+            root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
         )
