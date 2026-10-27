@@ -2,7 +2,9 @@
 
 `BundleRegistry` indexes `Bundle` subclasses by ``BUNDLE_TYPE`` and
 ``ROOT_PATH``, which differ for `ThemeAssembleBundle` (``theme_assemble``
-under ``theme_stage``).
+under ``theme_stage``).  Published release paths (``release/<v>/``,
+``changelog/<v>``, ``bridgefiles/<v>``, ``registry/<v>``) aren't bundles, so
+`BundleRegistry.locate` returns ``None`` for them.
 
 Example
 -------
@@ -16,12 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 from overture_core.bundle.bundle import (
     Bundle,
     BundleComponent,
     ReleaseCandidateBundle,
+    ScratchBundle,
     SourceIngestBundle,
     SourceRawBundle,
     ThemeAssembleBundle,
@@ -159,10 +161,6 @@ class BundleRegistry:
     def __repr__(self) -> str:
         return f"{type(self).__name__}([{', '.join(t.__name__ for t in self)}])"
 
-    @property
-    def types(self) -> tuple[type[Bundle], ...]:
-        return self._types
-
     def get(self, name: str) -> type[Bundle]:
         """Return the type whose ``BUNDLE_TYPE`` or ``ROOT_PATH`` is *name*.
 
@@ -187,10 +185,11 @@ class BundleRegistry:
         """
         bucket, key = "", path
         if "://" in path:
-            parsed = urlparse(path)
-            if parsed.scheme != "s3":
+            # Split by hand: "#" and "?" are valid in S3 keys.
+            scheme, _, rest = path.partition("://")
+            if scheme.lower() != "s3":
                 raise ValueError(f"Expected an s3:// URI or a key, got {path!r}")
-            bucket, key = parsed.netloc, parsed.path
+            bucket, _, key = rest.partition("/")
         segments = _segments(key)
         for start in range(len(segments)):
             for bundle_type in self._by_root_length:
@@ -252,6 +251,7 @@ DEFAULT_REGISTRY = BundleRegistry(
         ThemeAssembleBundle,
         ThemePromoteBundle,
         ReleaseCandidateBundle,
+        ScratchBundle,
     ]
 )
-"""The bundle types in `overture_core.bundle.bundle` that have a fixed root."""
+"""Every bundle type in `overture_core.bundle.bundle`."""

@@ -4,11 +4,13 @@ import doctest
 
 import pytest
 
+from overture_core.bundle import bundle as bundle_module
 from overture_core.bundle import registry as registry_module
 from overture_core.bundle.bundle import (
     Bundle,
     BundleComponent,
     BundleStatus,
+    ComponentKind,
     ReleaseCandidateBundle,
     ScratchBundle,
     SourceIngestBundle,
@@ -27,15 +29,23 @@ _TA = "theme_stage/theme=places/run=r1"
 
 class TestDefaultRegistry:
     def test_types(self):
-        assert DEFAULT_REGISTRY.types == (
+        assert list(DEFAULT_REGISTRY) == [
             SourceRawBundle,
             SourceIngestBundle,
             ThemeAssembleBundle,
             ThemePromoteBundle,
             ReleaseCandidateBundle,
-        )
-        assert list(DEFAULT_REGISTRY) == list(DEFAULT_REGISTRY.types)
-        assert len(DEFAULT_REGISTRY) == 5
+            ScratchBundle,
+        ]
+        assert len(DEFAULT_REGISTRY) == 6
+
+    def test_registers_every_bundle_type(self):
+        types = {
+            t
+            for t in vars(bundle_module).values()
+            if isinstance(t, type) and issubclass(t, Bundle) and t is not Bundle
+        }
+        assert types == set(DEFAULT_REGISTRY)
 
     def test_layout_of_each_type(self):
         layout = {
@@ -47,6 +57,7 @@ class TestDefaultRegistry:
             "theme_assemble": ("theme_stage", ("theme", "run")),
             "theme_promote": ("theme_promote", ("theme", "schema", "run")),
             "release_candidate": ("release_candidate", ("release", "run")),
+            "scratch": ("scratch", ("purpose", "run")),
         }
 
     @pytest.mark.parametrize(
@@ -58,6 +69,7 @@ class TestDefaultRegistry:
             ("feeds", SourceIngestBundle),
             ("source_ingest", SourceIngestBundle),
             ("release_candidate", ReleaseCandidateBundle),
+            ("scratch", ScratchBundle),
         ],
     )
     def test_get_by_type_or_root(self, name, expected):
@@ -65,13 +77,13 @@ class TestDefaultRegistry:
         assert name in DEFAULT_REGISTRY
 
     def test_get_unknown_raises(self):
-        with pytest.raises(KeyError, match="No registered bundle type 'scratch'"):
-            DEFAULT_REGISTRY.get("scratch")
+        with pytest.raises(KeyError, match="No registered bundle type 'release'"):
+            DEFAULT_REGISTRY.get("release")
 
     def test_contains(self):
         assert ThemePromoteBundle in DEFAULT_REGISTRY
-        assert ScratchBundle not in DEFAULT_REGISTRY
-        assert "scratch" not in DEFAULT_REGISTRY
+        assert Bundle not in DEFAULT_REGISTRY
+        assert "release" not in DEFAULT_REGISTRY
         assert 3 not in DEFAULT_REGISTRY
 
     def test_repr(self):
@@ -178,11 +190,11 @@ class TestLocate:
     @pytest.mark.parametrize(
         ("relative_path", "component"),
         [
-            ("data", BundleComponent.directory("data")),
-            ("data/part-0.parquet", BundleComponent.directory("data")),
-            ("metadata.json", BundleComponent.file("metadata.json")),
-            ("summary.md", BundleComponent.file("summary.md")),
-            ("changelog/type=x/f.parquet", BundleComponent.directory("changelog")),
+            ("data", BundleComponent("data")),
+            ("data/part-0.parquet", BundleComponent("data")),
+            ("metadata.json", BundleComponent("metadata.json", ComponentKind.FILE)),
+            ("summary.md", BundleComponent("summary.md", ComponentKind.FILE)),
+            ("changelog/type=x/f.parquet", BundleComponent("changelog")),
             ("success/x", None),
             ("unlisted/f", None),
             ("theme_stage/theme=a/run=b", None),
@@ -217,7 +229,6 @@ class TestLocate:
         [
             "s3://bkt",
             "s3://bkt/",
-            "s3://bkt/ns/scratch/purpose=p/run=r",
             "s3://bkt/theme_stage/run=r1/theme=places",
             "s3://bkt/theme_stage/theme=/run=r1",
             "s3://bkt/theme_stage/theme/run=r1",
@@ -227,6 +238,24 @@ class TestLocate:
     )
     def test_unknown_paths(self, path):
         assert DEFAULT_REGISTRY.locate(path) is None
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "s3://bkt/release/2026-05-20.0/theme=places/type=place/part-0.parquet",
+            "s3://bkt/ns/changelog/2026-05-20.0/theme=places/type=place/f.parquet",
+            "s3://bkt/bridgefiles/2026-05-20.0/",
+            "registry/2026-05-20.0/part-0.parquet",
+        ],
+    )
+    def test_published_releases_are_not_bundles(self, path):
+        assert DEFAULT_REGISTRY.locate(path) is None
+
+    def test_keys_may_contain_hash_and_query_characters(self):
+        loc = DEFAULT_REGISTRY.locate("s3://bkt/n#s/theme_stage/theme=a?b/run=c#d/e?f")
+        assert (loc.bucket, loc.namespace) == ("bkt", "n#s")
+        assert dict(loc.partitions) == {"theme": "a?b", "run": "c#d"}
+        assert loc.relative_path == "e?f"
 
     @pytest.mark.parametrize("path", ["gs://bkt/theme_stage", "file:///tmp/x"])
     def test_rejects_other_schemes(self, path):
@@ -280,6 +309,11 @@ class TestBundleFromUri:
                 ReleaseCandidateBundle,
                 "s3://bkt/x/release_candidate/release=R/run=a",
             ),
+            (
+                "s3://bkt/scratch/purpose=p/run=a/data",
+                ScratchBundle,
+                "s3://bkt/scratch/purpose=p/run=a",
+            ),
         ],
     )
     def test_typed_bundle(self, uri, cls, base_uri):
@@ -324,4 +358,4 @@ class TestBundleFromUri:
 
     def test_unknown_path_raises(self):
         with pytest.raises(ValueError, match="not under a registered bundle root"):
-            DEFAULT_REGISTRY.bundle_from_uri("s3://bkt/scratch/purpose=p/run=r")
+            DEFAULT_REGISTRY.bundle_from_uri("s3://bkt/release/2026-05-20.0/")

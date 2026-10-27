@@ -2,6 +2,7 @@
 
 import dataclasses
 import datetime as dt
+import inspect
 import json
 import pickle
 
@@ -795,6 +796,40 @@ class TestReleasedStatus:
         b = self._bundle(None)
         assert b.released_uri == f"s3://bkt/{_RC}/released"
 
+    def test_discover_all_reports_released(self, store):
+        for run in ("r1", "r2"):
+            store.write("bkt", f"ns/release_candidate/release=R/run={run}/success")
+        store.write("bkt", f"ns/{_RC}/released")
+        found = ReleaseCandidateBundle.discover_all("bkt", namespace="ns", store=store)
+        assert all(type(b) is ReleaseCandidateBundle for b in found)
+        assert {b.run: b.status().status for b in found} == {
+            "r1": BundleStatus.RELEASED,
+            "r2": BundleStatus.SUCCESS,
+        }
+
+    def test_cleanup_keeps_published_candidates(self, store):
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        old = now - dt.timedelta(days=90)
+        for release, run in (("R1", "a"), ("R1", "b"), ("R2", "a")):
+            base = f"release_candidate/release={release}/run={run}"
+            store.write("bkt", f"{base}/success", last_modified=old)
+        store.write("bkt", "release_candidate/release=R1/run=a/released")
+        report = ReleaseCandidateBundle.cleanup_all(
+            bucket="bkt", min_age_days=30, dry_run=False, now=now, store=store
+        )
+        assert [r.bundle_uri for r in report.deleted] == [
+            "s3://bkt/release_candidate/release=R1/run=b"
+        ]
+        assert {d.bundle_uri: d.reason for d in report.kept} == {
+            "s3://bkt/release_candidate/release=R1/run=a": (
+                "is a published release (has a released marker)"
+            ),
+            "s3://bkt/release_candidate/release=R2/run=a": (
+                "is the latest successful bundle"
+            ),
+        }
+        assert store.exists("bkt", "release_candidate/release=R1/run=a/success")
+
     def test_requests(self):
         store = CountingStore()
         b = self._bundle(store)
@@ -1424,20 +1459,31 @@ _TYPES = [
 def _instance(cls: type[Bundle]) -> Bundle:
     """An instance of *cls* with every partition set, under namespace ``ns``."""
     return cls._from_root(
-        "bkt",
-        f"ns/{cls.ROOT_PATH or 'scratch'}",
-        {key: "x" for key in cls.PARTITION_KEYS},
+        "bkt", f"ns/{cls.ROOT_PATH}", {key: "x" for key in cls.PARTITION_KEYS}
     )
+
+
+_OWN_PATHS = {"base_uri", "base_prefix", "root_uri", "root_prefix"}
+
+
+def _path_accessors(cls: type[Bundle]) -> set[str]:
+    """The ``*_uri`` / ``*_prefix`` properties of *cls* besides `_OWN_PATHS`."""
+    return {
+        name
+        for name in dir(cls)
+        if name.endswith(("_uri", "_prefix"))
+        and name not in _OWN_PATHS
+        and isinstance(inspect.getattr_static(cls, name), property)
+    }
 
 
 class TestBundleComponent:
     def test_directory_is_the_default_kind(self):
-        assert BundleComponent("data") == BundleComponent.directory("data")
         assert BundleComponent("data").kind is ComponentKind.DIRECTORY
 
     def test_kinds(self):
-        directory = BundleComponent.directory("changelog")
-        file = BundleComponent.file("metadata.json")
+        directory = BundleComponent("changelog")
+        file = BundleComponent("metadata.json", ComponentKind.FILE)
         assert (directory.is_directory, file.is_directory) == (True, False)
         assert (directory.listing_name, file.listing_name) == (
             "changelog/",
@@ -1456,10 +1502,25 @@ class TestBundleComponent:
             BundleComponent(name)
 
     def test_frozen_and_hashable(self):
-        component = BundleComponent.file("success")
+        component = BundleComponent("success", ComponentKind.FILE)
         with pytest.raises(dataclasses.FrozenInstanceError):
             component.name = "x"  # type: ignore[misc]
-        assert {component, BundleComponent.file("success")} == {component}
+        assert {component, BundleComponent("success", ComponentKind.FILE)} == {
+            component
+        }
+
+
+_PUBLISHING = [
+    "bridgefiles/",
+    "pmtiles/",
+    "changelog/",
+    "metrics/",
+    "metrics_summary/",
+    "partition_bboxes/",
+    "propagate/",
+    "license.json",
+    "attribution.mdx",
+]
 
 
 class TestComponents:
@@ -1481,30 +1542,9 @@ class TestComponents:
             ),
             (
                 ThemePromoteBundle,
-                [
-                    "bridgefiles/",
-                    "pmtiles/",
-                    "changelog/",
-                    "metrics/",
-                    "metrics_summary/",
-                    "changelog_internal/",
-                    "validation/",
-                    "partition_bboxes/",
-                ],
+                [*_PUBLISHING, "changelog_internal/", "validation/"],
             ),
-            (
-                ReleaseCandidateBundle,
-                [
-                    "released",
-                    "bridgefiles/",
-                    "pmtiles/",
-                    "changelog/",
-                    "metrics/",
-                    "metrics_summary/",
-                    "partition_bboxes/",
-                    "registry/",
-                ],
-            ),
+            (ReleaseCandidateBundle, ["released", *_PUBLISHING, "registry/"]),
             (ScratchBundle, []),
         ],
         ids=lambda v: v.__name__ if isinstance(v, type) else "",
@@ -1514,59 +1554,41 @@ class TestComponents:
         assert names == ["data/", "metadata.json", "success", *extra]
 
     @pytest.mark.parametrize("cls", _TYPES, ids=lambda c: c.__name__)
-    def test_every_directory_has_accessors(self, cls):
+    def test_component_paths(self, cls):
         b = _instance(cls)
         for component in cls.COMPONENTS:
-            uri = b.component_uri(component.name)
-            prefix = b.component_prefix(component.name)
-            assert uri == f"{b.base_uri}/{component.name}"
-            assert prefix == f"{b.base_prefix}/{component.name}"
-            assert prefix.startswith("ns/")
-            if component.is_directory:
-                assert getattr(b, f"{component.name}_uri") == uri
-                assert getattr(b, f"{component.name}_prefix") == prefix
-
-    def test_file_components_match_the_marker_accessors(self):
-        b = _instance(ReleaseCandidateBundle)
-        assert b.component_uri("metadata.json") == b.metadata_uri
-        assert b.component_uri("success") == b.success_uri
-        assert b.component_uri("released") == b.released_uri
-        assert not hasattr(b, "released_prefix")
-        assert not hasattr(ThemeAssembleBundle, "summary_uri")
-
-    def test_accessors_belong_to_their_type(self):
-        assert not hasattr(SourceRawBundle, "changelog_uri")
-        assert not hasattr(SourceIngestBundle, "bridgefiles_uri")
-        assert not hasattr(ThemePromoteBundle, "registry_uri")
-        assert not hasattr(ReleaseCandidateBundle, "validation_uri")
-        assert not hasattr(Bundle, "changelog_prefix")
-
-    def test_generated_accessors_are_documented_properties(self):
-        accessor = ThemePromoteBundle.__dict__["validation_uri"]
-        assert isinstance(accessor, property)
-        assert accessor.fget.__name__ == "validation_uri"
-        assert "validation/" in accessor.__doc__
-        assert "validation/" in ThemePromoteBundle.validation_prefix.__doc__
-
-    def test_subclasses_inherit_and_override_accessors(self):
-        class Custom(ThemePromoteBundle):
-            COMPONENTS = (
-                *ThemePromoteBundle.COMPONENTS,
-                BundleComponent.directory("logs"),
-                BundleComponent.directory("not-an-identifier"),
+            assert b.component_uri(component.name) == f"{b.base_uri}/{component.name}"
+            assert b.component_prefix(component.name) == (
+                f"ns/{cls.ROOT_PATH}/"
+                + "/".join(f"{k}=x" for k in cls.PARTITION_KEYS)
+                + f"/{component.name}"
             )
 
-            @property
-            def logs_uri(self) -> str:
-                return "custom"
+    @pytest.mark.parametrize("cls", _TYPES, ids=lambda c: c.__name__)
+    def test_components_and_accessors_match(self, cls):
+        b = _instance(cls)
+        directories = {c.name for c in cls.COMPONENTS if c.is_directory}
+        accessors = _path_accessors(cls)
+        for name in directories:
+            assert getattr(b, f"{name}_uri") == b.component_uri(name)
+            assert getattr(b, f"{name}_prefix") == b.component_prefix(name)
+        # The rest are file URIs, named after the file without its extension.
+        files = {c.name.split(".")[0]: c.name for c in cls.COMPONENTS}
+        for accessor in accessors - {
+            f"{d}_{s}" for d in directories for s in ("uri", "prefix")
+        }:
+            stem = accessor.removesuffix("_uri")
+            assert stem != accessor, f"{accessor} has no directory component"
+            assert stem in files, f"{accessor} has no component"
+            assert getattr(b, accessor) == b.component_uri(files[stem])
+
+    def test_subclass_components(self):
+        class Custom(ThemePromoteBundle):
+            COMPONENTS = (*ThemePromoteBundle.COMPONENTS, BundleComponent("logs-1"))
 
         b = Custom(theme="t", bucket="bkt", schema="s", run="r")
         assert b.validation_uri == f"{b.base_uri}/validation"
-        assert "validation_uri" not in Custom.__dict__
-        assert b.logs_uri == "custom"
-        assert b.logs_prefix == f"{b.base_prefix}/logs"
-        assert b.data_uri == f"{b.base_uri}/data"
-        assert b.component_uri("not-an-identifier").endswith("/not-an-identifier")
+        assert b.component_prefix("logs-1/") == f"{b.base_prefix}/logs-1"
 
     @pytest.mark.parametrize("name", ["data", "data/", "metadata.json"])
     def test_get_component(self, name):
