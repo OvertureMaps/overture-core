@@ -38,7 +38,7 @@ from overture_core.bundle.status import (
     BundleStatusReport,
     _metadata_section_statuses,
 )
-from overture_core.cloud.aws.object import parse_s3_uri, success_file_key
+from overture_core.cloud.aws.object import parse_s3_uri
 from overture_core.cloud.cloud import Partition
 from overture_core.dataset.dataset import Dataset
 
@@ -455,34 +455,35 @@ class Bundle:
         *,
         metadata: BundleMetadata,
     ) -> None:
-        """Stamp metadata with *status*; write the marker if it is ``"success"``.
+        """Stamp metadata with *status*; the marker exists only for ``"success"``.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``.  Partition resolution, `needs_processing` and retention
-        treat only bundles with the marker as complete.
+        ``base_uri``.  Any other status deletes an existing marker, so a
+        failed rerun reads as failed.  Partition resolution,
+        `needs_processing` and retention treat only bundles with the marker
+        as complete.
         """
         metadata.finalize(status=status)
+        bucket, key = self._success_marker()
         if status != BundleStatus.SUCCESS:
+            self._open_store().delete(bucket, key)
             log.info(
-                "Finalized %s with status %r; not writing a success file",
+                "Finalized %s with status %s; removed any success file",
                 self.base_uri,
                 status,
             )
             return
-        bucket, key = self._success_marker()
         self._open_store().write(bucket, key)
         log.info("Wrote success file s3://%s/%s", bucket, key)
 
     def _success_marker(self) -> tuple[str, str]:
-        """``(bucket, key)`` of the ``success`` marker, parsed from `base_uri`."""
-        bucket, prefix = parse_s3_uri(self.base_uri)
-        return bucket, success_file_key(prefix)
+        """``(bucket, key)`` of the ``success`` marker."""
+        return self._object_key("success")
 
     def _object_key(self, name: str) -> tuple[str, str]:
         """``(bucket, key)`` of the object *name* directly under `base_uri`."""
         bucket, prefix = parse_s3_uri(self.base_uri)
-        prefix = prefix.strip("/")
-        return bucket, f"{prefix}/{name}" if prefix else name
+        return bucket, _dir_prefix(prefix) + name
 
     def resolve_partitions(
         self,
@@ -772,6 +773,10 @@ class Bundle:
 
         Subclasses extend `_status_report`, so their requests share the one
         store opened here.
+
+        Raises:
+            ValueError: If a partition has no value (call `resolve_partitions`
+                first), or the bundle has no bucket.
         """
         return self._status_report(self._open_store())
 

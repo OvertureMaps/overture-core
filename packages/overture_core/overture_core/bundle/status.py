@@ -15,10 +15,10 @@ class BundleStatus(StrEnum):
     """Lifecycle state of an existing bundle, as reported by `Bundle.status`.
 
     - ``SUCCESS`` -- the ``success`` marker exists.
-    - ``FAILED`` -- no marker, and a ``metadata.json`` section has
-      ``"status": "failed"``.
-    - ``IN_PROGRESS`` -- anything else, e.g. a running or restarted run, or
-      one finalized with another status.
+    - ``FAILED`` -- no marker, and any ``metadata.json`` section has
+      ``"status": "failed"``, even while another section is running.
+    - ``IN_PROGRESS`` -- no marker and no failed section, e.g. a running or
+      restarted run, or one finalized with another status.
     """
 
     IN_PROGRESS = "in_progress"
@@ -30,12 +30,15 @@ class BundleStatus(StrEnum):
 class BundleStatusReport:
     """What `Bundle.status` found for one bundle."""
 
-    status: BundleStatus | None  # None when the bundle doesn't exist
+    status: BundleStatus | None  # None when nothing exists under the prefix
     exists: bool  # any object under the bundle's prefix
     has_success: bool
-    has_metadata: bool  # even if metadata.json can't be parsed
-    # ``status`` of each metadata.json section (DAG id); None if not a string
+    has_metadata: bool  # metadata.json exists, parsed or not
+    # ``status`` of each metadata.json section (DAG id), str or None
     sections: Mapping[str, str | None] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sections", dict(self.sections))
 
 
 def _metadata_section_statuses(body: bytes, uri: str) -> dict[str, str | None]:
