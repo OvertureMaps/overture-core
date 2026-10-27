@@ -14,8 +14,8 @@ Bundles follow a lifecycle:
    bundle is being rebuilt) and create a fresh ``metadata.json``.
 2. **Process** -- the pipeline writes data into ``data/`` and any other
    subdirectories.
-3. **Finalize** -- stamp ``metadata.json`` with the run's status and, if it
-   is ``"success"``, write a new ``success`` file.
+3. **Finalize** -- stamp ``metadata.json`` with the run's status and write
+   a new ``success`` file for ``"success"``, or delete it for any other.
 
 `Bundle.status` reports where a stored bundle is in this lifecycle.
 
@@ -69,7 +69,7 @@ from typing import Any, Protocol, Self, TypeVar
 from urllib.parse import urlparse
 
 from overture_core.bundle.store import BundleStore, S3BundleStore
-from overture_core.cloud.aws.object import parse_s3_uri, success_file_key
+from overture_core.cloud.aws.object import parse_s3_uri
 from overture_core.cloud.cloud import Partition
 from overture_core.dataset.dataset import Dataset
 
@@ -427,10 +427,10 @@ class BundleStatus(StrEnum):
     """Lifecycle state of an existing bundle, as reported by `Bundle.status`.
 
     - ``SUCCESS`` -- the ``success`` marker exists.
-    - ``FAILED`` -- no marker, and a ``metadata.json`` section has
-      ``"status": "failed"``.
-    - ``IN_PROGRESS`` -- anything else, e.g. a running or restarted run, or
-      one finalized with another status.
+    - ``FAILED`` -- no marker, and any ``metadata.json`` section has
+      ``"status": "failed"``, even while another section is running.
+    - ``IN_PROGRESS`` -- no marker and no failed section, e.g. a running or
+      restarted run, or one finalized with another status.
     """
 
     IN_PROGRESS = "in_progress"
@@ -442,12 +442,15 @@ class BundleStatus(StrEnum):
 class BundleStatusReport:
     """What `Bundle.status` found for one bundle."""
 
-    status: BundleStatus | None  # None when the bundle doesn't exist
+    status: BundleStatus | None  # None when nothing exists under the prefix
     exists: bool  # any object under the bundle's prefix
     has_success: bool
-    has_metadata: bool  # even if metadata.json can't be parsed
-    # ``status`` of each metadata.json section (DAG id); None if not a string
+    has_metadata: bool  # metadata.json exists, parsed or not
+    # ``status`` of each metadata.json section (DAG id), str or None
     sections: Mapping[str, str | None] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sections", dict(self.sections))
 
 
 def _metadata_section_statuses(body: bytes, uri: str) -> dict[str, str | None]:
@@ -938,34 +941,35 @@ class Bundle:
         *,
         metadata: BundleMetadata,
     ) -> None:
-        """Stamp metadata with *status*; write the marker if it is ``"success"``.
+        """Stamp metadata with *status*; the marker exists only for ``"success"``.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``.  Partition resolution, `needs_processing` and retention
-        treat only bundles with the marker as complete.
+        ``base_uri``.  Any other status deletes an existing marker, so a
+        failed rerun reads as failed.  Partition resolution,
+        `needs_processing` and retention treat only bundles with the marker
+        as complete.
         """
         metadata.finalize(status=status)
+        bucket, key = self._success_marker()
         if status != BundleStatus.SUCCESS:
+            self._open_store().delete(bucket, key)
             log.info(
-                "Finalized %s with status %r; not writing a success file",
+                "Finalized %s with status %s; removed any success file",
                 self.base_uri,
                 status,
             )
             return
-        bucket, key = self._success_marker()
         self._open_store().write(bucket, key)
         log.info("Wrote success file s3://%s/%s", bucket, key)
 
     def _success_marker(self) -> tuple[str, str]:
-        """``(bucket, key)`` of the ``success`` marker, parsed from `base_uri`."""
-        bucket, prefix = parse_s3_uri(self.base_uri)
-        return bucket, success_file_key(prefix)
+        """``(bucket, key)`` of the ``success`` marker."""
+        return self._object_key("success")
 
     def _object_key(self, name: str) -> tuple[str, str]:
         """``(bucket, key)`` of the object *name* directly under `base_uri`."""
         bucket, prefix = parse_s3_uri(self.base_uri)
-        prefix = prefix.strip("/")
-        return bucket, f"{prefix}/{name}" if prefix else name
+        return bucket, _dir_prefix(prefix) + name
 
     def resolve_partitions(
         self,
@@ -1255,6 +1259,10 @@ class Bundle:
 
         Subclasses extend `_status_report`, so their requests share the one
         store opened here.
+
+        Raises:
+            ValueError: If a partition has no value (call `resolve_partitions`
+                first), or the bundle has no bucket.
         """
         return self._status_report(self._open_store())
 

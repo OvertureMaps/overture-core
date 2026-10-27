@@ -3,6 +3,7 @@
 import dataclasses
 import datetime as dt
 import json
+import pickle
 
 import pytest
 
@@ -408,6 +409,13 @@ class TestLifecycle:
         assert keys(store) == set()
         assert b.is_successful() is False
 
+    def test_failed_rerun_removes_earlier_marker(self, store):
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
+        b.finalize(metadata=StoreMetadata(b))
+        b.finalize(status="failed", metadata=StoreMetadata(b))
+        assert keys(store) == {"scratch/purpose=p/run=r1/metadata.json"}
+        assert b.status().status is BundleStatus.FAILED
+
     def test_finalize_accepts_status_enum(self, store):
         meta = RecordingMetadata()
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
@@ -462,10 +470,11 @@ class TestLifecycle:
         assert sum("failed for ScratchBundle" in m for m in messages) == 2
         assert any("failed for 2/3 bundle(s)" in m for m in messages)
 
-    def test_finalize_batch_failed_writes_no_markers(self, store):
+    def test_finalize_batch_failed_removes_markers(self, store):
         bundles = [
             ScratchBundle(purpose=p, bucket="bkt", run="r1", store=store) for p in "ab"
         ]
+        store.write("bkt", "scratch/purpose=a/run=r1/success")
         made: list[RecordingMetadata] = []
 
         def factory(_b):
@@ -533,6 +542,14 @@ class TestStatus:
             BundleStatusReport(BundleStatus.FAILED, True, False, True)
         )
 
+    def test_report_copies_sections_and_serialises(self):
+        sections = {"dag": "failed"}
+        report = BundleStatusReport(BundleStatus.FAILED, True, False, True, sections)
+        sections["dag"] = "success"
+        assert report.sections == {"dag": "failed"}
+        assert dataclasses.asdict(report)["sections"] == {"dag": "failed"}
+        assert pickle.loads(pickle.dumps(report)) == report
+
     def test_missing_bundle_has_no_status(self, store):
         report = self._bundle(store).status()
         assert report == BundleStatusReport(
@@ -570,6 +587,14 @@ class TestStatus:
             ({"dag": {"status": "failed"}}, BundleStatus.FAILED),
             (
                 {"a": {"status": "success"}, "b": {"status": "failed"}},
+                BundleStatus.FAILED,
+            ),
+            (
+                {"a": {"status": "running"}, "b": {"status": "failed"}},
+                BundleStatus.FAILED,
+            ),
+            (
+                {"a": {"status": "in_progress"}, "b": {"status": "failed"}},
                 BundleStatus.FAILED,
             ),
         ],
