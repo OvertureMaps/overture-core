@@ -24,8 +24,7 @@ from urllib.parse import quote
 import boto3
 
 from overture_core.cloud.aws import object as s3_object
-
-_FOLDER_PLACEHOLDER = "$folder$"
+from overture_core.cloud.aws.object import FOLDER_PLACEHOLDER
 
 
 @runtime_checkable
@@ -33,7 +32,8 @@ class BundleStore(Protocol):
     """Object storage operations the bundle model needs.
 
     Implementations must be safe to call from several threads at once:
-    the batch lifecycle helpers share a store across a thread pool.
+    `Bundle.initialize_batch` and `Bundle.finalize_batch` share one store
+    across a thread pool.
     """
 
     def exists(self, bucket: str, key: str) -> bool:
@@ -41,7 +41,10 @@ class BundleStore(Protocol):
         ...
 
     def last_modified(self, bucket: str, key: str) -> datetime.datetime | None:
-        """Return when ``bucket/key`` was last written, or ``None`` if missing."""
+        """Return when ``bucket/key`` was last written, or ``None`` if missing.
+
+        The time is timezone-aware UTC.
+        """
         ...
 
     def prefix_exists(self, bucket: str, prefix: str) -> bool:
@@ -158,7 +161,8 @@ class InMemoryBundleStore:
     """Dict-backed `BundleStore` for tests and offline tools.
 
     *clock* stamps each write (default: now, in UTC); `write` also takes
-    ``last_modified=`` to seed one.  Listings are sorted, like S3's.
+    ``last_modified=`` to seed one.  Stamps must be timezone-aware and are
+    stored in UTC.  Listings are sorted, like S3's.
     `presigned_url` returns an opaque ``memory://`` URL.
     """
 
@@ -189,7 +193,7 @@ class InMemoryBundleStore:
         names: set[str] = set()
         for key in self._keys(bucket, prefix):
             name, sep, _ = key[len(prefix) :].partition("/")
-            if sep and name and name != _FOLDER_PLACEHOLDER:
+            if sep and name and name != FOLDER_PLACEHOLDER:
                 names.add(name)
         return sorted(names)
 
@@ -209,8 +213,14 @@ class InMemoryBundleStore:
         *,
         last_modified: datetime.datetime | None = None,
     ) -> None:
-        """Write *body* to ``bucket/key``, stamped *last_modified* or the clock."""
+        """Write *body* to ``bucket/key``, stamped *last_modified* or the clock.
+
+        Raises ValueError if the stamp is naive.
+        """
         stamp = last_modified if last_modified is not None else self._clock()
+        if stamp.utcoffset() is None:
+            raise ValueError(f"last_modified must be timezone-aware, got {stamp!r}")
+        stamp = stamp.astimezone(datetime.timezone.utc)
         with self._lock:
             self._objects[(bucket, key)] = (bytes(body), stamp)
 
