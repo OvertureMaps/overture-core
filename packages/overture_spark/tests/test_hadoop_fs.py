@@ -45,12 +45,25 @@ def test_read_text(spark, tmp_path: Path):
 
 @pytest.mark.spark
 @needs_spark
+def test_read_text_larger_than_copy_buffer(spark, tmp_path: Path):
+    text = "ü" * 100_000  # 200,000 bytes, several 64 KiB copyBytes chunks
+    f = tmp_path / "big.txt"
+    f.write_text(text, encoding="utf-8")
+
+    assert read_text(spark, str(f)) == text
+
+
+@pytest.mark.spark
+@needs_spark
 def test_list_files_is_recursive_and_sorted(spark, tmp_path: Path):
     for rel in ["b/part-1.parquet", "a/x/part-0.parquet", "_SUCCESS"]:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_bytes(b"")
 
-    assert _rel(list_files(spark, str(tmp_path)), tmp_path) == [
+    files = list_files(spark, str(tmp_path))
+
+    assert all(f.startswith("file:") for f in files)
+    assert _rel(files, tmp_path) == [
         "_SUCCESS",
         "a/x/part-0.parquet",
         "b/part-1.parquet",
@@ -68,12 +81,15 @@ def test_list_files_missing_path_is_empty(spark, tmp_path: Path):
 def test_delete_prefix_is_recursive_and_tolerates_missing(spark, tmp_path: Path):
     (tmp_path / "x" / "y").mkdir(parents=True)
     (tmp_path / "x" / "y" / "f").write_bytes(b"")
+    (tmp_path / "x2").mkdir()
+    (tmp_path / "x2" / "f").write_bytes(b"")
     (tmp_path / "keep").write_bytes(b"")
 
     delete_prefix(spark, str(tmp_path / "x"))
     delete_prefix(spark, str(tmp_path / "x"))
 
-    assert [p.name for p in tmp_path.iterdir()] == ["keep"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["keep", "x2"]
+    assert (tmp_path / "x2" / "f").exists()
 
 
 @pytest.mark.parametrize("op", [read_text, list_files, delete_prefix])

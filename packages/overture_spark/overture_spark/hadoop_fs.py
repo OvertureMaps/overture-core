@@ -25,7 +25,11 @@ def _path_and_fs(spark: SparkSession, uri: str):
 
 
 def read_text(spark: SparkSession, uri: str) -> str:
-    """The file at ``uri``, decoded as UTF-8."""
+    """The file at ``uri``, decoded as UTF-8.
+
+    A missing file raises py4j's ``Py4JJavaError`` wrapping
+    ``java.io.FileNotFoundException``.
+    """
     path, fs = _path_and_fs(spark, uri)
     jvm = spark._jvm
     buf = jvm.java.io.ByteArrayOutputStream()
@@ -35,7 +39,12 @@ def read_text(spark: SparkSession, uri: str) -> str:
 
 
 def list_files(spark: SparkSession, uri: str) -> list[str]:
-    """Sorted URIs of every file under ``uri``; empty if it doesn't exist."""
+    """Sorted URIs of every file under ``uri``; empty if it doesn't exist.
+
+    URIs are Hadoop-qualified: ``s3://b/p`` lists ``s3a://b/p/...`` and
+    ``/tmp/x`` lists ``file:/tmp/x/...``. If ``uri`` is a file, the result is
+    just that file.
+    """
     path, fs = _path_and_fs(spark, uri)
     if not fs.exists(path):
         return []
@@ -49,8 +58,11 @@ def list_files(spark: SparkSession, uri: str) -> list[str]:
 def delete_prefix(spark: SparkSession, uri: str) -> None:
     """Delete ``uri`` and everything under it; a no-op if it doesn't exist.
 
-    On S3A, removing the last object under a parent recreates the parent's
-    empty directory marker (a zero-byte ``parent/`` object), so the parent
+    This deletes a path, not a string prefix: ``s3://b/tmp/run`` removes
+    ``tmp/run`` and everything under ``tmp/run/``, not ``tmp/run-2/``.
+
+    On S3A, removing the last object under a parent creates an empty directory
+    marker for the parent (a zero-byte ``parent/`` object), so the parent
     still exists afterwards.
     """
     path, fs = _path_and_fs(spark, uri)

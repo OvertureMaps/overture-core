@@ -59,7 +59,7 @@ files = list_files(spark, "s3://bucket/bundle/")
 delete_prefix(spark, "s3://bucket/tmp/run-1/")
 ```
 
-`read_text` decodes UTF-8. `list_files` returns sorted URIs of every file under the URI, recursively, or `[]` if it doesn't exist. `delete_prefix` deletes recursively and is a no-op if the URI doesn't exist. All three read `s3://` as `s3a://`. Every byte goes through the driver over py4j, so keep files small. On S3A, deleting the last object under a parent recreates the parent's empty directory marker (`parent/`).
+`read_text` decodes UTF-8. `list_files` returns sorted, Hadoop-qualified URIs of every file under the URI, recursively (`s3://b/p` lists `s3a://b/p/...`, `/tmp/x` lists `file:/tmp/x/...`), or `[]` if it doesn't exist. `delete_prefix` deletes a path recursively, not a string prefix (`s3://b/tmp/run` leaves `tmp/run-2/`), and is a no-op if the URI doesn't exist. All three read `s3://` as `s3a://`. Every byte goes through the driver over py4j, so keep files small. On S3A, deleting the last object under a parent creates an empty directory marker for the parent (`parent/`).
 
 ## Testing locally
 
