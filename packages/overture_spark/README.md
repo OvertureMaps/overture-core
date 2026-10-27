@@ -9,6 +9,7 @@ It contains:
 - `SparkSedonaJob` (in `job.py`) — cluster-side base class for jobs: platform detection, parameter parsing, logging, and the Sedona `SparkSession` lifecycle. Subclass it and implement `execute_job()`.
 - `test_area` — helpers for a job's optional `test_area` param (a bbox or WKT polygon that scopes a dev/test run to a small region instead of the full planet).
 - `s3` — S3 credentials for Python clients (boto3, PyArrow) that need the same access as Spark's S3A, e.g. on Wherobots, where only S3A gets the storage-integration role.
+- `hadoop_fs` — small driver-side file operations (read, list, delete) through Spark's Hadoop FileSystem, so they use S3A's credentials.
 
 ## Writing a job
 
@@ -43,6 +44,22 @@ def write_partition(batches):
 ```
 
 `resolve_s3_access` returns S3A's assumed role (`assumed.role.arn`), else its static keys (`access.key`/`secret.key`, with `session.token` if set), plus `endpoint.region`, each preferring the per-bucket setting; a bucket's own keys also win over a global role. Clients assume the role with the Wherobots external ID (`WBC_STINT_ASSUME_ROLE_EXTERNAL_ID`, if set) and refresh it; with nothing configured (e.g. Glue) they use the default credential chain. `boto3_session` and `pyarrow_s3_filesystem` are cached per process; `s3_client(access, **client_kwargs)` builds an S3 client from the cached session and is safe to call from several threads. `boto3`/`pyarrow` are imported lazily: install them yourself or with `overture-spark[s3]`.
+
+## Small file operations on the driver
+
+For a params file, a bundle's file list, or a scratch prefix, go through Spark's Hadoop FileSystem instead of boto3. It already has S3A's credentials on every platform:
+
+```python
+import json
+
+from overture_spark.hadoop_fs import delete_prefix, list_files, read_text
+
+params = json.loads(read_text(spark, "s3://bucket/params.json"))
+files = list_files(spark, "s3://bucket/bundle/")
+delete_prefix(spark, "s3://bucket/tmp/run-1/")
+```
+
+`read_text` decodes UTF-8. `list_files` returns sorted, Hadoop-qualified URIs of every file under the URI, recursively (`s3://b/p` lists `s3a://b/p/...`, `/tmp/x` lists `file:/tmp/x/...`), or `[]` if it doesn't exist. `delete_prefix` deletes a path recursively, not a string prefix (`s3://b/tmp/run` leaves `tmp/run-2/`), and is a no-op if the URI doesn't exist. All three read `s3://` as `s3a://`. Every byte goes through the driver over py4j, so keep files small. On S3A, deleting the last object under a parent creates an empty directory marker for the parent (`parent/`).
 
 ## Testing locally
 
