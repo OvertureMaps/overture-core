@@ -19,18 +19,22 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - packages/overture_core/overture_core/uuids_sql.py
-      - packages/overture_core/tests/test_uuids_sql*.py
+      - packages/overture_core/overture_core/*sql*.py
+      - packages/overture_core/tests/*sql*.py
+      - packages/overture_core/tests/conftest.py
       - packages/overture_core/pyproject.toml
+      - packages/overture_core/uv.lock
       - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
   push:
     branches:
       - main
     paths:
-      - packages/overture_core/overture_core/uuids_sql.py
-      - packages/overture_core/tests/test_uuids_sql*.py
+      - packages/overture_core/overture_core/*sql*.py
+      - packages/overture_core/tests/*sql*.py
+      - packages/overture_core/tests/conftest.py
       - packages/overture_core/pyproject.toml
+      - packages/overture_core/uv.lock
       - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
   workflow_dispatch:
@@ -50,6 +54,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     outputs:
       overture_core: ${{ steps.changed.outputs.overture_core_any_changed }}
+      overture_core_trino: ${{ steps.changed.outputs.overture_core_trino_any_changed }}
       overture_spark: ${{ steps.changed.outputs.overture_spark_any_changed }}
     steps:
       - name: Checkout code
@@ -58,18 +63,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # A workflow-file-only change marks both categories changed (each list
-      # below repeats it), same as this workflow's own trigger paths already
-      # treat it: editing this file could affect either job.
-      - name: Find which package(s) changed
+      # Workflow changes run every engine job.
+      - name: Find affected engine suites
         id: changed
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files_yaml: |
             overture_core:
+              - packages/overture_core/overture_core/*sql*.py
+              - packages/overture_core/tests/*sql*.py
+              - packages/overture_core/tests/conftest.py
+              - packages/overture_core/pyproject.toml
+              - packages/overture_core/uv.lock
+              - .github/workflows/sql_engines.yml
+            overture_core_trino:
               - packages/overture_core/overture_core/uuids_sql.py
               - packages/overture_core/tests/test_uuids_sql*.py
+              - packages/overture_core/tests/conftest.py
               - packages/overture_core/pyproject.toml
+              - packages/overture_core/uv.lock
               - .github/workflows/sql_engines.yml
             overture_spark:
               - packages/overture_spark/**
@@ -111,12 +123,12 @@ jobs:
 
       - name: Run Spark engine tests
         working-directory: packages/overture_core
-        run: uv run pytest -v -m spark tests/test_uuids_sql_engines.py
+        run: uv run pytest -v -m spark
 
   trino:
     name: trino
     needs: detect-changes
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.overture_core == 'true')
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.detect-changes.outputs.overture_core_trino == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read # checkout
@@ -159,7 +171,7 @@ jobs:
 
       - name: Run Trino engine tests
         working-directory: packages/overture_core
-        run: uv run pytest -v -m trino tests/test_uuids_sql_engines.py
+        run: uv run pytest -v -m trino
 
   spark-overture-spark:
     name: spark (overture_spark, ${{ matrix.resolution }})
