@@ -42,6 +42,7 @@ dependencies = [
     "requests>=2.31",
     "packaging>=23.0",
     "rich>=13.0",
+    "sqlglot>=30.25.0,<30.26.0",
 ]
 
 [project.scripts]

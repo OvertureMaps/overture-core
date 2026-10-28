@@ -25,6 +25,7 @@ covers it; only add a new row/module when nothing existing fits.
 | --- | --- |
 | `uuids` | Pure Python, Spark-free UUID generation for any UUID version, current or future RFC. |
 | `uuids_sql` | SQL-string equivalents of `uuids`, for computing UUID columns server-side in Spark or Trino instead of round-tripping through a Python UDF. |
+| `spark_sql` | Spark SQL table-creation strings from caller-owned column definitions, rendered with SQLGlot without importing Spark or Arrow. |
 | `versioning` | Deriving a consistent dated version string for sources that don't publish explicit version metadata. |
 | `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
 | [`cloud`](overture_core/cloud/README.md) | Cloud helpers: provider-agnostic code plus one subpackage per vendor (`aws`, `azure`, `databricks`). |
