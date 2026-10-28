@@ -70,3 +70,13 @@ def test_create_table_with_caller_owned_clauses(spark, tmp_path):
         )
     finally:
         spark.sql("DROP TABLE IF EXISTS shared_sql_test")
+
+
+@pytest.mark.parametrize("name", ["a b", "my-col", "a;b", "`ok` garbage", "`id`"])
+def test_parser_preserves_literal_column_names(spark, name):
+    sql = create_table_sql("events", [SqlColumn(name, "INT")])
+    parser = spark._jsparkSession.sessionState().sqlParser()
+    parser.parsePlan(sql)
+    schema_sql = sql.split("(", 1)[1].rsplit(")\nUSING", 1)[0]
+    fields = json.loads(parser.parseTableSchema(schema_sql).json())["fields"]
+    assert [field["name"] for field in fields] == [name]

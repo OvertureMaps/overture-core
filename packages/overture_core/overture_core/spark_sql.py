@@ -1,9 +1,11 @@
 """Spark SQL table definitions rendered by SQLGlot, without Spark or Arrow."""
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlglot import exp
+from sqlglot import exp, parse_one
+from sqlglot.errors import ParseError
 
 
 @dataclass(frozen=True)
@@ -23,9 +25,9 @@ def create_table_sql(
 ) -> str:
     """Build a Spark SQL CREATE TABLE statement from caller-owned columns.
 
-    Names and SQL types use Spark syntax, including backticks for quoted names.
-    Comments are plain text. SQLGlot handles parsing, escaping and rendering in
-    the Spark dialect, including complex types and the table format.
+    Table names use Spark syntax. Column names and comments are plain text.
+    Types exclude nullability and comments. Formats are short provider names
+    like iceberg, parquet or delta.
 
     The result has no semicolon, so callers can append their own PARTITIONED BY,
     LOCATION or TBLPROPERTIES clauses. This function does not execute SQL.
@@ -39,11 +41,21 @@ def create_table_sql(
     """
     if not table_name.strip() or not table_format.strip():
         raise ValueError("table_name and table_format must not be empty")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", table_format):
+        raise ValueError("table_format must be a short provider name")
 
     definitions = []
     for column in columns:
         if not column.name.strip() or not column.sql_type.strip():
             raise ValueError("Column name and sql_type must not be empty")
+        try:
+            sql_type = parse_one(column.sql_type, read="spark", into=exp.DataType)
+        except ParseError as error:
+            raise ValueError(f"Invalid sql_type for column {column.name!r}") from error
+        if not isinstance(sql_type, exp.DataType):
+            raise ValueError(
+                f"Invalid sql_type for column {column.name!r}: expected one type"
+            )
         constraints = []
         if not column.nullable:
             constraints.append(exp.ColumnConstraint(kind=exp.NotNullColumnConstraint()))
@@ -57,8 +69,8 @@ def create_table_sql(
             )
         definitions.append(
             exp.ColumnDef(
-                this=exp.parse_identifier(column.name, dialect="spark"),
-                kind=exp.DataType.build(column.sql_type, dialect="spark"),
+                this=exp.to_identifier(column.name),
+                kind=sql_type,
                 constraints=constraints,
             )
         )
