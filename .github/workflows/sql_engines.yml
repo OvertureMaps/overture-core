@@ -19,10 +19,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - packages/overture_core/overture_core/uuids_sql.py
-      - packages/overture_core/tests/test_uuids_sql*.py
-      - packages/overture_core/overture_core/spark_sql.py
-      - packages/overture_core/tests/test_spark_sql*.py
+      - packages/overture_core/overture_core/*sql*.py
+      - packages/overture_core/tests/*sql*.py
+      - packages/overture_core/tests/conftest.py
       - packages/overture_core/pyproject.toml
       - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
@@ -30,10 +29,9 @@ on:
     branches:
       - main
     paths:
-      - packages/overture_core/overture_core/uuids_sql.py
-      - packages/overture_core/tests/test_uuids_sql*.py
-      - packages/overture_core/overture_core/spark_sql.py
-      - packages/overture_core/tests/test_spark_sql*.py
+      - packages/overture_core/overture_core/*sql*.py
+      - packages/overture_core/tests/*sql*.py
+      - packages/overture_core/tests/conftest.py
       - packages/overture_core/pyproject.toml
       - packages/overture_spark/**
       - .github/workflows/sql_engines.yml
@@ -71,10 +69,9 @@ jobs:
         with:
           files_yaml: |
             overture_core:
-              - packages/overture_core/overture_core/uuids_sql.py
-              - packages/overture_core/tests/test_uuids_sql*.py
-              - packages/overture_core/overture_core/spark_sql.py
-              - packages/overture_core/tests/test_spark_sql*.py
+              - packages/overture_core/overture_core/*sql*.py
+              - packages/overture_core/tests/*sql*.py
+              - packages/overture_core/tests/conftest.py
               - packages/overture_core/pyproject.toml
               - .github/workflows/sql_engines.yml
             overture_spark:
@@ -117,7 +114,7 @@ jobs:
 
       - name: Run Spark engine tests
         working-directory: packages/overture_core
-        run: uv run pytest -v -m spark tests/test_uuids_sql_engines.py tests/test_spark_sql_engine.py
+        run: uv run pytest -v -m spark
 
   trino:
     name: trino
@@ -165,7 +162,7 @@ jobs:
 
       - name: Run Trino engine tests
         working-directory: packages/overture_core
-        run: uv run pytest -v -m trino tests/test_uuids_sql_engines.py
+        run: uv run pytest -v -m trino
 
   spark-overture-spark:
     name: spark (overture_spark, ${{ matrix.resolution }})

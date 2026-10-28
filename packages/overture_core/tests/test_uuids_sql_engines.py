@@ -1,17 +1,7 @@
 """Integration tests for the SQL UUID generators against real engines.
 
-Each class is skipped automatically (via a module-level import check feeding
-`pytest.mark.skipif`) unless its engine client is installed, so a normal
-`pytest` run using only the `dev` extra never attempts these; they need a
-real JVM (Spark) or a running Trino coordinator, which is what the
-"sql-engines" CI workflow provides. That workflow installs
-`overture-core[sql-spark]` / `overture-core[sql-trino]` and runs each half
-with `pytest -m spark` / `pytest -m trino` in its own job, and only triggers
-on changes touching `uuids_sql.py` or this file, so the JVM/Docker cost is
-paid only when it is actually relevant. The two classes skip independently:
-one engine's client being installed doesn't require the other's, since a
-module-level `pytest.importorskip` would abort collection of both classes
-the moment either import is missing.
+Run with `pytest -m spark` or `pytest -m trino`. Each engine's tests skip
+when its client is missing.
 """
 
 import os
@@ -29,32 +19,10 @@ from overture_core.uuids_sql import (
 NAMESPACE_DNS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 NAMES = ["example.com", "overture maps", "", "unicode-\u00e9\u00e8-name"]
 
-try:
-    import pyspark  # noqa: F401
-except ImportError:
-    pyspark = None
-
 
 @pytest.mark.spark
-@pytest.mark.skipif(
-    pyspark is None, reason="pyspark not installed; skipping Spark engine tests"
-)
 class TestSparkEngine:
     """Runs the generated Spark-dialect SQL against a real local Spark session."""
-
-    @classmethod
-    @pytest.fixture(scope="class")
-    def spark(cls):
-        from pyspark.sql import SparkSession
-
-        session = (
-            SparkSession.builder.appName("overture-core-uuids-sql-test")
-            .master("local[1]")
-            .config("spark.ui.enabled", "false")
-            .getOrCreate()
-        )
-        yield session
-        session.stop()
 
     @pytest.mark.parametrize("name", NAMES)
     def test_uuid3_sql_matches_generate_uuid3(self, spark, name):

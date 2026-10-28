@@ -4,26 +4,9 @@ import json
 
 import pytest
 
-pytest.importorskip("pyspark")
-from pyspark.sql import SparkSession
-
 from overture_core.spark_sql import SqlColumn, create_table_sql
 
 pytestmark = pytest.mark.spark
-
-
-@pytest.fixture(scope="module")
-def spark():
-    session = (
-        SparkSession.builder.master("local[1]")
-        .appName("overture-core-sql-test")
-        .config("spark.driver.bindAddress", "127.0.0.1")
-        .config("spark.driver.host", "127.0.0.1")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate()
-    )
-    yield session
-    session.stop()
 
 
 def test_parser_preserves_nullability_types_and_comments(spark):

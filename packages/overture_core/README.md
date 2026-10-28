@@ -5,7 +5,7 @@
 
 Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
 
-`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
+`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql`/`spark_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
 
 `maproulette`/`geojson`/`shapely` are likewise behind an optional `overture-core[maproulette]` extra, needed only for `apis.maproulette.MapRouletteClient`.
 
