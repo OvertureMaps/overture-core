@@ -1162,7 +1162,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "rich", specifier = ">=13.0" },
     { name = "shapely", marker = "extra == 'maproulette'", specifier = ">=2.1.1" },
-    { name = "sqlglot", specifier = ">=30.25.0" },
+    { name = "sqlglot", specifier = ">=30.15.0" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
 provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "azure", "dev"]
