@@ -1,0 +1,66 @@
+# MWAA Compatibility
+#
+# MWAA installs requirements with the Apache Airflow constraints file for the
+# environment's Airflow version, so a dependency floor above a constrained pin
+# makes overture-core uninstallable there. This resolves overture_core's
+# dependencies against each MWAA-supported Airflow 3.x constraints file.
+# Resolution only: nothing is installed or imported.
+#
+# Supported versions and their constraints files:
+# https://docs.aws.amazon.com/mwaa/latest/userguide/airflow-versions.html
+
+name: MWAA Compatibility
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "packages/overture_core/pyproject.toml"
+      - ".github/workflows/mwaa_compat.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/overture_core/pyproject.toml"
+      - ".github/workflows/mwaa_compat.yml"
+  workflow_dispatch:
+
+permissions: {} # no workflow-level access; each job grants only what it needs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: resolve (Airflow ${{ matrix.airflow }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every Airflow 3.x version MWAA supports; all run Python 3.12.
+        airflow: ["3.3.1", "3.2.1", "3.0.6"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      # maproulette is the extra tf-data-platform's MWAA requirements install.
+      # AIRFLOW is passed as an env var, not interpolated into the script
+      # (zizmor's template-injection audit).
+      - name: Resolve against Airflow constraints
+        working-directory: packages/overture_core
+        env:
+          AIRFLOW: ${{ matrix.airflow }}
+        run: |
+          uv pip compile pyproject.toml \
+            --extra maproulette \
+            --python-version 3.12 \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW}/constraints-3.12.txt" \
+            --no-header

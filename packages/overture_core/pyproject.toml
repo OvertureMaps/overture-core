@@ -42,7 +42,11 @@ dependencies = [
     "requests>=2.31",
     "packaging>=23.0",
     "rich>=13.0",
-    "sqlglot>=30.25.0",
+    # Floor follows MWAA: its Airflow 3.3.1 constraints file pins
+    # sqlglot==30.15.0, and a floor above that makes overture-core
+    # uninstallable there. The MWAA Compatibility workflow fails if a bump
+    # breaks this.
+    "sqlglot>=30.15.0",
 ]
 
 [project.scripts]
