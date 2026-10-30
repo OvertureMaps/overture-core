@@ -1,9 +1,9 @@
 """SQL-string helpers for the Overture schema's string constraints."""
 
-_SUPPORTED_ENGINES = ("spark",)
-
-# Unescapes to the Java regex `[\s\p{Cc}]` inside a Spark SQL string literal.
-_BOUNDARY_CLASS = r"[\\s\\p{Cc}]"
+_STRIP_PATTERNS = {
+    # Java regex; Spark unescapes `\\` inside SQL string literals.
+    "spark": r"(?U)^[\\s\\p{Cc}]+|[\\s\\p{Cc}]+\\z",
+}
 
 
 def stripped_string_sql(value_sql: str, *, engine: str = "spark") -> str:
@@ -14,11 +14,8 @@ def stripped_string_sql(value_sql: str, *, engine: str = "spark") -> str:
     remains. Interior characters are kept. Spark only; raises ValueError for
     any other `engine`.
     """
-    if engine not in _SUPPORTED_ENGINES:
+    if engine not in _STRIP_PATTERNS:
         raise ValueError(
-            f"Unsupported engine {engine!r}; expected one of {_SUPPORTED_ENGINES}"
+            f"Unsupported engine {engine!r}; expected one of {tuple(_STRIP_PATTERNS)}"
         )
-    return (
-        f"nullif(regexp_replace({value_sql}, "
-        f"'(?U)^{_BOUNDARY_CLASS}+|{_BOUNDARY_CLASS}+\\\\z', ''), '')"
-    )
+    return f"nullif(regexp_replace({value_sql}, '{_STRIP_PATTERNS[engine]}', ''), '')"
