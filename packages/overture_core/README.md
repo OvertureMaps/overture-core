@@ -5,7 +5,7 @@
 
 Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
 
-`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql`/`spark_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
+`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql`/`spark_sql`/`strings_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
 
 `maproulette`/`geojson`/`shapely` are likewise behind an optional `overture-core[maproulette]` extra, needed only for `apis.maproulette.MapRouletteClient`.
 
@@ -26,6 +26,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `uuids` | Pure Python, Spark-free UUID generation for any UUID version, current or future RFC. |
 | `uuids_sql` | SQL-string equivalents of `uuids`, for computing UUID columns server-side in Spark or Trino instead of round-tripping through a Python UDF. |
 | `spark_sql` | Spark SQL table-creation strings from caller-owned column definitions, rendered with SQLGlot without importing Spark or Arrow. |
+| `strings_sql` | SQL expressions that make string values satisfy the Overture schema's string constraints (e.g. `StrippedString`), computed in-query instead of through a Python UDF. |
 | `versioning` | Deriving a consistent dated version string for sources that don't publish explicit version metadata. |
 | `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
 | [`cloud`](overture_core/cloud/README.md) | Cloud helpers: provider-agnostic code plus one subpackage per vendor (`aws`, `azure`, `databricks`). |
