@@ -8,8 +8,8 @@
 
 Every method takes an explicit *bucket*, so one store can serve several
 buckets.  Keys and prefixes are bucket-relative and ``/``-delimited.  A
-bundle's components (``data/``, ``changelog/``, ...) are the children of its
-base prefix: list them with `BundleStore.list_children` and test one with
+bundle's components (its type's ``COMPONENTS``) are the children of its base
+prefix: list them with `BundleStore.list_children` and test one with
 `BundleStore.prefix_exists` on ``<base_prefix>/<component>/``.
 """
 
