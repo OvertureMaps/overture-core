@@ -39,6 +39,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
 | `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
 | [`dataset`](overture_core/dataset/README.md) | Parsing, validating and rendering provider/resource dataset configs and the license policy, plus the `overture-datasets` CLI. |
+| `bundle` | The pipeline data bundle model: an S3 directory of `data/` plus `metadata.json` and a `success` marker under Hive-style partitions, with its path layout, lifecycle, partition resolution and retention/cleanup. Orchestrator concerns (default buckets, namespacing, the metadata writer, catalogue table drops) are passed in by the caller. |
 
 ## Jobs
 
@@ -49,5 +50,5 @@ covers it; only add a new row/module when nothing existing fits.
 
 ## Future work
 
-- **Bundle-owned schema accessor** — when `ReleaseCandidateBundle` becomes publishable, move `read_schema_version_from_rc_bundle` onto it as `resolved_schema_version()`; single-release mode's schema read shrinks to one line.
+- **Bundle-owned schema accessor** — move `read_schema_version_from_rc_bundle` onto `bundle.bundle.ReleaseCandidateBundle` as `resolved_schema_version()`; single-release mode's schema read shrinks to one line.
 - **Upstream `build_release_catalog`** — file a PR against [OvertureMaps/stac](https://github.com/OvertureMaps/stac) exposing this as a public API (their CLI already does the exact call sequence). When it lands, our wrapper collapses.
