@@ -3,9 +3,7 @@
 import datetime as dt
 import json
 
-import boto3
 import pytest
-from botocore.exceptions import ClientError
 
 from overture_core.bundle.bundle import (
     Bundle,
@@ -22,75 +20,17 @@ from overture_core.bundle.bundle import (
     _natural_key,
     _resolve_partitions,
 )
+from overture_core.bundle.store import InMemoryBundleStore, S3BundleStore
 
 _DEFAULT_LM = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
 
 
+def keys(store: InMemoryBundleStore, bucket: str = "bkt") -> set[str]:
+    """Every object key in *bucket*."""
+    return set(store.iter_keys(bucket, ""))
+
+
 # ── Fakes ────────────────────────────────────────────────────────────────────
-
-
-class FakeS3:
-    """In-memory stand-in for the subset of the boto3 S3 client the model uses."""
-
-    def __init__(self) -> None:
-        self.store: dict[tuple[str, str], bytes] = {}
-        self.last_modified: dict[tuple[str, str], dt.datetime] = {}
-
-    def put(self, bucket: str, key: str, body: bytes = b"", lm=None) -> None:
-        self.store[(bucket, key)] = body
-        if lm is not None:
-            self.last_modified[(bucket, key)] = lm
-
-    def keys(self, bucket: str = "bkt") -> set[str]:
-        return {k for b, k in self.store if b == bucket}
-
-    def head_object(self, Bucket, Key):
-        if (Bucket, Key) not in self.store:
-            raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
-        return {
-            "ContentLength": len(self.store[(Bucket, Key)]),
-            "LastModified": self.last_modified.get((Bucket, Key), _DEFAULT_LM),
-        }
-
-    def put_object(self, Bucket, Key, Body=b"", **_kwargs):
-        self.store[(Bucket, Key)] = Body if isinstance(Body, bytes) else Body.encode()
-        return {}
-
-    def delete_object(self, Bucket, Key):
-        self.store.pop((Bucket, Key), None)
-        return {}
-
-    def delete_objects(self, Bucket, Delete):
-        for obj in Delete.get("Objects", []):
-            self.store.pop((Bucket, obj["Key"]), None)
-        return {"Deleted": Delete.get("Objects", [])}
-
-    def list_objects_v2(self, Bucket, Prefix="", Delimiter=None, MaxKeys=1000, **_kw):
-        contents, common = [], set()
-        for b, k in sorted(self.store):
-            if b != Bucket or not k.startswith(Prefix):
-                continue
-            rest = k[len(Prefix) :]
-            if Delimiter and Delimiter in rest:
-                common.add(Prefix + rest[: rest.index(Delimiter) + 1])
-            else:
-                contents.append({"Key": k})
-        contents = contents[:MaxKeys]
-        return {
-            "KeyCount": len(contents) + len(common),
-            "Contents": contents,
-            "CommonPrefixes": [{"Prefix": p} for p in sorted(common)],
-        }
-
-    def get_paginator(self, op_name):
-        assert op_name == "list_objects_v2"
-        fake = self
-
-        class _Paginator:
-            def paginate(self, **kwargs):
-                yield fake.list_objects_v2(**kwargs)
-
-        return _Paginator()
 
 
 class RecordingMetadata:
@@ -134,13 +74,6 @@ class RecordingDropper:
         if self.fail:
             raise RuntimeError("athena down")
         return list(self.tables)
-
-
-@pytest.fixture
-def s3(monkeypatch) -> FakeS3:
-    fake = FakeS3()
-    monkeypatch.setattr(boto3, "client", lambda *_a, **_kw: fake)
-    return fake
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -332,27 +265,32 @@ class TestSubclasses:
 
 
 class TestLifecycle:
-    def test_initialize_deletes_success_and_writes_metadata(self, s3):
-        s3.put("bkt", "theme_stage/theme=places/run=r1/success")
+    def test_initialize_deletes_success_and_writes_metadata(self, store):
+        store.write("bkt", "theme_stage/theme=places/run=r1/success")
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
-            provider="acme", resource="widgets", bucket="src", version="1", run="a"
+            provider="acme",
+            resource="widgets",
+            bucket="src",
+            version="1",
+            run="a",
+            store=store,
         )
-        b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1")
+        b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1", store=store)
         b.initialize(
             input_bundles=[upstream],
             capture_variables=False,
             custom_metadata={"k": "v"},
             metadata=meta,
         )
-        assert "theme_stage/theme=places/run=r1/success" not in s3.keys()
+        assert "theme_stage/theme=places/run=r1/success" not in keys(store)
         assert meta.calls == [
             ("init", [upstream.base_uri], False),
             ("add", "bundle_type", "theme_assemble"),
             ("add", "k", "v"),
         ]
 
-    def test_initialize_enriches_inputs_when_datasets_dir_given(self, s3, tmp_path):
+    def test_initialize_enriches_inputs_when_datasets_dir_given(self, store, tmp_path):
         (tmp_path / "acme.json").write_text(
             json.dumps(
                 {
@@ -370,44 +308,61 @@ class TestLifecycle:
         )
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
-            provider="acme", resource="widgets", bucket="src", version="7", run="a"
+            provider="acme",
+            resource="widgets",
+            bucket="src",
+            version="7",
+            run="a",
+            store=store,
         )
-        b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1")
+        b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1", store=store)
         b.initialize(input_bundles=[upstream], metadata=meta, datasets_dir=tmp_path)
         (inp,) = meta.section["inputs"]
         assert inp["provider"]["label"] == "acme"
         assert inp["resource"]["label"] == "widgets"
         assert inp["resource"]["version"] == "7"
 
-    def test_initialize_skips_enrichment_without_datasets_dir(self, s3):
+    def test_initialize_skips_enrichment_without_datasets_dir(self, store):
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
-            provider="acme", resource="widgets", bucket="src", version="7", run="a"
+            provider="acme",
+            resource="widgets",
+            bucket="src",
+            version="7",
+            run="a",
+            store=store,
         )
-        ThemeAssembleBundle(theme="t", bucket="bkt", run="r1").initialize(
+        ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store).initialize(
             input_bundles=[upstream], metadata=meta
         )
         assert not any(c[0] == "update_inputs" for c in meta.calls)
 
-    def test_enrichment_failure_is_not_fatal(self, s3, tmp_path):
+    def test_enrichment_failure_is_not_fatal(self, store, tmp_path):
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
-            provider="missing", resource="x", bucket="src", version="1", run="a"
+            provider="missing",
+            resource="x",
+            bucket="src",
+            version="1",
+            run="a",
+            store=store,
         )
-        ThemeAssembleBundle(theme="t", bucket="bkt", run="r1").initialize(
+        ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store).initialize(
             input_bundles=[upstream], metadata=meta, datasets_dir=tmp_path
         )
         assert meta.section["inputs"] == [{"path": upstream.base_uri}]
 
-    def test_finalize_writes_success(self, s3):
+    def test_finalize_writes_success(self, store):
         meta = RecordingMetadata()
-        b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
         b.finalize(status="partial", metadata=meta)
         assert meta.calls == [("finalize", "partial")]
-        assert "scratch/purpose=p/run=r1/success" in s3.keys()
+        assert "scratch/purpose=p/run=r1/success" in keys(store)
 
-    def test_batch_lifecycle_uses_metadata_factory(self, s3):
-        bundles = [ScratchBundle(purpose=p, bucket="bkt", run="r1") for p in "ab"]
+    def test_batch_lifecycle_uses_metadata_factory(self, store):
+        bundles = [
+            ScratchBundle(purpose=p, bucket="bkt", run="r1", store=store) for p in "ab"
+        ]
         made: dict[str, RecordingMetadata] = {}
 
         def factory(b):
@@ -424,11 +379,13 @@ class TestLifecycle:
         assert {
             "scratch/purpose=a/run=r1/success",
             "scratch/purpose=b/run=r1/success",
-        } <= s3.keys()
+        } <= keys(store)
 
     @pytest.mark.parametrize("action", ["initialize_batch", "finalize_batch"])
-    def test_batch_logs_every_failure_and_raises_first(self, s3, action, caplog):
-        bundles = [ScratchBundle(purpose=p, bucket="bkt", run="r1") for p in "abc"]
+    def test_batch_logs_every_failure_and_raises_first(self, store, action, caplog):
+        bundles = [
+            ScratchBundle(purpose=p, bucket="bkt", run="r1", store=store) for p in "abc"
+        ]
 
         class Boom(RecordingMetadata):
             def init(self, *args, **kwargs):
@@ -458,78 +415,86 @@ class TestLifecycle:
 
 
 class TestResolvePartitions:
-    def test_finds_latest_successful_version_and_run(self, s3):
+    def test_finds_latest_successful_version_and_run(self, store):
         for v, r, ok in (("1", "a", True), ("2", "a", True), ("2", "b", False)):
             key = f"feeds/provider=p/resource=r/version={v}/run={r}"
-            s3.put("bkt", f"{key}/data/x.parquet")
+            store.write("bkt", f"{key}/data/x.parquet")
             if ok:
-                s3.put("bkt", f"{key}/success")
-        b = SourceIngestBundle(provider="p", resource="r", bucket="bkt")
+                store.write("bkt", f"{key}/success")
+        b = SourceIngestBundle(provider="p", resource="r", bucket="bkt", store=store)
         b.resolve_partitions()
         assert (b.version, b.run) == ("2", "a")
 
-    def test_resolve_at_bucket_root(self, s3):
+    def test_resolve_at_bucket_root(self, store):
         for run in ("r1", "r2"):
-            s3.put("bkt", f"run={run}/success")
-        assert _resolve_partitions("bkt", "", ["run"], {}) == {"run": "r2"}
-        b = Bundle.from_base_uri("s3://bkt/run=")
+            store.write("bkt", f"run={run}/success")
+        assert _resolve_partitions("bkt", "", ["run"], {}, store=store) == {"run": "r2"}
+        b = Bundle.from_base_uri("s3://bkt/run=", store=store)
         b.resolve_partitions()
         assert (b.base_prefix, b.base_uri) == ("run=r2", "s3://bkt/run=r2")
         assert b.is_successful()
 
-    def test_override_and_missing_raise(self, s3):
-        s3.put("bkt", "root/version=1/success")
-        assert _resolve_partitions("bkt", "root", ["version"], {"version": "1"}) == {
-            "version": "1"
-        }
+    def test_override_and_missing_raise(self, store):
+        store.write("bkt", "root/version=1/success")
+        assert _resolve_partitions(
+            "bkt", "root", ["version"], {"version": "1"}, store=store
+        ) == {"version": "1"}
         with pytest.raises(PartitionResolutionError):
-            _resolve_partitions("bkt", "root", ["version"], {"version": "9"})
+            _resolve_partitions(
+                "bkt", "root", ["version"], {"version": "9"}, store=store
+            )
 
-    def test_resolve_latest_released_with_namespace(self, s3):
+    def test_resolve_latest_released_with_namespace(self, store):
         for run, released in (("r1", True), ("r2", True), ("r3", False)):
             prefix = f"ns/release_candidate/release=R/run={run}"
-            s3.put("bkt", f"{prefix}/success")
+            store.write("bkt", f"{prefix}/success")
             if released:
-                s3.put("bkt", f"{prefix}/released")
+                store.write("bkt", f"{prefix}/released")
         rc = ReleaseCandidateBundle.resolve_latest_released(
-            release="R", bucket="bkt", namespace="ns"
+            release="R", bucket="bkt", namespace="ns", store=store
         )
         assert isinstance(rc, ReleaseCandidateBundle)
         assert rc.base_uri == "s3://bkt/ns/release_candidate/release=R/run=r2"
 
-    def test_resolve_latest_released_none_raises(self, s3):
-        s3.put("bkt", "release_candidate/release=R/run=r1/success")
+    def test_resolve_latest_released_none_raises(self, store):
+        store.write("bkt", "release_candidate/release=R/run=r1/success")
         with pytest.raises(PartitionResolutionError):
-            ReleaseCandidateBundle.resolve_latest_released(release="R", bucket="bkt")
+            ReleaseCandidateBundle.resolve_latest_released(
+                release="R", bucket="bkt", store=store
+            )
 
 
 # ── Retention / delete / cleanup ─────────────────────────────────────────────
 
 
-def _seed_versions(s3: FakeS3, now: dt.datetime) -> None:
+def _seed_versions(store: InMemoryBundleStore, now: dt.datetime) -> None:
     """v0 failed, v1 old success, v2 fresh success, under namespace ``ns``."""
     old = now - dt.timedelta(days=90)
     for v, ok in (("0", False), ("1", True), ("2", True)):
         base = f"ns/feeds/provider=p/resource=r/version={v}/run=r1"
-        s3.put("bkt", f"{base}/metadata.json", b"{}")
-        s3.put("bkt", f"{base}/data/part-0.parquet", b"x")
+        store.write("bkt", f"{base}/metadata.json", b"{}")
+        store.write("bkt", f"{base}/data/part-0.parquet", b"x")
         if ok:
-            s3.put("bkt", f"{base}/success", lm=old if v == "1" else now)
+            store.write(
+                "bkt", f"{base}/success", last_modified=old if v == "1" else now
+            )
 
 
 class TestRetention:
-    def test_is_successful_and_age(self, s3):
+    def test_is_successful_and_age(self, store):
         now = dt.datetime(2026, 2, 1, tzinfo=dt.timezone.utc)
-        b = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1"}, store=store
+        )
         assert b.is_successful() is False
         assert b.age_days() is None
-        s3.put("bkt", "root/version=1/success", lm=_DEFAULT_LM)
+        store.write("bkt", "root/version=1/success", last_modified=_DEFAULT_LM)
         assert b.is_successful() is True
         assert b.age_days(now=now) == 31.0
 
-    def test_is_deletable_rules(self, s3):
+    def test_is_deletable_rules(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
+        _seed_versions(store, now)
         bs = [
             SourceIngestBundle(
                 provider="p",
@@ -538,6 +503,7 @@ class TestRetention:
                 version=v,
                 run="r1",
                 namespace="ns",
+                store=store,
             )
             for v in "012"
         ]
@@ -545,11 +511,13 @@ class TestRetention:
         assert decisions == [True, True, False]
         assert bs[1].is_deletable(365, bs, now=now)[0] is False
 
-    def test_discover_all_honours_namespace(self, s3):
+    def test_discover_all_honours_namespace(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
-        assert SourceIngestBundle.discover_all(bucket="bkt") == []
-        found = SourceIngestBundle.discover_all(bucket="bkt", namespace="ns")
+        _seed_versions(store, now)
+        assert SourceIngestBundle.discover_all(bucket="bkt", store=store) == []
+        found = SourceIngestBundle.discover_all(
+            bucket="bkt", namespace="ns", store=store
+        )
         assert sorted(b.partitions["version"] for b in found) == ["0", "1", "2"]
         assert all(type(b) is SourceIngestBundle for b in found)
         assert all(b.root_uri == "s3://bkt/ns/feeds" for b in found)
@@ -558,11 +526,11 @@ class TestRetention:
         with pytest.raises(NotImplementedError):
             Bundle.discover_all(bucket="bkt")
 
-    def test_cleanup_all_dry_run(self, s3):
+    def test_cleanup_all_dry_run(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
+        _seed_versions(store, now)
         dropper = RecordingDropper()
-        before = set(s3.keys())
+        before = set(keys(store))
         report = SourceIngestBundle.cleanup_all(
             bucket="bkt",
             min_age_days=30,
@@ -570,6 +538,7 @@ class TestRetention:
             namespace="ns",
             table_dropper=dropper,
             now=now,
+            store=store,
         )
         assert isinstance(report, CleanupReport)
         would = sorted(
@@ -580,11 +549,11 @@ class TestRetention:
         assert all(isinstance(d, BundleDecision) for d in report.kept)
         assert report.deleted == []
         assert dropper.calls == []
-        assert s3.keys() == before
+        assert keys(store) == before
 
-    def test_cleanup_all_execute_deletes_and_drops_tables(self, s3):
+    def test_cleanup_all_execute_deletes_and_drops_tables(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
+        _seed_versions(store, now)
         dropper = RecordingDropper()
         report = SourceIngestBundle.cleanup_all(
             bucket="bkt",
@@ -593,6 +562,7 @@ class TestRetention:
             namespace="ns",
             table_dropper=dropper,
             now=now,
+            store=store,
         )
         assert len(report.deleted) == 2
         assert all(r.deleted_tables == ["db.tbl"] for r in report.deleted)
@@ -600,15 +570,17 @@ class TestRetention:
             "ns/feeds/provider=p/resource=r/version=0/run=r1",
             "ns/feeds/provider=p/resource=r/version=1/run=r1",
         ]
-        remaining = {k.split("/version=")[1][0] for k in s3.keys()}
+        remaining = {k.split("/version=")[1][0] for k in keys(store)}
         assert remaining == {"2"}
 
-    def test_delete_dry_run_counts_without_deleting(self, s3):
-        s3.put("bkt", "root/version=1/a")
-        s3.put("bkt", "root/version=1/b/c")
-        s3.put("bkt", "root/version=10/other")
+    def test_delete_dry_run_counts_without_deleting(self, store):
+        store.write("bkt", "root/version=1/a")
+        store.write("bkt", "root/version=1/b/c")
+        store.write("bkt", "root/version=10/other")
         dropper = RecordingDropper()
-        b = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1"}, store=store
+        )
         result = b.delete(dry_run=True, table_dropper=dropper)
         assert result == DeleteResult(
             bundle_uri="s3://bkt/root/version=1",
@@ -619,44 +591,54 @@ class TestRetention:
         assert dropper.calls == [
             {"bucket": "bkt", "base_prefix": "root/version=1", "dry_run": True}
         ]
-        assert len(s3.keys()) == 3
+        assert len(keys(store)) == 3
 
-    def test_delete_only_removes_own_prefix(self, s3):
-        s3.put("bkt", "root/version=1/a")
-        s3.put("bkt", "root/version=10/other")
-        b = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+    def test_delete_only_removes_own_prefix(self, store):
+        store.write("bkt", "root/version=1/a")
+        store.write("bkt", "root/version=10/other")
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1"}, store=store
+        )
         result = b.delete()
         assert result.deleted_object_count == 1
         assert result.deleted_tables == []
-        assert s3.keys() == {"root/version=10/other"}
+        assert keys(store) == {"root/version=10/other"}
 
-    def test_delete_table_dropper_failure_is_not_fatal(self, s3):
-        s3.put("bkt", "root/version=1/a")
-        b = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+    def test_delete_table_dropper_failure_is_not_fatal(self, store):
+        store.write("bkt", "root/version=1/a")
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1"}, store=store
+        )
         result = b.delete(table_dropper=RecordingDropper(fail=True))
         assert result.deleted_object_count == 1
         assert result.deleted_tables == []
 
-    def test_from_base_uri_at_bucket_root_deletes_that_bundle(self, s3):
-        s3.put("bkt", "theme=places/run=X/data/a.parquet")
-        s3.put("bkt", "theme=places/run=X/success")
-        s3.put("bkt", "theme_stage/theme=places/run=X/success")
-        b = ThemeAssembleBundle.from_base_uri("s3://bkt/theme=places/run=X")
+    def test_from_base_uri_at_bucket_root_deletes_that_bundle(self, store):
+        store.write("bkt", "theme=places/run=X/data/a.parquet")
+        store.write("bkt", "theme=places/run=X/success")
+        store.write("bkt", "theme_stage/theme=places/run=X/success")
+        b = ThemeAssembleBundle.from_base_uri(
+            "s3://bkt/theme=places/run=X", store=store
+        )
         assert b.base_uri == "s3://bkt/theme=places/run=X"
         assert b.delete().deleted_object_count == 2
-        assert s3.keys() == {"theme_stage/theme=places/run=X/success"}
+        assert keys(store) == {"theme_stage/theme=places/run=X/success"}
 
-    def test_scratch_bundles_are_discoverable(self, s3):
-        s3.put("bkt", "scratch/purpose=p/run=r1/success")
-        found = ScratchBundle.discover_all(bucket="bkt")
+    def test_scratch_bundles_are_discoverable(self, store):
+        store.write("bkt", "scratch/purpose=p/run=r1/success")
+        found = ScratchBundle.discover_all(bucket="bkt", store=store)
         assert [b.base_uri for b in found] == ["s3://bkt/scratch/purpose=p/run=r1"]
         assert type(found[0]) is ScratchBundle
 
-    def test_is_deletable_matches_successful_by_location(self, s3):
+    def test_is_deletable_matches_successful_by_location(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        s3.put("bkt", "root/version=0/success", lm=now - dt.timedelta(days=60))
+        store.write(
+            "bkt", "root/version=0/success", last_modified=now - dt.timedelta(days=60)
+        )
         bs = [
-            Bundle(bucket="bkt", root_path="root", partitions={"version": v})
+            Bundle(
+                bucket="bkt", root_path="root", partitions={"version": v}, store=store
+            )
             for v in "01"
         ]
         latest = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
@@ -666,9 +648,9 @@ class TestRetention:
             "is the latest successful bundle",
         )
 
-    def test_delete_refuses_bundle_at_bucket_root(self, s3):
+    def test_delete_refuses_bundle_at_bucket_root(self, store):
         with pytest.raises(ValueError, match="has no partitions"):
-            Bundle(bucket="bkt", root_path="").delete()
+            Bundle(bucket="bkt", root_path="", store=store).delete()
 
     @pytest.mark.parametrize(
         "bundle",
@@ -679,14 +661,14 @@ class TestRetention:
         ],
         ids=["datasets", "feeds", "namespace-root"],
     )
-    def test_delete_refuses_bundle_without_partitions(self, s3, bundle):
-        s3.put("bkt", "datasets/provider=p/resource=r/version=1/run=r1/success")
-        s3.put("bkt", "feeds/provider=p/resource=r/version=1/run=r1/success")
-        s3.put("bkt", "alice/feeds/provider=p/resource=r/version=1/run=r1/success")
+    def test_delete_refuses_bundle_without_partitions(self, store, bundle):
+        store.write("bkt", "datasets/provider=p/resource=r/version=1/run=r1/success")
+        store.write("bkt", "feeds/provider=p/resource=r/version=1/run=r1/success")
+        store.write("bkt", "alice/feeds/provider=p/resource=r/version=1/run=r1/success")
         dropper = RecordingDropper()
         with pytest.raises(ValueError, match="has no partitions"):
             bundle.delete(table_dropper=dropper)
-        assert len(s3.keys()) == 3
+        assert len(keys(store)) == 3
         assert dropper.calls == []
 
     @pytest.mark.parametrize(
@@ -713,18 +695,18 @@ class TestRetention:
         ],
         ids=["subclass-unresolved", "subclass-namespace", "generic-empty-value"],
     )
-    def test_delete_refuses_unset_declared_partitions(self, s3, bundle, missing):
+    def test_delete_refuses_unset_declared_partitions(self, store, bundle, missing):
         for root in ("feeds", "ns/feeds"):
-            s3.put("bkt", f"{root}/provider=p/resource=r/version=1/run=r1/success")
+            store.write("bkt", f"{root}/provider=p/resource=r/version=1/run=r1/success")
         dropper = RecordingDropper()
         with pytest.raises(ValueError, match=f"partition\\(s\\) {missing} have no"):
             bundle.delete(dry_run=False, table_dropper=dropper)
-        assert len(s3.keys()) == 2
+        assert len(keys(store)) == 2
         assert dropper.calls == []
 
-    def test_cleanup_all_checks_success_once_per_bundle(self, s3, monkeypatch):
+    def test_cleanup_all_checks_success_once_per_bundle(self, store, monkeypatch):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
+        _seed_versions(store, now)
         checked: list[str] = []
         original = Bundle.is_successful
 
@@ -734,17 +716,24 @@ class TestRetention:
 
         monkeypatch.setattr(Bundle, "is_successful", counting)
         report = SourceIngestBundle.cleanup_all(
-            bucket="bkt", min_age_days=30, dry_run=True, namespace="ns", now=now
+            bucket="bkt",
+            min_age_days=30,
+            dry_run=True,
+            namespace="ns",
+            now=now,
+            store=store,
         )
         assert len(report.would_delete) == 2
         assert len(checked) == 3
         assert len(set(checked)) == 3
 
-    def test_is_deletable_uses_success_snapshot(self, s3):
+    def test_is_deletable_uses_success_snapshot(self, store):
         now = dt.datetime(2026, 2, 1, tzinfo=dt.timezone.utc)
-        s3.put("bkt", "root/version=1/metadata.json", b"{}")
+        store.write("bkt", "root/version=1/metadata.json", b"{}")
         old, new = (
-            Bundle(bucket="bkt", root_path="root", partitions={"version": v})
+            Bundle(
+                bucket="bkt", root_path="root", partitions={"version": v}, store=store
+            )
             for v in "12"
         )
         group = [old, new]
@@ -761,67 +750,67 @@ class TestRetention:
 class TestNeedsProcessing:
     _PARENT = "feeds/provider=p/resource=r/version=1"
 
-    def _bundle(self, run="r2"):
+    def _bundle(self, run="r2", *, store=None):
         return SourceIngestBundle(
-            provider="p", resource="r", bucket="bkt", version="1", run=run
+            provider="p", resource="r", bucket="bkt", version="1", run=run, store=store
         )
 
-    def test_non_latest_override_forces_true(self, s3):
-        assert self._bundle().needs_processing({"version": "1"}) is True
+    def test_non_latest_override_forces_true(self, store):
+        assert self._bundle(store=store).needs_processing({"version": "1"}) is True
 
-    def test_no_runs_returns_true(self, s3):
-        assert self._bundle().needs_processing({"version": "latest"}) is True
+    def test_no_runs_returns_true(self, store):
+        assert self._bundle(store=store).needs_processing({"version": "latest"}) is True
 
-    def test_other_successful_run_returns_false(self, s3):
-        s3.put("bkt", f"{self._PARENT}/run=r1/success")
-        assert self._bundle().needs_processing() is False
+    def test_other_successful_run_returns_false(self, store):
+        store.write("bkt", f"{self._PARENT}/run=r1/success")
+        assert self._bundle(store=store).needs_processing() is False
 
-    def test_unsuccessful_run_returns_true(self, s3):
-        s3.put("bkt", f"{self._PARENT}/run=r1/data/x")
-        assert self._bundle().needs_processing() is True
+    def test_unsuccessful_run_returns_true(self, store):
+        store.write("bkt", f"{self._PARENT}/run=r1/data/x")
+        assert self._bundle(store=store).needs_processing() is True
 
-    def test_same_run_rerun_returns_true(self, s3):
-        s3.put("bkt", f"{self._PARENT}/run=r2/success")
-        assert self._bundle().needs_processing() is True
+    def test_same_run_rerun_returns_true(self, store):
+        store.write("bkt", f"{self._PARENT}/run=r2/success")
+        assert self._bundle(store=store).needs_processing() is True
 
-    def test_rerun_returns_true_when_an_earlier_run_also_succeeded(self, s3):
-        s3.put("bkt", f"{self._PARENT}/run=r1/success")
-        s3.put("bkt", f"{self._PARENT}/run=r2/success")
-        assert self._bundle("r2").needs_processing() is True
-        assert self._bundle("r0").needs_processing() is False
+    def test_rerun_returns_true_when_an_earlier_run_also_succeeded(self, store):
+        store.write("bkt", f"{self._PARENT}/run=r1/success")
+        store.write("bkt", f"{self._PARENT}/run=r2/success")
+        assert self._bundle("r2", store=store).needs_processing() is True
+        assert self._bundle("r0", store=store).needs_processing() is False
 
-    def test_explicit_base_uri_is_checked(self, s3):
-        s3.put("other", f"{self._PARENT}/run=r1/success")
-        b = self._bundle()
+    def test_explicit_base_uri_is_checked(self, store):
+        store.write("other", f"{self._PARENT}/run=r1/success")
+        b = self._bundle(store=store)
         assert b.needs_processing() is True
         rendered = b.base_uri.replace("s3://bkt/", "s3://other/")
         assert b.needs_processing(base_uri=rendered) is False
 
-    def test_similarly_named_artifacts_are_not_success_markers(self, s3):
-        s3.put("bkt", f"{self._PARENT}/run=r1/success.log")
-        s3.put("bkt", f"{self._PARENT}/run=r1/success/part-0")
-        assert self._bundle("r2").needs_processing() is True
+    def test_similarly_named_artifacts_are_not_success_markers(self, store):
+        store.write("bkt", f"{self._PARENT}/run=r1/success.log")
+        store.write("bkt", f"{self._PARENT}/run=r1/success/part-0")
+        assert self._bundle("r2", store=store).needs_processing() is True
 
-    def test_current_run_artifact_is_not_a_rerun(self, s3):
-        s3.put("bkt", f"{self._PARENT}/run=r1/success")
-        s3.put("bkt", f"{self._PARENT}/run=r2/success.log")
-        assert self._bundle("r2").needs_processing() is False
+    def test_current_run_artifact_is_not_a_rerun(self, store):
+        store.write("bkt", f"{self._PARENT}/run=r1/success")
+        store.write("bkt", f"{self._PARENT}/run=r2/success.log")
+        assert self._bundle("r2", store=store).needs_processing() is False
 
 
 class TestBatchHelpers:
-    def test_resolve_partitions_batch_picks_latest_per_resource(self, s3):
+    def test_resolve_partitions_batch_picks_latest_per_resource(self, store):
         for res, v, r in (
             ("a", "1", "x"),
             ("a", "2", "x"),
             ("a", "2", "y"),
             ("b", "1", "x"),
         ):
-            s3.put(
+            store.write(
                 "bkt", f"ns/feeds/provider=p/resource={res}/version={v}/run={r}/success"
             )
-        s3.put("bkt", "ns/feeds/provider=p/resource=a/version=3/run=x/data/f")
+        store.write("bkt", "ns/feeds/provider=p/resource=a/version=3/run=x/data/f")
         out = SourceIngestBundle.resolve_partitions_batch(
-            provider="p", bucket="bkt", namespace="ns"
+            provider="p", bucket="bkt", namespace="ns", store=store
         )
         assert sorted(out) == ["a", "b"]
         assert isinstance(out["a"], SourceIngestBundle)
@@ -836,7 +825,7 @@ class TestBatchHelpers:
         with pytest.raises(TypeError):
             ThemeAssembleBundle.resolve_partitions_batch(provider="p", bucket="bkt")
 
-    def test_resolve_partitions_batch_requires_exact_layout(self, s3):
+    def test_resolve_partitions_batch_requires_exact_layout(self, store):
         base = "feeds/provider=p/resource=r"
         for key in (
             f"{base}/version=1/run=a/success",
@@ -847,10 +836,12 @@ class TestBatchHelpers:
             f"{base}/run=x/version=6/success",
             f"{base}/version=7/run=d/success.log",
         ):
-            s3.put("bkt", key)
-        out = SourceIngestBundle.resolve_partitions_batch(provider="p", bucket="bkt")
+            store.write("bkt", key)
+        out = SourceIngestBundle.resolve_partitions_batch(
+            provider="p", bucket="bkt", store=store
+        )
         assert out["r"].base_uri == f"s3://bkt/{base}/version=1/run=a"
-        b = SourceIngestBundle(provider="p", resource="r", bucket="bkt")
+        b = SourceIngestBundle(provider="p", resource="r", bucket="bkt", store=store)
         b.resolve_partitions()
         assert b.base_uri == out["r"].base_uri
 
@@ -865,30 +856,32 @@ class TestBatchHelpers:
         ],
         ids=["rerun", "nested", "suffix", "subdir", "other-run-done"],
     )
-    def test_needs_processing_batch_single_marker(self, s3, marker, needs):
-        s3.put("bkt", f"feeds/provider=p/resource=a/version=1/{marker}")
+    def test_needs_processing_batch_single_marker(self, store, marker, needs):
+        store.write("bkt", f"feeds/provider=p/resource=a/version=1/{marker}")
         b = SourceIngestBundle(
-            provider="p", resource="a", bucket="bkt", version="1", run="r2"
+            provider="p", resource="a", bucket="bkt", version="1", run="r2", store=store
         )
         assert b.needs_processing() is needs
-        assert Bundle.needs_processing_batch([b]) == ([b] if needs else [])
+        assert Bundle.needs_processing_batch([b], store=store) == ([b] if needs else [])
 
-    def test_needs_processing_batch(self, s3):
-        s3.put("bkt", "feeds/provider=p/resource=a/version=1/run=x/success")
+    def test_needs_processing_batch(self, store):
+        store.write("bkt", "feeds/provider=p/resource=a/version=1/run=x/success")
         done = SourceIngestBundle(
-            provider="p", resource="a", bucket="bkt", version="1", run="z"
+            provider="p", resource="a", bucket="bkt", version="1", run="z", store=store
         )
         todo = SourceIngestBundle(
-            provider="p", resource="b", bucket="bkt", version="1", run="z"
+            provider="p", resource="b", bucket="bkt", version="1", run="z", store=store
         )
-        assert Bundle.needs_processing_batch([done, todo]) == [todo]
-        assert Bundle.needs_processing_batch([done, todo], {"version": "1"}) == [
+        assert Bundle.needs_processing_batch([done, todo], store=store) == [todo]
+        assert Bundle.needs_processing_batch(
+            [done, todo], {"version": "1"}, store=store
+        ) == [
             done,
             todo,
         ]
-        assert Bundle.needs_processing_batch([]) == []
+        assert Bundle.needs_processing_batch([], store=store) == []
 
-    def test_needs_processing_batch_matches_singular(self, s3):
+    def test_needs_processing_batch_matches_singular(self, store):
         for key in (
             "feeds/provider=p/resource=a/version=1/run=x/success",
             "feeds/provider=p/resource=a/version=1/run=y/success",
@@ -896,11 +889,16 @@ class TestBatchHelpers:
             "feeds/provider=p/resource=c/version=10/run=x/success",
             "theme_stage/theme=places/run=r1/success",
         ):
-            s3.put("bkt", key)
+            store.write("bkt", key)
 
         def ingest(resource, run, version="1"):
             return SourceIngestBundle(
-                provider="p", resource=resource, bucket="bkt", version=version, run=run
+                provider="p",
+                resource=resource,
+                bucket="bkt",
+                version=version,
+                run=run,
+                store=store,
             )
 
         bundles = [
@@ -908,24 +906,33 @@ class TestBatchHelpers:
             ingest("a", "y"),  # rerun of a successful run -> process
             ingest("b", "z"),  # no successful run -> process
             ingest("c", "z"),  # only version=10 succeeded -> process
-            ThemeAssembleBundle(theme="places", bucket="bkt", run="r2"),  # skip
-            ThemeAssembleBundle(theme="places", bucket="bkt", run="r1"),  # rerun
-            ThemeAssembleBundle(theme="roads", bucket="bkt", run="r1"),  # process
+            ThemeAssembleBundle(
+                theme="places", bucket="bkt", run="r2", store=store
+            ),  # skip
+            ThemeAssembleBundle(
+                theme="places", bucket="bkt", run="r1", store=store
+            ),  # rerun
+            ThemeAssembleBundle(
+                theme="roads", bucket="bkt", run="r1", store=store
+            ),  # process
         ]
         expected = [b for b in bundles if b.needs_processing()]
         assert [b.base_uri for b in expected] == [
             bundles[i].base_uri for i in (1, 2, 3, 5, 6)
         ]
-        assert Bundle.needs_processing_batch(bundles) == expected
+        assert Bundle.needs_processing_batch(bundles, store=store) == expected
 
 
 # ── Path helpers ─────────────────────────────────────────────────────────────
 
 
 class TestPathHelpers:
-    def _bundle(self, run="r1"):
+    def _bundle(self, run="r1", *, store=None):
         return Bundle(
-            bucket="bkt", root_path="root", partitions={"version": "1", "run": run}
+            bucket="bkt",
+            root_path="root",
+            partitions={"version": "1", "run": run},
+            store=store,
         )
 
     def test_prefix_and_uri_through_partition(self):
@@ -1009,43 +1016,47 @@ class TestPathHelpers:
 
 
 class TestResolvePartitionsEdgeCases:
-    def test_backtracks_to_older_candidate(self, s3):
-        s3.put("bkt", "root/version=1/run=a/success")
-        s3.put("bkt", "root/version=2/run=a/data/x")
-        assert _resolve_partitions("bkt", "root", ["version", "run"]) == {
+    def test_backtracks_to_older_candidate(self, store):
+        store.write("bkt", "root/version=1/run=a/success")
+        store.write("bkt", "root/version=2/run=a/data/x")
+        assert _resolve_partitions("bkt", "root", ["version", "run"], store=store) == {
             "version": "1",
             "run": "a",
         }
 
-    def test_no_required_markers_accepts_any_content(self, s3):
-        s3.put("bkt", "root/version=1/data/x")
-        assert _resolve_partitions("bkt", "root", ["version"], required_markers=()) == {
-            "version": "1"
-        }
+    def test_no_required_markers_accepts_any_content(self, store):
+        store.write("bkt", "root/version=1/data/x")
+        assert _resolve_partitions(
+            "bkt", "root", ["version"], required_markers=(), store=store
+        ) == {"version": "1"}
 
-    def test_override_on_non_terminal_partition(self, s3):
-        s3.put("bkt", "root/version=1/run=a/success")
-        s3.put("bkt", "root/version=2/run=b/success")
+    def test_override_on_non_terminal_partition(self, store):
+        store.write("bkt", "root/version=1/run=a/success")
+        store.write("bkt", "root/version=2/run=b/success")
         result = _resolve_partitions(
-            "bkt", "root", ["version", "run"], overrides={"version": "1"}
+            "bkt", "root", ["version", "run"], overrides={"version": "1"}, store=store
         )
         assert result == {"version": "1", "run": "a"}
 
-    def test_override_with_no_viable_deeper_path_raises(self, s3):
-        s3.put("bkt", "root/version=1/run=a/data/x")
+    def test_override_with_no_viable_deeper_path_raises(self, store):
+        store.write("bkt", "root/version=1/run=a/data/x")
         with pytest.raises(
             PartitionResolutionError,
             match=r"No run= directory .* under s3://bkt/root/version=1/ "
             r"\(1 candidate\(s\) checked\)",
         ):
             _resolve_partitions(
-                "bkt", "root", ["version", "run"], overrides={"version": "1"}
+                "bkt",
+                "root",
+                ["version", "run"],
+                overrides={"version": "1"},
+                store=store,
             )
 
-    def test_fully_set_bundle_without_marker_names_the_leaf(self, s3):
-        s3.put("bkt", "feeds/provider=p/resource=r/version=1/run=r1/data/x")
+    def test_fully_set_bundle_without_marker_names_the_leaf(self, store):
+        store.write("bkt", "feeds/provider=p/resource=r/version=1/run=r1/data/x")
         b = SourceIngestBundle(
-            provider="p", resource="r", bucket="bkt", version="1", run="r1"
+            provider="p", resource="r", bucket="bkt", version="1", run="r1", store=store
         )
         with pytest.raises(
             PartitionResolutionError,
@@ -1054,27 +1065,30 @@ class TestResolvePartitionsEdgeCases:
         ):
             b.resolve_partitions()
 
-    def test_resolve_with_no_partition_keys_raises(self, s3):
+    def test_resolve_with_no_partition_keys_raises(self, store):
         with pytest.raises(PartitionResolutionError, match="No bundle with required"):
-            _resolve_partitions("bkt", "root", [])
+            _resolve_partitions("bkt", "root", [], store=store)
 
-    def test_latest_with_nothing_found_raises(self, s3):
+    def test_latest_with_nothing_found_raises(self, store):
         with pytest.raises(PartitionResolutionError, match="No version= directory"):
-            _resolve_partitions("bkt", "root", ["version"])
+            _resolve_partitions("bkt", "root", ["version"], store=store)
 
-    def test_resolve_partitions_keeps_set_values_and_applies_overrides(self, s3):
-        s3.put("bkt", "root/version=1/run=a/success")
-        s3.put("bkt", "root/version=1/run=b/success")
+    def test_resolve_partitions_keeps_set_values_and_applies_overrides(self, store):
+        store.write("bkt", "root/version=1/run=a/success")
+        store.write("bkt", "root/version=1/run=b/success")
         b = Bundle(
-            bucket="bkt", root_path="root", partitions={"version": "1", "run": ""}
+            bucket="bkt",
+            root_path="root",
+            partitions={"version": "1", "run": ""},
+            store=store,
         )
         b.resolve_partitions()
         assert b.run == "b"
         b.resolve_partitions(overrides={"run": "a"})
         assert b.run == "a"
 
-    def test_resolve_partitions_noop_without_partitions(self, s3):
-        b = Bundle(bucket="bkt", root_path="root")
+    def test_resolve_partitions_noop_without_partitions(self, store):
+        b = Bundle(bucket="bkt", root_path="root", store=store)
         b.resolve_partitions()
         assert b.base_uri == "s3://bkt/root"
 
@@ -1086,44 +1100,49 @@ class TestFindPreviousPartition:
     CURRENT_VERSION = "2026-02-01"
     CURRENT_RUN = "20260201T000000"
 
-    def _bundle(self):
+    def _bundle(self, *, store=None):
         return SourceIngestBundle(
             bucket="bkt",
             provider="esri",
             resource="buildings",
             version=self.CURRENT_VERSION,
             run=self.CURRENT_RUN,
+            store=store,
         )
 
-    def _run(self, s3, version, run, success=True):
+    def _run(self, store, version, run, success=True):
         prefix = f"{self.ROOT}/version={version}/run={run}"
-        s3.put("bkt", f"{prefix}/data/part-0.parquet")
+        store.write("bkt", f"{prefix}/data/part-0.parquet")
         if success:
-            s3.put("bkt", f"{prefix}/success")
+            store.write("bkt", f"{prefix}/success")
 
-    def test_previous_version_preferred_over_same_version_run(self, s3):
-        self._run(s3, "2026-01-01", "20260101T000000")
-        self._run(s3, self.CURRENT_VERSION, "20260115T000000")
-        self._run(s3, self.CURRENT_VERSION, self.CURRENT_RUN)
-        found = self._bundle().find_previous_partition(same_value_fallback=True)
+    def test_previous_version_preferred_over_same_version_run(self, store):
+        self._run(store, "2026-01-01", "20260101T000000")
+        self._run(store, self.CURRENT_VERSION, "20260115T000000")
+        self._run(store, self.CURRENT_VERSION, self.CURRENT_RUN)
+        found = self._bundle(store=store).find_previous_partition(
+            same_value_fallback=True
+        )
         assert found["baseline_kind"] == "previous"
         assert found["data_uri"] == (
             f"s3://bkt/{self.ROOT}/version=2026-01-01/run=20260101T000000/data"
         )
 
-    def test_skips_incomplete_previous_version(self, s3):
-        self._run(s3, "2026-01-01", "20260101T000000")
-        self._run(s3, "2026-01-15", "20260115T000000", success=False)
-        found = self._bundle().find_previous_partition()
+    def test_skips_incomplete_previous_version(self, store):
+        self._run(store, "2026-01-01", "20260101T000000")
+        self._run(store, "2026-01-15", "20260115T000000", success=False)
+        found = self._bundle(store=store).find_previous_partition()
         assert "version=2026-01-01" in found["data_uri"]
         assert found["prior_values"] == ["2026-01-15", "2026-01-01"]
         assert found["rejected"] == ["2026-01-15"]
 
-    def test_falls_back_to_earlier_run_of_current_version(self, s3):
-        self._run(s3, self.CURRENT_VERSION, "20260110T000000")
-        self._run(s3, self.CURRENT_VERSION, "20260120T000000", success=False)
-        self._run(s3, self.CURRENT_VERSION, self.CURRENT_RUN)
-        found = self._bundle().find_previous_partition(same_value_fallback=True)
+    def test_falls_back_to_earlier_run_of_current_version(self, store):
+        self._run(store, self.CURRENT_VERSION, "20260110T000000")
+        self._run(store, self.CURRENT_VERSION, "20260120T000000", success=False)
+        self._run(store, self.CURRENT_VERSION, self.CURRENT_RUN)
+        found = self._bundle(store=store).find_previous_partition(
+            same_value_fallback=True
+        )
         assert found["baseline_kind"] == "same"
         assert found["data_uri"] == (
             f"s3://bkt/{self.ROOT}/version={self.CURRENT_VERSION}"
@@ -1131,36 +1150,44 @@ class TestFindPreviousPartition:
         )
         assert found["prior_values"] == []
 
-    def test_fallback_ignores_current_and_later_runs(self, s3):
-        self._run(s3, self.CURRENT_VERSION, self.CURRENT_RUN)
-        self._run(s3, self.CURRENT_VERSION, "20260301T000000")
-        found = self._bundle().find_previous_partition(same_value_fallback=True)
+    def test_fallback_ignores_current_and_later_runs(self, store):
+        self._run(store, self.CURRENT_VERSION, self.CURRENT_RUN)
+        self._run(store, self.CURRENT_VERSION, "20260301T000000")
+        found = self._bundle(store=store).find_previous_partition(
+            same_value_fallback=True
+        )
         assert found["data_uri"] is None
         assert found["baseline_kind"] is None
 
-    def test_fallback_is_opt_in(self, s3):
-        self._run(s3, self.CURRENT_VERSION, "20260115T000000")
-        found = self._bundle().find_previous_partition()
+    def test_fallback_is_opt_in(self, store):
+        self._run(store, self.CURRENT_VERSION, "20260115T000000")
+        found = self._bundle(store=store).find_previous_partition()
         assert found["data_uri"] is None
 
-    def test_unusable_previous_versions_still_reported(self, s3):
-        self._run(s3, "2026-01-01", "20260101T000000", success=False)
-        self._run(s3, self.CURRENT_VERSION, "20260115T000000")
-        found = self._bundle().find_previous_partition(same_value_fallback=True)
+    def test_unusable_previous_versions_still_reported(self, store):
+        self._run(store, "2026-01-01", "20260101T000000", success=False)
+        self._run(store, self.CURRENT_VERSION, "20260115T000000")
+        found = self._bundle(store=store).find_previous_partition(
+            same_value_fallback=True
+        )
         assert found["baseline_kind"] == "same"
         assert found["prior_values"] == ["2026-01-01"]
         assert found["rejected"] == ["2026-01-01"]
 
-    def test_fallback_without_sub_partitions_returns_none(self, s3):
-        s3.put("bkt", "root/version=0/data/x")
-        b = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+    def test_fallback_without_sub_partitions_returns_none(self, store):
+        store.write("bkt", "root/version=0/data/x")
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1"}, store=store
+        )
         found = b.find_previous_partition(same_value_fallback=True)
         assert found["data_uri"] is None
         assert found["rejected"] == ["0"]
 
-    def test_last_partition_checks_markers_directly(self, s3):
-        s3.put("bkt", "root/version=0/success")
-        b = Bundle(bucket="bkt", root_path="root", partitions={"version": "1"})
+    def test_last_partition_checks_markers_directly(self, store):
+        store.write("bkt", "root/version=0/success")
+        b = Bundle(
+            bucket="bkt", root_path="root", partitions={"version": "1"}, store=store
+        )
         assert b.resolve_previous_partition() == "s3://bkt/root/version=0/data"
 
     def test_unknown_partition_raises(self):
@@ -1184,62 +1211,63 @@ class TestFindPreviousPartition:
 
 
 class TestRetentionEdgeCases:
-    def _bundle(self, version, run="r1"):
+    def _bundle(self, version, run="r1", *, store=None):
         return Bundle(
             bucket="bkt",
             root_path="root",
             partitions={"version": version, "run": run},
+            store=store,
         )
 
-    def test_no_successful_bundle_in_group(self, s3):
-        b = self._bundle("1")
+    def test_no_successful_bundle_in_group(self, store):
+        b = self._bundle("1", store=store)
         assert b.is_deletable(0, [b]) == (
             False,
             "no successful bundle exists in partition group",
         )
 
-    def test_newer_unsuccessful_bundle_is_kept(self, s3):
-        s3.put("bkt", "root/version=1/run=r1/success")
-        old, new = self._bundle("1"), self._bundle("2")
+    def test_newer_unsuccessful_bundle_is_kept(self, store):
+        store.write("bkt", "root/version=1/run=r1/success")
+        old, new = self._bundle("1", store=store), self._bundle("2", store=store)
         deletable, reason = new.is_deletable(0, [old, new])
         assert deletable is False
         assert "is not older than" in reason
 
-    def test_young_successful_bundle_is_kept(self, s3):
+    def test_young_successful_bundle_is_kept(self, store):
         now = dt.datetime(2026, 1, 2, tzinfo=dt.timezone.utc)
-        s3.put("bkt", "root/version=1/run=r1/success")
-        s3.put("bkt", "root/version=2/run=r1/success")
-        old, new = self._bundle("1"), self._bundle("2")
+        store.write("bkt", "root/version=1/run=r1/success")
+        store.write("bkt", "root/version=2/run=r1/success")
+        old, new = self._bundle("1", store=store), self._bundle("2", store=store)
         deletable, reason = old.is_deletable(30, [old, new], now=now)
         assert deletable is False
         assert reason.startswith("age 1.0d < min_age_days")
 
-    def test_missing_last_modified_keeps_bundle(self, s3, monkeypatch):
-        s3.put("bkt", "root/version=1/run=r1/success")
-        s3.put("bkt", "root/version=2/run=r1/success")
-        old, new = self._bundle("1"), self._bundle("2")
+    def test_missing_last_modified_keeps_bundle(self, store, monkeypatch):
+        store.write("bkt", "root/version=1/run=r1/success")
+        store.write("bkt", "root/version=2/run=r1/success")
+        old, new = self._bundle("1", store=store), self._bundle("2", store=store)
         monkeypatch.setattr(Bundle, "age_days", lambda self, now=None: None)
         assert old.is_deletable(30, [old, new]) == (
             False,
             "cannot determine bundle age",
         )
 
-    def test_age_falls_back_to_metadata(self, s3):
+    def test_age_falls_back_to_metadata(self, store):
         now = dt.datetime(2026, 1, 3, tzinfo=dt.timezone.utc)
-        s3.put("bkt", "root/version=1/run=r1/metadata.json", b"{}")
-        assert self._bundle("1").age_days(now=now) == 2.0
+        store.write("bkt", "root/version=1/run=r1/metadata.json", b"{}")
+        assert self._bundle("1", store=store).age_days(now=now) == 2.0
 
-    def test_recent_incomplete_older_bundle_is_kept(self, s3):
+    def test_recent_incomplete_older_bundle_is_kept(self, store):
         # An in-flight rerun: initialize removed success and rewrote metadata.
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        s3.put("bkt", "root/version=2/run=r1/success")
-        s3.put(
+        store.write("bkt", "root/version=2/run=r1/success")
+        store.write(
             "bkt",
             "root/version=1/run=r1/metadata.json",
             b"{}",
-            lm=now - dt.timedelta(days=1),
+            last_modified=now - dt.timedelta(days=1),
         )
-        old, new = self._bundle("1"), self._bundle("2")
+        old, new = self._bundle("1", store=store), self._bundle("2", store=store)
         assert old.is_deletable(30, [old, new], now=now) == (
             False,
             "age 1.0d < min_age_days 30d",
@@ -1249,26 +1277,31 @@ class TestRetentionEdgeCases:
             "unsuccessful; superseded by ('2', 'r1'); age 1.0d >= 0d",
         )
 
-    def test_incomplete_bundle_without_metadata_is_kept(self, s3):
-        s3.put("bkt", "root/version=2/run=r1/success")
-        s3.put("bkt", "root/version=1/run=r1/data/part-0")
-        old, new = self._bundle("1"), self._bundle("2")
+    def test_incomplete_bundle_without_metadata_is_kept(self, store):
+        store.write("bkt", "root/version=2/run=r1/success")
+        store.write("bkt", "root/version=1/run=r1/data/part-0")
+        old, new = self._bundle("1", store=store), self._bundle("2", store=store)
         assert old.is_deletable(0, [old, new]) == (
             False,
             "cannot determine bundle age",
         )
 
-    def test_cleanup_all_keeps_in_flight_rerun(self, s3):
+    def test_cleanup_all_keeps_in_flight_rerun(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
+        _seed_versions(store, now)
         rerun = "ns/feeds/provider=p/resource=r/version=0/run=r1/metadata.json"
-        s3.put("bkt", rerun, b"{}", lm=now)
+        store.write("bkt", rerun, b"{}", last_modified=now)
         report = SourceIngestBundle.cleanup_all(
-            bucket="bkt", min_age_days=30, dry_run=False, namespace="ns", now=now
+            bucket="bkt",
+            min_age_days=30,
+            dry_run=False,
+            namespace="ns",
+            now=now,
+            store=store,
         )
         deleted = [r.bundle_uri.split("version=")[1][0] for r in report.deleted]
         assert deleted == ["1"]
-        assert rerun in s3.keys()
+        assert rerun in keys(store)
 
     def test_retention_order_key_without_order_partitions_is_empty(self):
         b = Bundle(
@@ -1291,26 +1324,31 @@ class TestRetentionEdgeCases:
             "objects_deleted": 5,
         }
 
-    def test_cleanup_all_records_delete_failures(self, s3, monkeypatch):
+    def test_cleanup_all_records_delete_failures(self, store, monkeypatch):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        _seed_versions(s3, now)
+        _seed_versions(store, now)
 
         def boom(self, dry_run=False, *, table_dropper=None):
-            raise RuntimeError("s3 down")
+            raise RuntimeError("store down")
 
         monkeypatch.setattr(Bundle, "delete", boom)
         report = SourceIngestBundle.cleanup_all(
-            bucket="bkt", min_age_days=30, dry_run=False, namespace="ns", now=now
+            bucket="bkt",
+            min_age_days=30,
+            dry_run=False,
+            namespace="ns",
+            now=now,
+            store=store,
         )
         assert report.deleted == []
         assert len(report.errors) == 2
-        assert all("delete failed: s3 down" in e.reason for e in report.errors)
+        assert all("delete failed: store down" in e.reason for e in report.errors)
 
-    def test_discover_all_skips_foreign_and_empty_segments(self, s3):
-        s3.put("bkt", "theme_stage/theme=places/run=r1/success")
-        s3.put("bkt", "theme_stage/theme=/run=r1/success")
-        s3.put("bkt", "theme_stage/_tmp/run=r1/success")
-        found = ThemeAssembleBundle.discover_all(bucket="bkt")
+    def test_discover_all_skips_foreign_and_empty_segments(self, store):
+        store.write("bkt", "theme_stage/theme=places/run=r1/success")
+        store.write("bkt", "theme_stage/theme=/run=r1/success")
+        store.write("bkt", "theme_stage/_tmp/run=r1/success")
+        found = ThemeAssembleBundle.discover_all(bucket="bkt", store=store)
         assert [b.partitions for b in found] == [{"theme": "places", "run": "r1"}]
 
 
@@ -1319,7 +1357,7 @@ class TestRetentionEdgeCases:
 
 class TestScanEdgeCases:
     def test_enrichment_skips_entries_with_provenance_or_without_ids(
-        self, s3, tmp_path
+        self, store, tmp_path
     ):
         meta = RecordingMetadata()
         meta.section["inputs"] = [
@@ -1327,32 +1365,34 @@ class TestScanEdgeCases:
             {"path": "s3://src/b"},
         ]
         meta.init = lambda input_paths=None, capture_variables=True: None
-        b = ThemeAssembleBundle(theme="t", bucket="bkt", run="r1")
+        b = ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store)
         b.initialize(
-            input_bundles=[Bundle(bucket="src", root_path="b")],
+            input_bundles=[Bundle(bucket="src", root_path="b", store=store)],
             metadata=meta,
             datasets_dir=tmp_path,
         )
         assert not any(c[0] == "update_inputs" for c in meta.calls)
 
-    def test_needs_processing_ignores_non_run_directories(self, s3):
-        s3.put("bkt", "feeds/provider=p/resource=r/version=1/_tmp/success")
+    def test_needs_processing_ignores_non_run_directories(self, store):
+        store.write("bkt", "feeds/provider=p/resource=r/version=1/_tmp/success")
         b = SourceIngestBundle(
-            provider="p", resource="r", bucket="bkt", version="1", run="r2"
+            provider="p", resource="r", bucket="bkt", version="1", run="r2", store=store
         )
         assert b.needs_processing() is True
 
-    def test_batch_scans_ignore_non_success_and_partial_keys(self, s3):
-        s3.put("bkt", "feeds/provider=p/resource=a/version=1/run=x/data/f")
-        s3.put("bkt", "feeds/provider=p/resource=a/success")
+    def test_batch_scans_ignore_non_success_and_partial_keys(self, store):
+        store.write("bkt", "feeds/provider=p/resource=a/version=1/run=x/data/f")
+        store.write("bkt", "feeds/provider=p/resource=a/success")
         assert (
-            SourceIngestBundle.resolve_partitions_batch(provider="p", bucket="bkt")
+            SourceIngestBundle.resolve_partitions_batch(
+                provider="p", bucket="bkt", store=store
+            )
             == {}
         )
         todo = SourceIngestBundle(
-            provider="p", resource="a", bucket="bkt", version="1", run="x"
+            provider="p", resource="a", bucket="bkt", version="1", run="x", store=store
         )
-        assert Bundle.needs_processing_batch([todo]) == [todo]
+        assert Bundle.needs_processing_batch([todo], store=store) == [todo]
 
 
 # ── Natural ordering of partition values ─────────────────────────────────────
@@ -1379,23 +1419,27 @@ class TestNaturalOrder:
         assert sorted(values, key=_natural_key) == sorted(values)
         assert _natural_key("01") != _natural_key("1")
 
-    def _promote(self, s3, schema, lm=None):
-        s3.put("bkt", f"theme_promote/theme=t/schema={schema}/run=r1/success", lm=lm)
+    def _promote(self, store, schema, lm=None):
+        store.write(
+            "bkt",
+            f"theme_promote/theme=t/schema={schema}/run=r1/success",
+            last_modified=lm,
+        )
 
-    def test_resolve_latest_schema(self, s3):
+    def test_resolve_latest_schema(self, store):
         for schema in ("v1.9.0", "v1.16.0", "v1.10.0"):
-            self._promote(s3, schema)
-        b = ThemePromoteBundle(theme="t", bucket="bkt")
+            self._promote(store, schema)
+        b = ThemePromoteBundle(theme="t", bucket="bkt", store=store)
         b.resolve_partitions()
         assert b.partitions == {"theme": "t", "schema": "v1.16.0", "run": "r1"}
 
-    def test_cleanup_keeps_newest_schema(self, s3):
+    def test_cleanup_keeps_newest_schema(self, store):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
         old = now - dt.timedelta(days=90)
         for schema in ("v1.9.0", "v1.16.0"):
-            self._promote(s3, schema, lm=old)
+            self._promote(store, schema, lm=old)
         report = ThemePromoteBundle.cleanup_all(
-            bucket="bkt", min_age_days=30, dry_run=True, now=now
+            bucket="bkt", min_age_days=30, dry_run=True, now=now, store=store
         )
         assert [d.bundle_uri for d in report.would_delete] == [
             "s3://bkt/theme_promote/theme=t/schema=v1.9.0/run=r1"
@@ -1404,47 +1448,40 @@ class TestNaturalOrder:
             "s3://bkt/theme_promote/theme=t/schema=v1.16.0/run=r1"
         ]
 
-    def test_find_previous_partition(self, s3):
+    def test_find_previous_partition(self, store):
         for schema in ("v1.9.0", "v1.10.0", "v1.20.0"):
-            self._promote(s3, schema)
-        b = ThemePromoteBundle(theme="t", bucket="bkt", schema="v1.16.0", run="r1")
+            self._promote(store, schema)
+        b = ThemePromoteBundle(
+            theme="t", bucket="bkt", schema="v1.16.0", run="r1", store=store
+        )
         found = b.find_previous_partition(partition_key="schema")
         assert found["prior_values"] == ["v1.10.0", "v1.9.0"]
         assert "schema=v1.10.0" in found["data_uri"]
 
-    def test_same_value_fallback_orders_runs(self, s3):
-        s3.put("bkt", "root/version=1/run=r9/success")
-        s3.put("bkt", "root/version=1/run=r11/success")
+    def test_same_value_fallback_orders_runs(self, store):
+        store.write("bkt", "root/version=1/run=r9/success")
+        store.write("bkt", "root/version=1/run=r11/success")
         b = Bundle(
-            bucket="bkt", root_path="root", partitions={"version": "1", "run": "r10"}
+            bucket="bkt",
+            root_path="root",
+            partitions={"version": "1", "run": "r10"},
+            store=store,
         )
         found = b.find_previous_partition(same_value_fallback=True)
         assert found["data_uri"] == "s3://bkt/root/version=1/run=r9/data"
 
-    def test_resolve_partitions_batch(self, s3):
+    def test_resolve_partitions_batch(self, store):
         for version in ("v1.9.0", "v1.16.0"):
-            s3.put(
+            store.write(
                 "bkt", f"feeds/provider=p/resource=a/version={version}/run=r1/success"
             )
-        out = SourceIngestBundle.resolve_partitions_batch(provider="p", bucket="bkt")
+        out = SourceIngestBundle.resolve_partitions_batch(
+            provider="p", bucket="bkt", store=store
+        )
         assert out["a"].partitions["version"] == "v1.16.0"
 
 
 # ── S3 client reuse ──────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def counted_s3(monkeypatch) -> tuple[FakeS3, list[tuple]]:
-    """``FakeS3`` plus a record of every ``boto3.client`` call."""
-    fake = FakeS3()
-    calls: list[tuple] = []
-
-    def _client(*args, **_kw):
-        calls.append(args)
-        return fake
-
-    monkeypatch.setattr(boto3, "client", _client)
-    return fake, calls
 
 
 class TestClientReuse:
@@ -1452,7 +1489,7 @@ class TestClientReuse:
 
     _ROOT = "feeds/provider=p/resource=r"
 
-    def _seed(self, fake: FakeS3) -> None:
+    def _seed(self, fake) -> None:
         for version in ("1", "2", "3"):
             for run in ("a", "b"):
                 fake.put("bkt", f"{self._ROOT}/version={version}/run={run}/success")
@@ -1508,3 +1545,142 @@ class TestClientReuse:
         ]
         assert Bundle.needs_processing_batch(bundles) == bundles
         assert calls == [("s3",)]
+
+    def test_cleanup_all(self, counted_s3):
+        # One client for the walk, one shared by every check and delete.
+        fake, calls = counted_s3
+        self._seed(fake)
+        report = SourceIngestBundle.cleanup_all(bucket="bkt", min_age_days=0)
+        assert len(report.kept) + len(report.would_delete) == 7
+        assert calls == [("s3",), ("s3",)]
+
+    def test_lifecycle_and_age(self, counted_s3):
+        fake, calls = counted_s3
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
+        b.finalize(metadata=RecordingMetadata())
+        b.initialize(metadata=RecordingMetadata())  # exists, then delete
+        assert b.age_days() is None  # two lookups, both missing
+        assert calls == [("s3",)] * 3
+
+    @pytest.mark.parametrize("action", ["initialize_batch", "finalize_batch"])
+    def test_batch_shares_one_client(self, counted_s3, store, action):
+        _, calls = counted_s3
+        own = ScratchBundle(purpose="own", bucket="bkt", run="r1", store=store)
+        bundles = [
+            ScratchBundle(purpose=p, bucket="bkt", run="r1") for p in "abcdef"
+        ] + [own]
+        getattr(Bundle, action)(
+            bundles, metadata_factory=lambda b: RecordingMetadata(), max_workers=4
+        )
+        assert calls == [("s3",)]
+        assert [b.store for b in bundles] == [None] * 6 + [store]
+
+    def test_explicit_s3_store_opens_no_client(self, counted_s3):
+        fake, calls = counted_s3
+        self._seed(fake)
+        store = S3BundleStore(client=fake)
+        report = SourceIngestBundle.cleanup_all(
+            bucket="bkt", min_age_days=0, store=store
+        )
+        assert len(report.kept) + len(report.would_delete) == 7
+        assert calls == []
+
+
+# ── Store injection ──────────────────────────────────────────────────────────
+
+
+class TestStoreInjection:
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda s: Bundle(bucket="bkt", root_path="r", store=s),
+            lambda s: SourceRawBundle(provider="p", resource="r", bucket="b", store=s),
+            lambda s: SourceIngestBundle(
+                provider="p", resource="r", bucket="b", store=s
+            ),
+            lambda s: ThemeAssembleBundle(theme="t", bucket="b", store=s),
+            lambda s: ThemePromoteBundle(theme="t", bucket="b", store=s),
+            lambda s: ReleaseCandidateBundle(bucket="b", store=s),
+            lambda s: ScratchBundle(purpose="p", bucket="b", store=s),
+        ],
+    )
+    def test_constructors_take_store(self, make, store):
+        assert make(store).store is store
+        assert make(None).store is None
+
+    def test_from_path_and_from_base_uri(self, store):
+        assert Bundle.from_path("s3://bkt/root").store is None
+        assert Bundle.from_path("s3://bkt/root", store=store).store is store
+        b = ThemeAssembleBundle.from_base_uri(
+            "s3://bkt/theme_stage/theme=t/run=r", store=store
+        )
+        assert b.store is store
+        b = SourceIngestBundle.from_path(
+            "s3://bkt/feeds", provider="p", resource="r", store=store
+        )
+        assert b.store is store
+
+    def test_subclass_init_without_store(self, store):
+        """Classmethods attach the store, so a subclass ``__init__`` needn't take it."""
+
+        class Legacy(ThemeAssembleBundle):
+            def __init__(self, theme, bucket, run="", namespace="", root_path=None):
+                super().__init__(theme, bucket, run, namespace, root_path)
+
+        store.write("bkt", "theme_stage/theme=t/run=r1/success")
+        b = Legacy.from_base_uri("s3://bkt/theme_stage/theme=t/run=r1", store=store)
+        assert type(b) is Legacy
+        assert b.is_successful() is True
+
+    def test_discover_all_attaches_explicit_store(self, store):
+        store.write("bkt", "theme_stage/theme=t/run=r1/success")
+        (found,) = ThemeAssembleBundle.discover_all(bucket="bkt", store=store)
+        assert found.store is store
+        assert found.is_successful() is True
+
+    def test_classmethod_results_carry_store(self, store):
+        store.write("bkt", "feeds/provider=p/resource=a/version=1/run=r1/success")
+        store.write("bkt", "release_candidate/release=R/run=r1/success")
+        store.write("bkt", "release_candidate/release=R/run=r1/released")
+        batch = SourceIngestBundle.resolve_partitions_batch(
+            provider="p", bucket="bkt", store=store
+        )
+        assert batch["a"].store is store
+        rc = ReleaseCandidateBundle.resolve_latest_released(
+            release="R", bucket="bkt", store=store
+        )
+        assert rc.store is store
+
+    def test_cleanup_all_with_discover_all_override(self, counted_s3):
+        """Overrides with no ``store`` parameter, like tf-data-platform's adapter, work."""
+        fake, calls = counted_s3
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        for run in ("r1", "r2"):
+            fake.put("bkt", f"theme_stage/theme=t/run={run}/success", lm=_DEFAULT_LM)
+
+        class Adapter(ThemeAssembleBundle):
+            @classmethod
+            def discover_all(cls, bucket, namespace=""):
+                return [
+                    Bundle.from_path(b.root_uri, partitions=b.partitions)
+                    for b in super().discover_all(bucket=bucket, namespace=namespace)
+                ]
+
+        report = Adapter.cleanup_all(bucket="bkt", min_age_days=30, now=now)
+        assert [d.bundle_uri for d in report.would_delete] == [
+            "s3://bkt/theme_stage/theme=t/run=r1"
+        ]
+        assert calls == [("s3",), ("s3",)]
+
+    def test_needs_processing_batch_uses_each_bundles_store(self):
+        done, empty = InMemoryBundleStore(), InMemoryBundleStore()
+        done.write("bkt", "theme_stage/theme=t/run=r0/success")
+
+        def make(s):
+            return ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=s)
+
+        a, b = make(done), make(empty)
+        assert Bundle.needs_processing_batch([a, b]) == [b]
+        # An explicit store overrides each bundle's own.
+        assert Bundle.needs_processing_batch([a, b], store=empty) == [a, b]
+        assert Bundle.needs_processing_batch([a, b], store=done) == []
