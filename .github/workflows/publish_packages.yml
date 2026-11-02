@@ -24,9 +24,8 @@
 # missing/invalid classifiers, etc.) as a CI failure instead of a broken
 # PyPI project page.
 #
-# If a run tags/releases a package but then fails to publish it, a re-run
-# resumes the build/publish instead of no-oping (see "Check for a
-# tagged-but-unpublished release" below).
+# If publishing fails after the tag is pushed, delete the tag and GitHub
+# Release, then re-run.
 
 name: Publish Python Packages
 
@@ -81,20 +80,6 @@ jobs:
           version: ">=0.13.4"
           enable-cache: false # this job publishes a runtime artifact; don't risk a poisoned cache
 
-      # The official Docker action resolves GitPython (an unpinned transitive
-      # dependency) at image-build time, so every run picks up whatever
-      # GitPython release is newest. GitPython v3.1.60 dropped the
-      # `Actor.name_email_regex` class attribute that PSR v10.6.1 (latest as
-      # of writing) still reads unconditionally, breaking config load for
-      # every user of the action regardless of which PSR tag is pinned. The
-      # fix is an open PR with no PSR release yet, so install PSR ourselves
-      # as an isolated uv tool where we can pin GitPython below the broken
-      # release. Revert to the Docker action once a fixed PSR version ships.
-      # See: https://github.com/python-semantic-release/python-semantic-release/issues/1476
-      - name: Install python-semantic-release
-        if: github.event_name == 'push'
-        run: uv tool install "python-semantic-release==10.6.1" --with "gitpython<3.1.60"
-
       # GITHUB_TOKEN can never be granted the `workflows` permission, so PSR's
       # tag push is rejected the moment the pushed history contains any
       # `.github/workflows/*` change since the last successful push (hit
@@ -134,60 +119,24 @@ jobs:
       # release tag, attributing each commit to the package by its changed
       # files (see path_filters in the package's pyproject.toml), and, if a
       # release is warranted, tags and pushes it (no commit, no committed
-      # changelog — release notes go to the GitHub Release instead). PSR
-      # authenticates its own git push with GH_TOKEN, independent of the
-      # checkout step's (deliberately non-persisted) credentials. Skipped
-      # entirely on workflow_dispatch: a manual run never tags or releases,
-      # it only smoke-tests the build/publish steps below. PSR itself detects
-      # $GITHUB_OUTPUT and writes the same `released`/`version`/`tag`/etc.
-      # outputs the Docker action would have.
+      # changelog — release notes go to the GitHub Release instead). Skipped
+      # on workflow_dispatch, which only smoke-tests build/publish.
       - name: Release ${{ matrix.package }}
         id: release
         if: github.event_name == 'push'
-        working-directory: packages/${{ matrix.package }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          semantic-release -v version --no-commit --tag --push --no-changelog --vcs-release --skip-build
-
-      # A prior run may have tagged/released this package but failed before
-      # publishing. semantic-release would then see no new commits and
-      # report released=false, so detect that stuck state directly instead.
-      - name: Check for a tagged-but-unpublished release
-        id: resume
-        if: github.event_name == 'push' && steps.release.outputs.released != 'true'
-        working-directory: packages/${{ matrix.package }}
-        run: |
-          tag_format=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['tool']['semantic_release']['tag_format'])")
-          tag_prefix=$(printf '%s' "$tag_format" | sed 's/{version}.*//')
-          tag=$(git describe --tags --exact-match --match "${tag_prefix}*" HEAD 2>/dev/null || true)
-          if [ -z "$tag" ]; then
-            echo "HEAD has no release tag for this package; nothing to resume."
-            echo "unpublished=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          version="${tag#$tag_prefix}"
-          pkg_name=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-          status=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 "https://pypi.org/pypi/${pkg_name}/${version}/json")
-          case "$status" in
-            200)
-              echo "$tag ($pkg_name==$version) is already on PyPI; nothing to resume."
-              echo "unpublished=false" >> "$GITHUB_OUTPUT"
-              ;;
-            404)
-              echo "$tag ($pkg_name==$version) is tagged/released but missing from PyPI; resuming publish."
-              echo "unpublished=true" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::Unexpected HTTP $status checking PyPI for $pkg_name==$version; refusing to guess publish state."
-              exit 1
-              ;;
-          esac
+        uses: python-semantic-release/python-semantic-release@b700dbeb1f431a0fcc30a79f3f0869407fe07278 # v10.7.0
+        with:
+          directory: packages/${{ matrix.package }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          commit: "false"
+          tag: "true"
+          push: "true"
+          changelog: "false"
+          vcs_release: "true"
+          build: "false"
 
       - name: Build package
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uv build
 
@@ -196,12 +145,12 @@ jobs:
       # upload time; running it here fails the build early instead of
       # silently rejecting or mangling the package's PyPI page.
       - name: Check package metadata
-        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.release.outputs.released == 'true'
         working-directory: packages/${{ matrix.package }}
         run: uvx twine check --strict dist/*
 
       - name: Publish to PyPI
-        if: github.event_name == 'push' && (steps.release.outputs.released == 'true' || steps.resume.outputs.unpublished == 'true')
+        if: github.event_name == 'push' && steps.release.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: packages/${{ matrix.package }}/dist
