@@ -95,7 +95,8 @@ class BundleMetadata(Protocol):
         self,
         input_paths: list[str] | None = None,
         capture_variables: bool = True,
-    ) -> Any: ...
+    ) -> Any:
+        """Write ``metadata.json`` to the bundle; retention ages new runs by it."""
 
     def add(self, key: str, value: Any) -> Any: ...
 
@@ -601,8 +602,8 @@ class Bundle:
         ``{"theme": "places", "run": "X"}``.
 
         Raises ValueError for a non-partition segment after partition
-        segments (an ambiguous root), or for a key outside the subclass's
-        ``PARTITION_KEYS``.
+        segments (an ambiguous root), a repeated key, or keys outside the
+        subclass's ``PARTITION_KEYS`` or out of their order.
         """
         parsed = urlparse(base_uri.rstrip("/"))
         root_segments: list[str] = []
@@ -610,6 +611,8 @@ class Bundle:
         for segment in parsed.path.lstrip("/").split("/"):
             if "=" in segment:
                 key, _, value = segment.partition("=")
+                if key in partitions:
+                    raise ValueError(f"Repeated partition '{key}' in {base_uri}")
                 partitions[key] = value
             elif partitions:
                 raise ValueError(
@@ -618,6 +621,12 @@ class Bundle:
                 )
             else:
                 root_segments.append(segment)
+        known = [key for key in partitions if key in cls.PARTITION_KEYS]
+        if known != [key for key in cls.PARTITION_KEYS if key in partitions]:
+            raise ValueError(
+                f"Partitions in {base_uri} must follow the order "
+                f"{list(cls.PARTITION_KEYS)}"
+            )
         return cls._from_root(parsed.netloc, "/".join(root_segments), partitions)
 
     @classmethod
@@ -1444,8 +1453,9 @@ class Bundle:
         # Check the current run first: its own success marker means a rerun.
         bucket, prefix, current_run = _split_run_uri(s3_uri)
         s3 = boto3.client("s3")  # one client (and connection pool) per check
-        current_marker = f"{prefix}run={current_run}/success"
-        if current_run and object_exists(bucket, current_marker, client=s3):
+        if current_run and object_exists(
+            bucket, f"{prefix}run={current_run}/success", client=s3
+        ):
             log.info(
                 "Current run='%s' already has a success file — "
                 "allowing rerun at s3://%s/%srun=%s",
@@ -1478,7 +1488,7 @@ class Bundle:
         provider: str,
         bucket: str,
         namespace: str = "",
-    ) -> dict[str, "Bundle"]:
+    ) -> dict[str, Self]:
         """Return the latest successful bundle per resource under *provider*.
 
         Uses one paginated ``list_objects_v2`` over ``<root>/provider=<X>/``.
@@ -1558,7 +1568,7 @@ class Bundle:
             segments = parent.rstrip("/").split("/")
             for i, seg in enumerate(segments):
                 if seg.startswith("resource="):
-                    return "/".join(segments[:i]) + "/"
+                    return _dir_prefix("/".join(segments[:i]))
             return parent
 
         info = [(b, *_split_run_uri(b.base_uri)) for b in bundles]
@@ -1782,7 +1792,7 @@ class SourceIngestBundle(Bundle):
     ) -> Self:
         """Create from a bundle-root ``s3://`` URI plus source identifiers.
 
-        As in `Bundle.from_path`, the URI path is the bundle root; an empty
+        The URI path is the bundle root; unlike `Bundle.from_path`, an empty
         path falls back to ``ROOT_PATH``.  Non-empty identifier keywords
         override the same keys in *partitions*.
         """
@@ -1992,12 +2002,12 @@ class ReleaseCandidateBundle(Bundle):
         release: str = "",
         run: str = "",
         namespace: str = "",
-        root_path: str = "release_candidate",
+        root_path: str | None = None,
     ) -> None:
         partitions = {"release": release, "run": run}
         super().__init__(
             bucket=bucket,
-            root_path=root_path,
+            root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
         )
@@ -2008,7 +2018,7 @@ class ReleaseCandidateBundle(Bundle):
         release: str,
         bucket: str,
         namespace: str = "",
-        root_path: str = "release_candidate",
+        root_path: str | None = None,
     ) -> ReleaseCandidateBundle:
         """Return the latest released run for *release*.
 
@@ -2016,6 +2026,8 @@ class ReleaseCandidateBundle(Bundle):
         filtering to those that have both a ``success`` and a ``released``
         marker file.  Raises `PartitionResolutionError` when none is found.
         """
+        if root_path is None:
+            root_path = cls.ROOT_PATH
         scan_root = _compose_root(root_path, namespace)
         result = _resolve_partitions(
             bucket=bucket,

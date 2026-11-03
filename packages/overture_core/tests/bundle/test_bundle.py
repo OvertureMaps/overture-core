@@ -285,6 +285,30 @@ class TestSubclasses:
                 "s3://bkt/theme_stage/theme=t/schema=s/run=r"
             )
 
+    @pytest.mark.parametrize(
+        ("cls", "uri"),
+        [
+            (SourceIngestBundle, "s3://bkt/feeds/resource=r/provider=p/run=x"),
+            (ThemePromoteBundle, "s3://bkt/theme_promote/theme=t/run=x/schema=s"),
+        ],
+    )
+    def test_from_base_uri_rejects_reordered_partitions(self, cls, uri):
+        with pytest.raises(ValueError, match="must follow the order"):
+            cls.from_base_uri(uri)
+
+    def test_from_base_uri_allows_omitted_partitions(self):
+        b = SourceIngestBundle.from_base_uri("s3://bkt/feeds/provider=p/run=x")
+        assert b.partitions == {
+            "provider": "p",
+            "resource": "",
+            "version": "",
+            "run": "x",
+        }
+
+    def test_from_base_uri_rejects_repeated_partition(self):
+        with pytest.raises(ValueError, match="Repeated partition 'run'"):
+            Bundle.from_base_uri("s3://bkt/x/run=1/run=2")
+
     def test_theme_assemble(self):
         b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1")
         assert b.base_uri == "s3://bkt/theme_stage/theme=places/run=r1"
@@ -872,6 +896,12 @@ class TestBatchHelpers:
         )
         assert b.needs_processing() is needs
         assert Bundle.needs_processing_batch([b]) == ([b] if needs else [])
+
+    def test_needs_processing_batch_at_bucket_root(self, s3):
+        s3.put("bkt", "resource=a/run=r1/success")
+        done = Bundle.from_base_uri("s3://bkt/resource=a/run=r2")
+        todo = Bundle.from_base_uri("s3://bkt/resource=b/run=r1")
+        assert Bundle.needs_processing_batch([done, todo]) == [todo]
 
     def test_needs_processing_batch(self, s3):
         s3.put("bkt", "feeds/provider=p/resource=a/version=1/run=x/success")
