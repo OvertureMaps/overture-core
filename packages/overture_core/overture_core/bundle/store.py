@@ -57,9 +57,10 @@ class BundleStore(Protocol):
     def list_children(self, bucket: str, prefix: str) -> list[str]:
         """Return the immediate "subdirectory" names one level under *prefix*.
 
-        Names exclude *prefix* and the trailing ``/`` and are sorted; empty
-        segments and the ``$folder$`` placeholder are skipped.  *prefix* is
-        matched as-is, so end it with ``/``.
+        Names exclude *prefix* and the trailing ``/`` and are sorted as S3
+        orders CommonPrefixes (by name + ``/``, so ``v=1.0`` precedes
+        ``v=1``); empty segments and the ``$folder$`` placeholder are
+        skipped.  *prefix* is matched as-is, so end it with ``/``.
         """
         ...
 
@@ -91,6 +92,8 @@ class BundleStore(Protocol):
 
         Raises:
             ValueError: If *prefix* is empty, which would delete the bucket.
+            Exception: If any object could not be deleted (`DeletePrefixError`
+                from `S3BundleStore`).  Earlier objects may already be gone.
         """
         ...
 
@@ -162,7 +165,7 @@ class InMemoryBundleStore:
 
     *clock* stamps each write (default: now, in UTC); `write` also takes
     ``last_modified=`` to seed one.  Stamps must be timezone-aware and are
-    stored in UTC.  Listings are sorted, like S3's.
+    stored in UTC.  Listings are in S3's order.
     `presigned_url` returns an opaque ``memory://`` URL.
     """
 
@@ -195,7 +198,7 @@ class InMemoryBundleStore:
             name, sep, _ = key[len(prefix) :].partition("/")
             if sep and name and name != FOLDER_PLACEHOLDER:
                 names.add(name)
-        return sorted(names)
+        return sorted(names, key=lambda n: n + "/")
 
     def iter_keys(self, bucket: str, prefix: str) -> Iterator[str]:
         return iter(self._keys(bucket, prefix))

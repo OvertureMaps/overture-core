@@ -641,8 +641,8 @@ def list_common_prefixes(bucket: str, prefix: str, *, client: Any = None) -> lis
 
     Paginates ``ListObjectsV2`` with ``Delimiter="/"`` and returns each
     ``CommonPrefixes`` entry trimmed to just its segment name (no bucket, no
-    *prefix*, no trailing slash). Skips the ``$folder$`` placeholder some
-    tools write.
+    *prefix*, no trailing slash), sorted as S3 orders CommonPrefixes (by
+    name + ``/``). Skips the ``$folder$`` placeholder some tools write.
 
     Example: for ``prefix="root/"`` with ``root/version=1/`` and
     ``root/version=2/`` present, returns ``["version=1", "version=2"]``.

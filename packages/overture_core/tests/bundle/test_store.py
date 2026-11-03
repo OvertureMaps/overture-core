@@ -62,13 +62,20 @@ class TestContract:
             "root/v=2/run=a/success",
             "root/v=10/data/part-0",
             "root/v=1/success",
+            "root/v=1/x",
+            "root/v=1.0/x",
             "root/file.txt",
             "root/$folder$/x",
             "root//empty-segment",
             "rootless/v=9/x",
         ):
             any_store.write("b", key)
-        assert any_store.list_children("b", "root/") == ["v=1", "v=10", "v=2"]
+        assert any_store.list_children("b", "root/") == [
+            "v=1.0",
+            "v=1",
+            "v=10",
+            "v=2",
+        ]
         assert any_store.list_children("b", "root/v=2/") == ["run=a"]
         assert any_store.list_children("b", "missing/") == []
 

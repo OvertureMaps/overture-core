@@ -1692,39 +1692,30 @@ class Bundle:
                     return _dir_prefix("/".join(segments[:i]))
             return parent
 
-        shared = store
-        stores: dict[int, BundleStore] = {}
-
-        def _store_for(b: Bundle) -> int:
-            nonlocal shared
-            chosen = store if store is not None else b.store
-            if chosen is None:
-                if shared is None:
-                    shared = S3BundleStore()
-                chosen = shared
-            stores[id(chosen)] = chosen
-            return id(chosen)
-
-        info = [(b, _store_for(b), *_split_run_uri(b.base_uri)) for b in bundles]
+        shared = store if store is not None else S3BundleStore()
+        info = []
+        for b in bundles:
+            s = b.store if store is None and b.store is not None else shared
+            info.append((b, s, *_split_run_uri(b.base_uri)))
         scans = dict.fromkeys(
-            (sid, bucket, _scan_prefix(parent)) for _, sid, bucket, parent, _ in info
+            (s, bucket, _scan_prefix(parent)) for _, s, bucket, parent, _ in info
         )
 
-        # (store id, bucket, parent prefix) -> runs under it with a success file
-        successful: dict[tuple[int, str, str], set[str]] = {}
-        for sid, bucket, prefix in scans:
-            for k in stores[sid].iter_keys(bucket, prefix):
+        # (store, bucket, parent prefix) -> runs under it with a success file
+        successful: dict[tuple[BundleStore, str, str], set[str]] = {}
+        for s, bucket, prefix in scans:
+            for k in s.iter_keys(bucket, prefix):
                 if not k.endswith("/success"):
                     continue
                 head, _, leaf = k[: -len("/success")].rpartition("/")
                 if leaf.startswith("run="):
                     parent = f"{head}/" if head else ""
-                    successful.setdefault((sid, bucket, parent), set()).add(leaf[4:])
+                    successful.setdefault((s, bucket, parent), set()).add(leaf[4:])
 
         needs = [
             b
-            for b, sid, bucket, parent, run in info
-            if not (runs := successful.get((sid, bucket, parent))) or run in runs
+            for b, s, bucket, parent, run in info
+            if not (runs := successful.get((s, bucket, parent))) or run in runs
         ]
 
         log.info(
