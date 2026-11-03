@@ -458,21 +458,23 @@ class Bundle:
         """Stamp metadata with *status*; the marker exists only for ``"success"``.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``.  Any other status deletes an existing marker, so a
-        failed rerun reads as failed.  Partition resolution,
+        ``base_uri``.  ``"success"`` writes the marker after the metadata.
+        Any other status deletes an existing marker before the metadata, so a
+        failed rerun never reads as successful.  Partition resolution,
         `needs_processing` and retention treat only bundles with the marker
         as complete.
         """
-        metadata.finalize(status=status)
         bucket, key = self._success_marker()
         if status != BundleStatus.SUCCESS:
             self._open_store().delete(bucket, key)
+            metadata.finalize(status=status)
             log.info(
                 "Finalized %s with status %s; removed any success file",
                 self.base_uri,
                 status,
             )
             return
+        metadata.finalize(status=status)
         self._open_store().write(bucket, key)
         log.info("Wrote success file s3://%s/%s", bucket, key)
 
@@ -782,9 +784,9 @@ class Bundle:
 
     def _status_report(self, store: BundleStore) -> BundleStatusReport:
         """Build `status`'s report, making every request on *store*."""
-        bucket, success_key = self._success_marker()
-        _, metadata_key = self._object_key("metadata.json")
-        _, directory = self._object_key("")  # "<base_prefix>/", "" at bucket root
+        bucket, directory = self._object_key("")  # "" at the bucket root
+        success_key = f"{directory}success"
+        metadata_key = f"{directory}metadata.json"
         has_success = store.exists(bucket, success_key)
         body = store.read(bucket, metadata_key)
         has_metadata = body is not None

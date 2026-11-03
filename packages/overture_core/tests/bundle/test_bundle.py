@@ -504,6 +504,21 @@ class TestLifecycle:
         assert keys(store) == {"scratch/purpose=p/run=r1/metadata.json"}
         assert b.status().status is BundleStatus.FAILED
 
+    @pytest.mark.parametrize(
+        ("status", "seed_marker"), [("failed", True), ("success", False)]
+    )
+    def test_metadata_failure_leaves_no_marker(self, store, status, seed_marker):
+        class FailingMetadata(RecordingMetadata):
+            def finalize(self, status="success"):
+                raise RuntimeError("metadata write failed")
+
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
+        if seed_marker:
+            store.write("bkt", "scratch/purpose=p/run=r1/success")
+        with pytest.raises(RuntimeError, match="metadata write failed"):
+            b.finalize(status=status, metadata=FailingMetadata())
+        assert b.is_successful() is False
+
     def test_finalize_accepts_status_enum(self, store):
         meta = RecordingMetadata()
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
@@ -751,6 +766,19 @@ class TestStatus:
             True,
         )
         assert report.sections == {k: v["status"] for k, v in sections.items()}
+
+    def test_nested_input_sections_are_ignored(self, store):
+        body = _metadata(
+            dag={
+                "status": "running",
+                "inputs": [{"up_dag": {"status": "failed"}, "path": "s3://up/r1/"}],
+            },
+            released_at="2026-01-01",
+        )
+        store.write("bkt", f"{_RUN}/metadata.json", body)
+        report = self._bundle(store).status()
+        assert report.status is BundleStatus.IN_PROGRESS
+        assert report.sections == {"dag": "running"}
 
     def test_objects_without_marker_or_metadata(self, store):
         store.write("bkt", f"{_RUN}/data/part-0.parquet", b"x")
