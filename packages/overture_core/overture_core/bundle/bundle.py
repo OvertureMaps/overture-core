@@ -241,7 +241,8 @@ def _resolve_partitions(
     `PartitionResolutionError`, naming where the search stopped, when no
     viable path exists.
     """
-    overrides = overrides or {}
+    # Natively rendered templates can pass non-string values such as ints.
+    overrides = {k: v if v is None else str(v) for k, v in (overrides or {}).items()}
     s3 = client if client is not None else boto3.client("s3")
 
     log.info(
@@ -1441,7 +1442,7 @@ class Bundle:
         s3_uri = base_uri if base_uri is not None else self.base_uri
 
         for key, value in (partitions or {}).items():
-            if value and value.lower() != "latest":
+            if value and str(value).lower() != "latest":
                 log.info(
                     "Override %s='%s' set, forcing reprocessing of bundle at %s",
                     key,
@@ -1550,7 +1551,7 @@ class Bundle:
         """
         partitions = partitions or {}
         for key, value in partitions.items():
-            if value and value.lower() != "latest":
+            if value and str(value).lower() != "latest":
                 log.info(
                     "Override %s='%s' set, forcing reprocessing of all %d "
                     "candidate bundle(s)",
@@ -1987,6 +1988,7 @@ class ReleaseCandidateBundle(Bundle):
     BUNDLE_TYPE = "release_candidate"
     ROOT_PATH = "release_candidate"
     PARTITION_KEYS = ("release", "run")
+    RELEASED_MARKERS = ("success", "released")
     _EXTRA_DIRS = (
         "bridgefiles",
         "pmtiles",
@@ -2034,7 +2036,7 @@ class ReleaseCandidateBundle(Bundle):
             root_path=scan_root,
             partition_keys=list(cls.PARTITION_KEYS),
             overrides={"release": release},
-            required_markers=("success", "released"),
+            required_markers=cls.RELEASED_MARKERS,
         )
         return cls(
             bucket=bucket,

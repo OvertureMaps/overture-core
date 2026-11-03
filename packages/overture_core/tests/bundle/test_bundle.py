@@ -790,8 +790,9 @@ class TestNeedsProcessing:
             provider="p", resource="r", bucket="bkt", version="1", run=run
         )
 
-    def test_non_latest_override_forces_true(self, s3):
-        assert self._bundle().needs_processing({"version": "1"}) is True
+    @pytest.mark.parametrize("value", ["1", 2643])
+    def test_non_latest_override_forces_true(self, s3, value):
+        assert self._bundle().needs_processing({"version": value}) is True
 
     def test_no_runs_returns_true(self, s3):
         assert self._bundle().needs_processing({"version": "latest"}) is True
@@ -913,6 +914,10 @@ class TestBatchHelpers:
         )
         assert Bundle.needs_processing_batch([done, todo]) == [todo]
         assert Bundle.needs_processing_batch([done, todo], {"version": "1"}) == [
+            done,
+            todo,
+        ]
+        assert Bundle.needs_processing_batch([done, todo], {"version": 2}) == [
             done,
             todo,
         ]
@@ -1051,6 +1056,12 @@ class TestResolvePartitionsEdgeCases:
         s3.put("bkt", "root/version=1/data/x")
         assert _resolve_partitions("bkt", "root", ["version"], required_markers=()) == {
             "version": "1"
+        }
+
+    def test_override_int_from_native_template(self, s3):
+        s3.put("bkt", "root/version=2643/success")
+        assert _resolve_partitions("bkt", "root", ["version"], {"version": 2643}) == {
+            "version": "2643"
         }
 
     def test_override_on_non_terminal_partition(self, s3):
