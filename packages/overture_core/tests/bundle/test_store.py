@@ -1,6 +1,8 @@
 """Contract tests for the `BundleStore` implementations."""
 
+import copy
 import datetime as dt
+import pickle
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +14,12 @@ from overture_core.bundle.store import BundleStore, InMemoryBundleStore, S3Bundl
 
 # Matches the `store` fixture's clock and `FakeS3`'s default LastModified.
 DEFAULT_LAST_MODIFIED = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+
+CLONERS = pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, lambda o: pickle.loads(pickle.dumps(o))],
+    ids=["copy", "deepcopy", "pickle"],
+)
 
 
 @pytest.fixture(params=["memory", "s3"])
@@ -111,10 +119,11 @@ class TestContract:
         assert any_store.exists("b", "k/x") is True
 
     def test_presigned_url(self, any_store):
-        any_store.write("b", "run/data/part 0.parquet")
-        url = any_store.presigned_url("b", "run/data/part 0.parquet", expires_in=60)
-        assert isinstance(url, str)
-        assert "60" in url
+        any_store.write("bkt", "run/data/part-0.parquet")
+        url = any_store.presigned_url("bkt", "run/data/part-0.parquet", expires_in=60)
+        assert "bkt" in url
+        assert "/run/data/part-0.parquet?" in url
+        assert url.endswith("=60")
 
 
 class TestInMemoryBundleStore:
@@ -160,6 +169,15 @@ class TestInMemoryBundleStore:
         body[0] = ord("z")
         assert store.read("b", "k") == b"abc"
 
+    @CLONERS
+    def test_copy_is_a_snapshot(self, clone):
+        store = InMemoryBundleStore()
+        store.write("b", "k", b"x")
+        twin = clone(store)
+        twin.write("b", "k2")
+        assert twin.read("b", "k") == b"x"
+        assert store.exists("b", "k2") is False
+
 
 class TestS3BundleStore:
     def test_injected_client(self, fake_s3):
@@ -203,3 +221,11 @@ class TestS3BundleStore:
         S3BundleStore().exists("b", "k")
         S3BundleStore().exists("b", "k")
         assert calls == [("s3",), ("s3",)]
+
+    @CLONERS
+    def test_copy_opens_its_own_client(self, counted_s3, fake_s3, clone):
+        fake, calls = counted_s3
+        twin = clone(S3BundleStore(client=fake_s3))
+        assert twin.exists("b", "k") is False
+        assert twin.client is fake
+        assert calls == [("s3",)]

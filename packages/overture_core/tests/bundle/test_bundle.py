@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import pickle
 
 import pytest
 
@@ -1681,6 +1682,24 @@ class TestClientReuse:
         assert calls == [("s3",)]
         assert [b.store for b in bundles] == [None] * 6 + [store]
 
+    def test_batch_explicit_store_applies_to_every_bundle(self, store):
+        own = InMemoryBundleStore()
+        bundles = [
+            ScratchBundle(purpose="a", bucket="bkt", run="r1"),
+            ScratchBundle(purpose="b", bucket="bkt", run="r1", store=own),
+        ]
+        markers = [
+            "scratch/purpose=a/run=r1/success",
+            "scratch/purpose=b/run=r1/success",
+        ]
+        kwargs = {"metadata_factory": lambda b: RecordingMetadata(), "store": store}
+        Bundle.finalize_batch(bundles, **kwargs)
+        assert list(store.iter_keys("bkt", "")) == markers
+        assert list(own.iter_keys("bkt", "")) == []
+        assert [b.store for b in bundles] == [None, own]
+        Bundle.initialize_batch(bundles, **kwargs)
+        assert list(store.iter_keys("bkt", "")) == []
+
     def test_explicit_s3_store_opens_no_client(self, counted_s3):
         fake, calls = counted_s3
         self._seed(fake)
@@ -1790,3 +1809,21 @@ class TestStoreInjection:
         # An explicit store overrides each bundle's own.
         assert Bundle.needs_processing_batch([a, b], store=empty) == [a, b]
         assert Bundle.needs_processing_batch([a, b], store=done) == []
+
+    def test_needs_processing_batch_accepts_unhashable_store(self):
+        class Unhashable(InMemoryBundleStore):
+            __hash__ = None
+
+        s = Unhashable()
+        s.write("bkt", "theme_stage/theme=t/run=r0/success")
+        b = ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=s)
+        assert Bundle.needs_processing_batch([b]) == []
+        assert Bundle.needs_processing_batch([b], store=s) == []
+
+    def test_bundle_with_store_pickles(self):
+        b = ThemeAssembleBundle(
+            theme="t", bucket="bkt", run="r1", store=InMemoryBundleStore()
+        )
+        b.store.write("bkt", "theme_stage/theme=t/run=r1/success")
+        twin = pickle.loads(pickle.dumps(b))
+        assert twin.is_successful() is True

@@ -52,7 +52,9 @@ classes to supply defaults.
   provenance from the ``overture_core`` Dataset catalogue, and an optional
   ``source_dataset`` recorded as the bundle's own provenance.
 - ``store`` is the `BundleStore` used for S3 access; ``None`` opens a
-  fresh `S3BundleStore` per operation.
+  fresh `S3BundleStore` per operation.  Classmethods over many bundles use
+  an explicit ``store`` for all of them; otherwise each bundle uses its own,
+  and bundles without one share a single default store.
 """
 
 from __future__ import annotations
@@ -136,17 +138,17 @@ def _with_store(bundle: _BundleT, store: BundleStore | None) -> _BundleT:
 
 def _share_store(
     bundles: list[Bundle], store: BundleStore | None = None
-) -> list[Bundle]:
-    """Attach *store*, or one new `S3BundleStore`, to each storeless bundle.
+) -> list[tuple[Bundle, BundleStore | None]]:
+    """Attach *store* to every bundle, else one new `S3BundleStore` to storeless ones.
 
-    Returns the bundles it attached to.
+    Returns ``(bundle, previous store)`` pairs for restoring.
     """
-    storeless = [b for b in bundles if b.store is None]
-    if storeless:
-        shared = _store_or_default(store)
-        for b in storeless:
+    shared = _store_or_default(store)
+    previous = [(b, b.store) for b in bundles]
+    for b in bundles:
+        if store is not None or b.store is None:
             b.store = shared
-    return storeless
+    return previous
 
 
 def _compose_root(root_path: str, namespace: str = "") -> str:
@@ -519,20 +521,22 @@ def _run_batch(
     fn: Callable[[Bundle], None],
     bundles: list[Bundle],
     max_workers: int,
+    store: BundleStore | None = None,
 ) -> None:
     """Run *fn* on every bundle across *max_workers* threads.
 
-    Bundles without a store share one `S3BundleStore` for the batch.  Every
-    bundle is attempted.  Each failure is logged, then the first one in
-    *bundles* order is re-raised.
+    Every bundle uses *store* when given, else its own; bundles without one
+    share one `S3BundleStore` for the batch.  Their stores are restored
+    afterwards.  Every bundle is attempted.  Each failure is logged, then the
+    first one in *bundles* order is re-raised.
     """
-    lent = _share_store(bundles)
+    previous = _share_store(bundles, store)
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [(b, pool.submit(fn, b)) for b in bundles]
     finally:
-        for b in lent:
-            b.store = None
+        for b, s in previous:
+            b.store = s
     failures = [(b, exc) for b, f in futures if (exc := f.exception()) is not None]
     for b, exc in failures:
         log.error("%s failed for %r", action, b, exc_info=exc)
@@ -1475,8 +1479,9 @@ class Bundle:
         See `is_deletable` for the retention rules.  *table_dropper* is
         passed through to `delete` for each deleted bundle.
 
-        An explicit *store* is used for discovery and every check and delete;
-        without one, the checks and deletes share one default store.
+        An explicit *store* is used for discovery and every check and delete,
+        so an override of `discover_all` must then accept ``store``; without
+        one, the checks and deletes share one default store.
         """
         # Overrides of discover_all may have no ``store`` parameter.
         discover_kwargs = {} if store is None else {"store": store}
@@ -1697,25 +1702,26 @@ class Bundle:
         for b in bundles:
             s = b.store if store is None and b.store is not None else shared
             info.append((b, s, *_split_run_uri(b.base_uri)))
-        scans = dict.fromkeys(
-            (s, bucket, _scan_prefix(parent)) for _, s, bucket, parent, _ in info
-        )
+        # Keyed by id() so stores needn't be hashable; *info* keeps them alive.
+        scans = {
+            (id(s), bucket, _scan_prefix(parent)): s for _, s, bucket, parent, _ in info
+        }
 
-        # (store, bucket, parent prefix) -> runs under it with a success file
-        successful: dict[tuple[BundleStore, str, str], set[str]] = {}
-        for s, bucket, prefix in scans:
+        # (store id, bucket, parent prefix) -> runs under it with a success file
+        successful: dict[tuple[int, str, str], set[str]] = {}
+        for (sid, bucket, prefix), s in scans.items():
             for k in s.iter_keys(bucket, prefix):
                 if not k.endswith("/success"):
                     continue
                 head, _, leaf = k[: -len("/success")].rpartition("/")
                 if leaf.startswith("run="):
                     parent = f"{head}/" if head else ""
-                    successful.setdefault((s, bucket, parent), set()).add(leaf[4:])
+                    successful.setdefault((sid, bucket, parent), set()).add(leaf[4:])
 
         needs = [
             b
             for b, s, bucket, parent, run in info
-            if not (runs := successful.get((s, bucket, parent))) or run in runs
+            if not (runs := successful.get((id(s), bucket, parent))) or run in runs
         ]
 
         log.info(
@@ -1739,11 +1745,13 @@ class Bundle:
         datasets_dir: str | PathLike[str] | None = None,
         source_dataset: Dataset | None = None,
         max_workers: int = 32,
+        store: BundleStore | None = None,
     ) -> None:
         """Run `initialize` on every bundle across *max_workers* threads.
 
         All bundles share the other arguments; *metadata_factory* builds each
-        bundle's `BundleMetadata` writer.  See `_run_batch` for failures.
+        bundle's `BundleMetadata` writer.  See `_run_batch` for *store* and
+        failures.
         """
         if not bundles:
             return
@@ -1758,7 +1766,7 @@ class Bundle:
                 source_dataset=source_dataset,
             )
 
-        _run_batch("initialize", _one, bundles, max_workers)
+        _run_batch("initialize", _one, bundles, max_workers, store)
 
     @classmethod
     def finalize_batch(
@@ -1768,11 +1776,12 @@ class Bundle:
         metadata_factory: Callable[[Bundle], BundleMetadata],
         status: str = "success",
         max_workers: int = 32,
+        store: BundleStore | None = None,
     ) -> None:
         """Run `finalize` on every bundle across *max_workers* threads.
 
         *metadata_factory* builds each bundle's `BundleMetadata` writer.  See
-        `_run_batch` for failures.
+        `_run_batch` for *store* and failures.
         """
         if not bundles:
             return
@@ -1780,7 +1789,7 @@ class Bundle:
         def _one(b: Bundle) -> None:
             b.finalize(status=status, metadata=metadata_factory(b))
 
-        _run_batch("finalize", _one, bundles, max_workers)
+        _run_batch("finalize", _one, bundles, max_workers, store)
 
     # ------------------------------------------------------------------
     # Dunder

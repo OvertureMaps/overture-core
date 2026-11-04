@@ -107,12 +107,20 @@ class S3BundleStore:
 
     Uses *client* if given, else creates one on first use and keeps it for
     the life of the store.  Each client has its own connection pool, so share
-    one store across a unit of work (a walk, a cleanup, a batch check).
+    one store across a unit of work (a walk, a cleanup, a batch check).  A
+    copied or unpickled store opens its own client.
     """
 
     def __init__(self, *, client: Any = None) -> None:
         self._client = client
         self._lock = threading.Lock()
+
+    def __getstate__(self) -> dict[str, Any]:
+        # Locks and boto3 clients don't pickle.
+        return {k: v for k, v in vars(self).items() if k not in ("_client", "_lock")}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        vars(self).update(state, _client=None, _lock=threading.Lock())
 
     @property
     def client(self) -> Any:
@@ -166,13 +174,23 @@ class InMemoryBundleStore:
     *clock* stamps each write (default: now, in UTC); `write` also takes
     ``last_modified=`` to seed one.  Stamps must be timezone-aware and are
     stored in UTC.  Listings are in S3's order.
-    `presigned_url` returns an opaque ``memory://`` URL.
+    `presigned_url` returns an opaque ``memory://`` URL.  A copied or
+    unpickled store starts from a snapshot of the objects.
     """
 
     def __init__(self, *, clock: Callable[[], datetime.datetime] | None = None) -> None:
         self._objects: dict[tuple[str, str], tuple[bytes, datetime.datetime]] = {}
         self._clock = clock or _utcnow
         self._lock = threading.Lock()
+
+    def __getstate__(self) -> dict[str, Any]:
+        with self._lock:
+            state = {**vars(self), "_objects": dict(self._objects)}
+        del state["_lock"]  # locks don't pickle
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        vars(self).update(state, _lock=threading.Lock())
 
     def _keys(self, bucket: str, prefix: str) -> list[str]:
         with self._lock:
