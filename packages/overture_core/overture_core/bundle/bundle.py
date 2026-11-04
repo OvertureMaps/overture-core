@@ -47,7 +47,8 @@ classes to supply defaults.
 - `Bundle.delete` / `Bundle.cleanup_all` take an optional `TableDropper`
   to drop any catalogue tables registered for a bundle.
 - `Bundle.initialize` takes the ``datasets_dir`` used to enrich input
-  provenance from the ``overture_core`` Dataset catalogue.
+  provenance from the ``overture_core`` Dataset catalogue, and an optional
+  ``source_dataset`` recorded as the bundle's own provenance.
 """
 
 from __future__ import annotations
@@ -169,6 +170,18 @@ def _split_run_uri(s3_uri: str) -> tuple[str, str, str | None]:
     )
 
 
+def provenance_sections(dataset: Dataset, version: str = "") -> dict[str, Any]:
+    """``provider`` and ``resource`` metadata sections for *dataset*.
+
+    License artifacts credit any metadata dict that carries both.  A non-empty
+    *version* is added to the resource section.
+    """
+    resource = dataset.resource_data
+    if version:
+        resource["version"] = version
+    return {"provider": dataset.provider_data, "resource": resource}
+
+
 def _enrich_inputs_from_dataset(
     metadata: BundleMetadata,
     input_bundles: list[dict[str, str]],
@@ -198,11 +211,7 @@ def _enrich_inputs_from_dataset(
             continue
         try:
             ds = Dataset.from_name(provider, resource, datasets_dir)
-            entry["provider"] = ds.provider_data
-            resource_data = ds.resource_data
-            if version:
-                resource_data["version"] = version
-            entry["resource"] = resource_data
+            entry.update(provenance_sections(ds, version))
             modified = True
             log.info(
                 "Enriched input %s with Dataset catalogue for %s/%s",
@@ -793,13 +802,15 @@ class Bundle:
         *,
         metadata: BundleMetadata,
         datasets_dir: str | PathLike[str] | None = None,
+        source_dataset: Dataset | None = None,
     ) -> None:
         """Initialize the bundle: delete the success file and write metadata.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
         ``base_uri``.  When *datasets_dir* is given, input bundles that carry
         ``provider``/``resource`` are enriched with their Dataset catalogue
-        sections.
+        sections.  *source_dataset*, when given, is written as top-level
+        ``provider``/``resource`` sections so license artifacts credit it.
         """
         delete_success_file(self.base_uri)
 
@@ -813,6 +824,10 @@ class Bundle:
 
         if input_bundle_info and datasets_dir is not None:
             _enrich_inputs_from_dataset(metadata, input_bundle_info, datasets_dir)
+
+        if source_dataset is not None:
+            for key, value in provenance_sections(source_dataset).items():
+                metadata.add(key, value)
 
         if custom_metadata:
             for key, value in custom_metadata.items():
@@ -1614,6 +1629,7 @@ class Bundle:
         capture_variables: bool = True,
         custom_metadata: dict[str, Any] | None = None,
         datasets_dir: str | PathLike[str] | None = None,
+        source_dataset: Dataset | None = None,
         max_workers: int = 32,
     ) -> None:
         """Run `initialize` on every bundle across *max_workers* threads.
@@ -1631,6 +1647,7 @@ class Bundle:
                 custom_metadata=custom_metadata,
                 metadata=metadata_factory(b),
                 datasets_dir=datasets_dir,
+                source_dataset=source_dataset,
             )
 
         _run_batch("initialize", _one, bundles, max_workers)

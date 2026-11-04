@@ -7,6 +7,7 @@ import boto3
 import pytest
 from botocore.exceptions import ClientError
 
+from overture_core.artifacts import LicenseArtifact
 from overture_core.bundle.bundle import (
     Bundle,
     BundleDecision,
@@ -21,9 +22,29 @@ from overture_core.bundle.bundle import (
     ThemePromoteBundle,
     _natural_key,
     _resolve_partitions,
+    provenance_sections,
 )
+from overture_core.dataset.dataset import Dataset
 
 _DEFAULT_LM = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+
+
+def _write_acme_dataset(directory) -> None:
+    (directory / "acme.json").write_text(
+        json.dumps(
+            {
+                "provider": {"label": "acme", "name": "Acme Corp", "url": {}},
+                "resources": [
+                    {
+                        "label": "widgets",
+                        "name": "Acme Widgets",
+                        "collection": {"license": {"type": "MIT"}},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -377,21 +398,7 @@ class TestLifecycle:
         ]
 
     def test_initialize_enriches_inputs_when_datasets_dir_given(self, s3, tmp_path):
-        (tmp_path / "acme.json").write_text(
-            json.dumps(
-                {
-                    "provider": {"label": "acme", "name": "Acme Corp", "url": {}},
-                    "resources": [
-                        {
-                            "label": "widgets",
-                            "name": "Acme Widgets",
-                            "collection": {"license": {"type": "MIT"}},
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        _write_acme_dataset(tmp_path)
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
             provider="acme", resource="widgets", bucket="src", version="7", run="a"
@@ -402,6 +409,35 @@ class TestLifecycle:
         assert inp["provider"]["label"] == "acme"
         assert inp["resource"]["label"] == "widgets"
         assert inp["resource"]["version"] == "7"
+
+    def test_provenance_sections_copy_dataset_and_add_version(self, tmp_path):
+        _write_acme_dataset(tmp_path)
+        ds = Dataset.from_name("acme", "widgets", tmp_path)
+        sections = provenance_sections(ds, "7")
+        assert sections["provider"] == ds.provider_data
+        assert sections["resource"] == {**ds.resource_data, "version": "7"}
+        assert "version" not in ds.resource_data
+        assert "version" not in provenance_sections(ds)["resource"]
+
+    def test_initialize_records_source_dataset(self, s3, tmp_path):
+        _write_acme_dataset(tmp_path)
+        ds = Dataset.from_name("acme", "widgets", tmp_path)
+        meta = RecordingMetadata()
+        b = SourceIngestBundle(
+            provider="acme", resource="widgets", bucket="bkt", version="1", run="r"
+        )
+        b.initialize(source_dataset=ds, custom_metadata={"k": "v"}, metadata=meta)
+        assert meta.calls[1:] == [
+            ("add", "bundle_type", "source_ingest"),
+            ("add", "provider", ds.provider_data),
+            ("add", "resource", ds.resource_data),
+            ("add", "k", "v"),
+        ]
+        (entry,) = LicenseArtifact.entries(meta.section)
+        assert (entry["provider_label"], entry["resource_label"]) == (
+            "acme",
+            "widgets",
+        )
 
     def test_initialize_skips_enrichment_without_datasets_dir(self, s3):
         meta = RecordingMetadata()
@@ -438,9 +474,13 @@ class TestLifecycle:
             made[b.base_uri] = RecordingMetadata()
             return made[b.base_uri]
 
-        Bundle.initialize_batch(bundles, metadata_factory=factory, max_workers=2)
+        source = Dataset({"label": "p"}, {"label": "r"}, dataset_id="p/r")
+        Bundle.initialize_batch(
+            bundles, metadata_factory=factory, source_dataset=source, max_workers=2
+        )
         assert set(made) == {b.base_uri for b in bundles}
         assert all(m.calls[0][0] == "init" for m in made.values())
+        assert all(m.section["resource"] == {"label": "r"} for m in made.values())
 
         made.clear()
         Bundle.finalize_batch(bundles, metadata_factory=factory, max_workers=2)
