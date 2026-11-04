@@ -289,9 +289,9 @@ def test_region_defaults_to_none():
     assert DataDownload(type="s3", url="s3://acme/planet/").region is None
 
 
-@pytest.mark.parametrize("region", ["", "US_WEST_2", "us-west", "eu-central-1a"])
-def test_rejects_malformed_region(region):
-    with pytest.raises(ValueError, match="region"):
+@pytest.mark.parametrize("region", ["", "US_WEST_2", "us-west", "mars-north-1"])
+def test_rejects_unknown_region(region):
+    with pytest.raises(ValueError, match="unknown S3 region"):
         DataDownload(type="s3", url="s3://acme/planet/", region=region)
 
 

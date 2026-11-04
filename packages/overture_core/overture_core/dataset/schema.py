@@ -19,19 +19,31 @@ from __future__ import annotations
 import json
 import re
 import sys
+from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import botocore.session
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 LABEL_PATTERN = r"^[a-z0-9_]+$"
 ISO_3166_1_PATTERN = r"^([A-Z]{2}|GLOBAL)$"
 ISO_3166_2_PATTERN = r"^[A-Z]{2}-[A-Z0-9]{1,3}$"
-AWS_REGION_PATTERN = r"^[a-z]{2}(-[a-z]+)+-\d$"
 
 Label = Annotated[str, Field(pattern=LABEL_PATTERN)]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 Month = Annotated[int, Field(ge=1, le=12)]
+
+
+@cache
+def _s3_regions() -> frozenset[str]:
+    """S3 regions across all partitions, from botocore's bundled endpoint data."""
+    session = botocore.session.get_session()
+    return frozenset(
+        region
+        for partition in session.get_available_partitions()
+        for region in session.get_available_regions("s3", partition_name=partition)
+    )
 
 
 class _StrictModel(BaseModel):
@@ -108,12 +120,16 @@ class DataDownload(_StrictModel):
     type: Literal["http", "s3", "hf"]
     url: NonEmptyStr
     endpoint: str = ""
-    region: Annotated[str, Field(pattern=AWS_REGION_PATTERN)] | None = None
+    region: str | None = None
 
     @model_validator(mode="after")
     def _region_only_for_s3(self) -> DataDownload:
-        if self.region is not None and self.type != "s3":
+        if self.region is None:
+            return self
+        if self.type != "s3":
             raise ValueError(f"region is only valid for type 's3', got '{self.type}'")
+        if self.region not in _s3_regions():
+            raise ValueError(f"unknown S3 region: '{self.region}'")
         return self
 
     @model_validator(mode="after")
