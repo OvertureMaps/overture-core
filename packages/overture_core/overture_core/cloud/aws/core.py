@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 
 import boto3
+import botocore.session
 
 
 @lru_cache(maxsize=1)
@@ -29,6 +30,21 @@ def get_region(default: str = "us-west-2") -> str:
     """
     return (
         os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or default
+    )
+
+
+@lru_cache(maxsize=1)
+def get_s3_regions() -> frozenset[str]:
+    """Return S3 regions across all partitions known to the installed botocore.
+
+    The list is bundled with botocore, so regions launched after the installed
+    release are missing.
+    """
+    session = botocore.session.get_session()
+    return frozenset(
+        region
+        for partition in session.get_available_partitions()
+        for region in session.get_available_regions("s3", partition_name=partition)
     )
 
 

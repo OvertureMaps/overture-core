@@ -19,12 +19,13 @@ from __future__ import annotations
 import json
 import re
 import sys
-from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-import botocore.session
+import botocore
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from overture_core.cloud.aws.core import get_s3_regions
 
 LABEL_PATTERN = r"^[a-z0-9_]+$"
 ISO_3166_1_PATTERN = r"^([A-Z]{2}|GLOBAL)$"
@@ -33,17 +34,6 @@ ISO_3166_2_PATTERN = r"^[A-Z]{2}-[A-Z0-9]{1,3}$"
 Label = Annotated[str, Field(pattern=LABEL_PATTERN)]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 Month = Annotated[int, Field(ge=1, le=12)]
-
-
-@cache
-def _s3_regions() -> frozenset[str]:
-    """S3 regions across all partitions, from botocore's bundled endpoint data."""
-    session = botocore.session.get_session()
-    return frozenset(
-        region
-        for partition in session.get_available_partitions()
-        for region in session.get_available_regions("s3", partition_name=partition)
-    )
 
 
 class _StrictModel(BaseModel):
@@ -128,8 +118,11 @@ class DataDownload(_StrictModel):
             return self
         if self.type != "s3":
             raise ValueError(f"region is only valid for type 's3', got '{self.type}'")
-        if self.region not in _s3_regions():
-            raise ValueError(f"unknown S3 region: '{self.region}'")
+        if self.region not in get_s3_regions():
+            raise ValueError(
+                f"unknown S3 region '{self.region}' (botocore {botocore.__version__}); "
+                "if this is a new AWS region, upgrade botocore"
+            )
         return self
 
     @model_validator(mode="after")

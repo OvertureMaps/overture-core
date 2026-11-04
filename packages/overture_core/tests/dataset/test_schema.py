@@ -291,7 +291,7 @@ def test_region_defaults_to_none():
 
 @pytest.mark.parametrize("region", ["", "US_WEST_2", "us-west", "mars-north-1"])
 def test_rejects_unknown_region(region):
-    with pytest.raises(ValueError, match="unknown S3 region"):
+    with pytest.raises(ValueError, match="unknown S3 region.*upgrade botocore"):
         DataDownload(type="s3", url="s3://acme/planet/", region=region)
 
 
