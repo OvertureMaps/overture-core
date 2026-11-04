@@ -10,7 +10,8 @@ Failures raise :class:`GitHubAppTokenError` with the original exception
 suppressed, so the PEM and tokens never reach logs or tracebacks.
 """
 
-from github import Auth, Github, GithubException
+from botocore.exceptions import ClientError
+from github import Auth, Github, GithubException, GithubIntegration
 
 from overture_core.cloud.aws.secrets import get_secret_string
 
@@ -23,9 +24,16 @@ def _read_private_key(secret_name: str, region: str | None) -> str:
     try:
         return get_secret_string(secret_name, region=region)
     except Exception as exc:
+        # The AWS error code (e.g. AccessDeniedException) is not secret and
+        # tells a missing secret from a missing permission or wrong region.
+        detail = (
+            exc.response.get("Error", {}).get("Code", "ClientError")
+            if isinstance(exc, ClientError)
+            else type(exc).__name__
+        )
         raise GitHubAppTokenError(
             f"Could not read GitHub App private key from secret {secret_name!r} "
-            f"({type(exc).__name__})."
+            f"({detail})."
         ) from None
 
 
@@ -38,7 +46,9 @@ def get_installation_auth(
     """Return a PyGithub ``AppInstallationAuth`` for an installed GitHub App.
 
     The installation token is minted lazily by PyGithub on first use and
-    refreshed on expiry.
+    refreshed on expiry. The returned auth only works once handed to a
+    ``Github`` client (see :func:`get_github_client`); use
+    :func:`get_installation_token` for a plain token string.
 
     Args:
         secret_name: Secrets Manager name or ARN holding the App's PEM.
@@ -47,7 +57,8 @@ def get_installation_auth(
         region: Region of the secret. Defaults to boto3's own resolution.
     """
     private_key = _read_private_key(secret_name, region)
-    return Auth.AppAuth(app_id, private_key).get_installation_auth(installation_id)
+    # PyGithub < 2.7 with newer PyJWT rejects a non-string issuer.
+    return Auth.AppAuth(str(app_id), private_key).get_installation_auth(installation_id)
 
 
 def get_installation_token(
@@ -60,9 +71,10 @@ def get_installation_token(
 
     Tokens last about an hour; mint a new one rather than caching long-term.
     """
-    auth = get_installation_auth(secret_name, app_id, installation_id, region)
+    private_key = _read_private_key(secret_name, region)
     try:
-        return auth.token
+        with GithubIntegration(auth=Auth.AppAuth(str(app_id), private_key)) as gi:
+            return gi.get_access_token(installation_id).token
     except GithubException as exc:
         raise GitHubAppTokenError(
             f"GitHub rejected the installation token exchange (HTTP {exc.status})."

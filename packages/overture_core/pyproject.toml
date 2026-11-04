@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 dependencies = [
-    "overture-serverless>=1.0.0,<2",
+    "overture-serverless>=1.0.0",
     "pystac>=1.8.4",
     # Floor only, no ceiling. Our boto3 usage is basic sts/s3/secretsmanager/
     # codeartifact calls that work on anything modern, and this package is

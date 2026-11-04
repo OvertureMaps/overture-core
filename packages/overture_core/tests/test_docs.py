@@ -88,12 +88,12 @@ def fake_github(fake_repo):
     gh_instance.get_user.return_value = bot
 
     with (
-        mock.patch("github.Github", return_value=gh_instance),
-        mock.patch("github.Auth") as auth_mod,
+        mock.patch(
+            "overture_core.apis.github.get_github_client", return_value=gh_instance
+        ),
         mock.patch("github.InputGitAuthor", side_effect=lambda n, e: (n, e)),
         mock.patch("github.GithubException", _FakeGithubException),
     ):
-        auth_mod.AppAuth.return_value.get_installation_auth.return_value = "token"
         yield gh_instance, fake_repo
 
 
