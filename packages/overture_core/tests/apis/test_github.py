@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+import requests
 from botocore.exceptions import ClientError
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -45,9 +46,39 @@ def test_get_installation_auth_returns_auth_type(secret):
 
 
 def test_app_id_is_passed_as_string(secret):
-    with patch.object(gh.Auth, "AppAuth") as app_auth:
-        gh.get_installation_auth("s", 123, 2)
-    assert app_auth.call_args.args[0] == "123"
+    assert gh.get_installation_auth("s", 123, 2).app_id == "123"
+
+
+def test_client_refreshes_token_across_requests(secret):
+    response = ({}, {"token": "ghs_x", "expires_at": "2099-01-01T00:00:00Z"})
+    with patch(REQUEST, return_value=response) as http:
+        auth = gh.get_installation_auth("s", 1, 2)
+        auth.withRequester(Github(auth=auth)._Github__requester)
+        assert auth.token == auth.token == "ghs_x"
+    assert http.call_count == 1
+
+
+def _fake_send(request, **kwargs):
+    resp = requests.Response()
+    resp.request = request
+    if request.url.endswith("/access_tokens"):
+        resp.status_code = 401
+        resp._content = b'{"message": "Bad credentials ghs_leak"}'
+    else:
+        resp.status_code = 200
+        resp._content = b"{}"
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+
+def test_client_rejected_exchange_is_sanitized(secret):
+    with patch("requests.adapters.HTTPAdapter.send", side_effect=_fake_send):
+        client = gh.get_github_client("s", 1, 2)
+        with pytest.raises(gh.GitHubAppTokenError) as ei:
+            client.get_repo("o/r")
+    assert "401" in str(ei.value)
+    assert "ghs_leak" not in str(ei.value)
+    assert ei.value.__cause__ is None and ei.value.__suppress_context__
 
 
 def test_get_github_client(secret):

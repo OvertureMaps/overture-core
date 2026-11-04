@@ -37,6 +37,26 @@ def _read_private_key(secret_name: str, region: str | None) -> str:
         ) from None
 
 
+def _sanitized_exchange_error(exc: Exception) -> GitHubAppTokenError:
+    if isinstance(exc, GithubException):
+        msg = f"GitHub rejected the installation token exchange (HTTP {exc.status})."
+    else:
+        msg = f"Installation token exchange failed ({type(exc).__name__})."
+    return GitHubAppTokenError(msg)
+
+
+class _InstallationAuth(Auth.AppInstallationAuth):
+    """``AppInstallationAuth`` whose token acquisition and refresh raise
+    :class:`GitHubAppTokenError` instead of leaking response content."""
+
+    @property
+    def token(self) -> str:
+        try:
+            return super().token
+        except Exception as exc:
+            raise _sanitized_exchange_error(exc) from None
+
+
 def get_installation_auth(
     secret_name: str,
     app_id: int | str,
@@ -46,8 +66,9 @@ def get_installation_auth(
     """Return a PyGithub ``AppInstallationAuth`` for an installed GitHub App.
 
     The installation token is minted lazily by PyGithub on first use and
-    refreshed on expiry. The returned auth only works once handed to a
-    ``Github`` client (see :func:`get_github_client`); use
+    refreshed on expiry. A failed exchange at either point raises
+    :class:`GitHubAppTokenError`. The returned auth only works once handed to
+    a ``Github`` client (see :func:`get_github_client`); use
     :func:`get_installation_token` for a plain token string.
 
     Args:
@@ -58,7 +79,7 @@ def get_installation_auth(
     """
     private_key = _read_private_key(secret_name, region)
     # PyGithub < 2.7 with newer PyJWT rejects a non-string issuer.
-    return Auth.AppAuth(str(app_id), private_key).get_installation_auth(installation_id)
+    return _InstallationAuth(Auth.AppAuth(str(app_id), private_key), installation_id)
 
 
 def get_installation_token(
@@ -75,14 +96,8 @@ def get_installation_token(
     try:
         with GithubIntegration(auth=Auth.AppAuth(str(app_id), private_key)) as gi:
             return gi.get_access_token(installation_id).token
-    except GithubException as exc:
-        raise GitHubAppTokenError(
-            f"GitHub rejected the installation token exchange (HTTP {exc.status})."
-        ) from None
     except Exception as exc:
-        raise GitHubAppTokenError(
-            f"Installation token exchange failed ({type(exc).__name__})."
-        ) from None
+        raise _sanitized_exchange_error(exc) from None
 
 
 def get_github_client(
