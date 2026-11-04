@@ -6,6 +6,8 @@ import botocore.exceptions
 import pytest
 
 from overture_core.cloud.aws.object import (
+    ConditionalWriteConflictError,
+    ConditionalWriteUnsupportedError,
     CopyResult,
     build_s3_uri,
     bucket_writable,
@@ -13,11 +15,15 @@ from overture_core.cloud.aws.object import (
     delete_object,
     delete_prefix,
     get_object_bytes,
+    get_object_with_etag,
     list_common_prefixes,
     object_exists,
     parse_s3_uri,
     prefix_exists,
     put_object,
+    put_object_if_absent,
+    put_object_if_unchanged,
+    update_object,
     upload_directory,
     write_marker,
 )
@@ -236,6 +242,144 @@ class TestPutObject:
             Body=b"{}",
             ContentType="application/json",
         )
+
+
+def _conflict_error(code="PreconditionFailed"):
+    return botocore.exceptions.ClientError(
+        {"Error": {"Code": code, "Message": "conflict"}}, "PutObject"
+    )
+
+
+def _s3_with_conditional_support(supported=True):
+    s3 = MagicMock()
+    members = {"IfMatch": object()} if supported else {}
+    s3.meta.service_model.operation_model.return_value.input_shape.members = members
+    return s3
+
+
+class TestGetObjectWithEtag:
+    def test_returns_body_and_etag(self):
+        s3 = MagicMock()
+        s3.get_object.return_value = {
+            "Body": MagicMock(read=lambda: b"x"),
+            "ETag": '"abc"',
+        }
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert get_object_with_etag("b", "k") == (b"x", '"abc"')
+
+    def test_missing_returns_none_pair(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = _not_found_error("GetObject")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert get_object_with_etag("b", "k") == (None, None)
+
+    def test_reraises_other_errors(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"}}, "GetObject"
+        )
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                get_object_with_etag("b", "k")
+
+
+class TestPutObjectIfUnchanged:
+    def test_if_match_with_etag(self):
+        s3 = _s3_with_conditional_support()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert put_object_if_unchanged("b", "k", b"x", '"e"', "text/plain")
+        s3.put_object.assert_called_once_with(
+            Bucket="b", Key="k", Body=b"x", IfMatch='"e"', ContentType="text/plain"
+        )
+
+    def test_if_none_match_when_no_etag(self):
+        s3 = _s3_with_conditional_support()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert put_object_if_unchanged("b", "k", b"x", None)
+        s3.put_object.assert_called_once_with(
+            Bucket="b", Key="k", Body=b"x", IfNoneMatch="*"
+        )
+
+    @pytest.mark.parametrize(
+        "code", ["PreconditionFailed", "412", "ConditionalRequestConflict", "409"]
+    )
+    @pytest.mark.parametrize("etag", ['"e"', None])
+    def test_conflict_returns_false(self, code, etag):
+        s3 = _s3_with_conditional_support()
+        s3.put_object.side_effect = _conflict_error(code)
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert put_object_if_unchanged("b", "k", b"x", etag) is False
+
+    def test_reraises_other_client_errors(self):
+        s3 = _s3_with_conditional_support()
+        s3.put_object.side_effect = _conflict_error("AccessDenied")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                put_object_if_unchanged("b", "k", b"x", '"e"')
+
+    def test_old_boto3_raises_clear_error(self):
+        s3 = _s3_with_conditional_support(supported=False)
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(ConditionalWriteUnsupportedError, match="IfMatch"):
+                put_object_if_unchanged("b", "k", b"x", '"e"')
+        s3.put_object.assert_not_called()
+
+
+class TestPutObjectIfAbsent:
+    def test_creates_with_if_none_match(self):
+        s3 = _s3_with_conditional_support()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert put_object_if_absent("b", "k", b"x")
+        s3.put_object.assert_called_once_with(
+            Bucket="b", Key="k", Body=b"x", IfNoneMatch="*"
+        )
+
+    def test_false_when_object_exists(self):
+        s3 = _s3_with_conditional_support()
+        s3.put_object.side_effect = _conflict_error()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert put_object_if_absent("b", "k", b"x") is False
+
+
+class TestUpdateObject:
+    def test_reapplies_fn_after_concurrent_write(self):
+        calls = []
+
+        def fn(body):
+            calls.append(body)
+            return (body or b"") + b"+"
+
+        reads = [(b"a", '"1"'), (b"ab", '"2"')]
+        with (
+            patch(
+                "overture_core.cloud.aws.object.get_object_with_etag",
+                side_effect=reads,
+            ),
+            patch(
+                "overture_core.cloud.aws.object.put_object_if_unchanged",
+                side_effect=[False, True],
+            ) as put,
+            patch("overture_core.cloud.aws.object.time.sleep"),
+        ):
+            assert update_object("b", "k", fn) == b"ab+"
+        assert calls == [b"a", b"ab"]
+        assert put.call_count == 2
+
+    def test_gives_up_after_max_attempts(self):
+        with (
+            patch(
+                "overture_core.cloud.aws.object.get_object_with_etag",
+                return_value=(None, None),
+            ),
+            patch(
+                "overture_core.cloud.aws.object.put_object_if_unchanged",
+                return_value=False,
+            ) as put,
+            patch("overture_core.cloud.aws.object.time.sleep"),
+        ):
+            with pytest.raises(ConditionalWriteConflictError):
+                update_object("b", "k", lambda body: b"x", max_attempts=3)
+        assert put.call_count == 3
 
 
 class TestCopyPrefix:
