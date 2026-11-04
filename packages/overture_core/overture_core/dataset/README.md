@@ -49,4 +49,4 @@ Run `uv run overture-datasets <command> --help` for every option.
 
 ## License entries
 
-`attribution.license_entry` is the single definition of the flat license-entry dict that `artifacts.LicenseArtifact` writes to `license.json` and that the CLI renders. `render_markdown` and `render_text` are the CLI's renderers; they group by provider and collapse identical bullets. They are separate from `artifacts.render_attribution_mdx`, which groups by theme.
+`attribution.license_entry` is the single definition of the flat license-entry dict that `artifacts.LicenseArtifact` writes to `license.json` and that the CLI renders. `render_markdown` and `render_text` are the CLI's renderers; they group by provider and collapse identical bullets. They are separate from `artifacts.render_attribution_mdx`, which groups by theme and collapses identical bullets within each theme.

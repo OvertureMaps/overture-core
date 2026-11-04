@@ -201,6 +201,7 @@ def render_attribution_mdx(entries: list[dict[str, Any]]) -> str:
 
     Produces one ``<details>`` block per theme, with a bullet list of
     sources inside. Entries with multiple themes appear under each.
+    Entries that render to an identical bullet within a theme collapse to one.
     Entries with no themes are skipped.
     """
     by_theme: dict[str, list[dict[str, Any]]] = {}
@@ -211,10 +212,11 @@ def render_attribution_mdx(entries: list[dict[str, Any]]) -> str:
     sections: list[str] = []
     for theme in sorted(by_theme):
         title = theme.replace("_", " ").title()
-        bullets = "\n".join(
+        rendered = (
             render_attribution_bullet(e)
             for e in sorted(by_theme[theme], key=lambda e: e["resource_name"])
         )
+        bullets = "\n".join(dict.fromkeys(rendered))
         sections.append(
             "<details>\n"
             "    <summary>\n"

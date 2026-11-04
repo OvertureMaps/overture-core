@@ -1,6 +1,7 @@
 """Tests for the artifacts module (tree traversal + LicenseArtifact)."""
 
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -447,6 +448,40 @@ class TestRenderAttributionMdx:
             }
         ]
         assert "### Release Candidate" in render_attribution_mdx(entries)
+
+    @staticmethod
+    def _osm_entry(resource_name: str, **overrides: Any) -> dict[str, Any]:
+        entry = {
+            "provider_name": "OpenStreetMap",
+            "resource_name": resource_name,
+            "provider_url": "https://openstreetmap.org",
+            "license_type": "ODbL-1.0",
+            "license_url": "https://opendatacommons.org/licenses/odbl/",
+            "requires_attribution": True,
+            "attribution": "© OpenStreetMap contributors",
+            "themes": ["base"],
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_collapses_identical_bullets_within_theme(self):
+        entries = [self._osm_entry("Coastlines"), self._osm_entry("Planet")]
+        body = render_attribution_mdx(entries)
+        assert body.count("© OpenStreetMap contributors") == 1
+
+    def test_keeps_same_attribution_with_different_license(self):
+        entries = [
+            self._osm_entry("Coastlines"),
+            self._osm_entry(
+                "Planet",
+                license_type="CC-BY-4.0",
+                license_url="https://creativecommons.org/licenses/by/4.0/",
+            ),
+        ]
+        body = render_attribution_mdx(entries)
+        assert body.count("© OpenStreetMap contributors") == 2
+        assert "[ODbL-1.0]" in body
+        assert "[CC-BY-4.0]" in body
 
 
 class TestAttributionArtifact:
