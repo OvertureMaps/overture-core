@@ -37,19 +37,6 @@ Does **not** belong here:
 - Infrastructure as code and deployment config.
 - Anything consumed via a git ref. Downstream consumption is published packages only.
 
-## Structure
-
-```
-packages/
-├── overture_core/          # helpers + jobs; see its README for modules and extras
-├── overture_serverless/    # base classes for serverless jobs
-└── overture_spark/         # Spark runtime helpers
-.github/workflows/          # discover-packages, test, lint, publish, sql-engines, mwaa-compat
-pyproject.toml              # repo-wide ruff config
-CONTRIBUTING.md            # adding a package, cross-package deps, versioning
-PACKAGE_VERSIONING.md      # how a PR title becomes a PyPI release
-```
-
 ## CI
 
 - **PR:** [Test Python](.github/workflows/test_python.yml) and [Lint](.github/workflows/lint.yml) cover every package that matches the shape above; no workflow edits are needed when one is added. [SQL Engines](.github/workflows/sql_engines.yml) runs the Spark/Trino suites, and [MWAA Compatibility](.github/workflows/mwaa_compat.yml) checks that `overture_core` still installs under MWAA's pinned constraints.
@@ -68,17 +55,3 @@ uv run pytest
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to add a package, wire up cross-package dependencies, and run tests/lint locally. See [`PACKAGE_VERSIONING.md`](PACKAGE_VERSIONING.md) for how a version bump turns into a PyPI release.
-
-## Maintainers
-
-This repository uses `MAINTAINERS.md` files to track ownership for [LFX Insights](https://insights.linuxfoundation.org/docs/introduction/maintainers/) ingestion. LFX scans the full repository tree, so these files can live anywhere.
-
-To add a `MAINTAINERS.md` for a module or package, create it in the relevant directory using this format:
-
-```markdown
-# MAINTAINERS
-
-| Name     | GitHub Username | Role            | Affiliation |
-| -------- | --------------- | --------------- | ----------- |
-| Jane Doe | @janedoe        | Lead Maintainer | Org         |
-```
