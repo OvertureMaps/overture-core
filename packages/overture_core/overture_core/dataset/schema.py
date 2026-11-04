@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 LABEL_PATTERN = r"^[a-z0-9_]+$"
 ISO_3166_1_PATTERN = r"^([A-Z]{2}|GLOBAL)$"
 ISO_3166_2_PATTERN = r"^[A-Z]{2}-[A-Z0-9]{1,3}$"
+AWS_REGION_PATTERN = r"^[a-z]{2}(-[a-z]+)+-\d$"
 
 Label = Annotated[str, Field(pattern=LABEL_PATTERN)]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
@@ -101,11 +102,19 @@ class DataDownload(_StrictModel):
 
     `type` names the transport, `url` is the base location, and `endpoint`
     is an optional sub-path appended to it (see `Dataset.download_url`).
+    `region` is the AWS region of the bucket and is only valid for `s3`.
     """
 
     type: Literal["http", "s3", "hf"]
     url: NonEmptyStr
     endpoint: str = ""
+    region: Annotated[str, Field(pattern=AWS_REGION_PATTERN)] | None = None
+
+    @model_validator(mode="after")
+    def _region_only_for_s3(self) -> DataDownload:
+        if self.region is not None and self.type != "s3":
+            raise ValueError(f"region is only valid for type 's3', got '{self.type}'")
+        return self
 
     @model_validator(mode="after")
     def _url_scheme_matches_type(self) -> DataDownload:

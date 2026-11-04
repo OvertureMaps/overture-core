@@ -280,6 +280,26 @@ def test_rejects_data_download_scheme_mismatch_direct():
         DataDownload(type="s3", url="https://example.com/data.zip")
 
 
+def test_accepts_s3_region():
+    dd = DataDownload(type="s3", url="s3://acme/planet/", region="eu-central-1")
+    assert dd.region == "eu-central-1"
+
+
+def test_region_defaults_to_none():
+    assert DataDownload(type="s3", url="s3://acme/planet/").region is None
+
+
+@pytest.mark.parametrize("region", ["", "US_WEST_2", "us-west", "eu-central-1a"])
+def test_rejects_malformed_region(region):
+    with pytest.raises(ValueError, match="region"):
+        DataDownload(type="s3", url="s3://acme/planet/", region=region)
+
+
+def test_rejects_region_on_non_s3():
+    with pytest.raises(ValueError, match="region is only valid"):
+        DataDownload(type="http", url="https://example.com/", region="us-west-2")
+
+
 # ── file-level rules ─────────────────────────────────────────────────────────
 
 
