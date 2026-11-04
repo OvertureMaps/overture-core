@@ -336,6 +336,12 @@ class Dataset:
             raise ValueError(f"No data_download entry for dataset '{self._dataset_id}'")
         return dd["url"] + dd.get("endpoint", "")
 
+    @property
+    def download_region(self) -> str | None:
+        """AWS region of the ``s3`` download bucket, or None if unspecified."""
+        dd = self.collection.get("data_download") or {}
+        return dd.get("region")
+
     # ------------------------------------------------------------------
     # Dunder methods
     # ------------------------------------------------------------------

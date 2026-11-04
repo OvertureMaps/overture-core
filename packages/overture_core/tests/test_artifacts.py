@@ -386,6 +386,25 @@ class TestRenderAttributionMdx:
         assert "[© P contributors](https://p.example)" in body
         assert "Some Resource" not in body
 
+    def test_dedupes_identical_attribution_lines(self):
+        def entry(resource, license_type="ODbL"):
+            return {
+                "provider_name": "OSM",
+                "resource_name": resource,
+                "provider_url": "https://openstreetmap.org",
+                "license_type": license_type,
+                "license_url": f"https://{license_type}.example",
+                "requires_attribution": True,
+                "attribution": "© OpenStreetMap contributors",
+                "themes": ["base"],
+            }
+
+        body = render_attribution_mdx(
+            [entry("coastlines"), entry("planet"), entry("other", "CC0")]
+        )
+        assert body.count("[ODbL]") == 1
+        assert body.count("[CC0]") == 1
+
     def test_falls_back_to_resource_name(self):
         entries = [
             {

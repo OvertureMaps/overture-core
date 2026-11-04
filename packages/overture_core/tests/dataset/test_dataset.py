@@ -230,6 +230,30 @@ class TestDownloadUrl:
         with pytest.raises(ValueError, match="No data_download"):
             _ = ds.download_url
 
+    def test_download_region(self, tmp_path):
+        data = {
+            "provider": {"label": "acme", "name": "Acme", "url": {}},
+            "resources": [
+                {
+                    "label": "widgets",
+                    "name": "Widgets",
+                    "collection": {
+                        "data_download": {
+                            "type": "s3",
+                            "url": "s3://acme/",
+                            "region": "eu-central-1",
+                        }
+                    },
+                }
+            ],
+        }
+        p = tmp_path / "acme.json"
+        p.write_text(json.dumps(data), encoding="utf-8")
+        assert Dataset.from_file(p).download_region == "eu-central-1"
+
+    def test_download_region_none_when_unset(self, single_resource_file):
+        assert Dataset.from_file(single_resource_file).download_region is None
+
 
 # ── from_name / path_for ─────────────────────────────────────────────────────
 

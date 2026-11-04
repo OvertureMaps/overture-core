@@ -22,7 +22,10 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import botocore
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from overture_core.cloud.aws.core import get_s3_regions
 
 LABEL_PATTERN = r"^[a-z0-9_]+$"
 ISO_3166_1_PATTERN = r"^([A-Z]{2}|GLOBAL)$"
@@ -101,11 +104,26 @@ class DataDownload(_StrictModel):
 
     `type` names the transport, `url` is the base location, and `endpoint`
     is an optional sub-path appended to it (see `Dataset.download_url`).
+    `region` is the AWS region of the bucket and is only valid for `s3`.
     """
 
     type: Literal["http", "s3", "hf"]
     url: NonEmptyStr
     endpoint: str = ""
+    region: str | None = None
+
+    @model_validator(mode="after")
+    def _region_only_for_s3(self) -> DataDownload:
+        if self.region is None:
+            return self
+        if self.type != "s3":
+            raise ValueError(f"region is only valid for type 's3', got '{self.type}'")
+        if self.region not in get_s3_regions():
+            raise ValueError(
+                f"unknown S3 region '{self.region}' (botocore {botocore.__version__}); "
+                "if this is a new AWS region, upgrade botocore"
+            )
+        return self
 
     @model_validator(mode="after")
     def _url_scheme_matches_type(self) -> DataDownload:
