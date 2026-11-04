@@ -100,7 +100,7 @@ dev = [
     "databricks-sdk>=0.20",
     # In-process S3 for the conditional-write tests; needs a release that
     # honors IfMatch/IfNoneMatch on PutObject.
-    "moto[s3]>=5.1.0",
+    "moto[s3]>=5.1.5",
 ]
 
 [build-system]

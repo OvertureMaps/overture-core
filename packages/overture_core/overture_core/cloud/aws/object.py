@@ -320,13 +320,13 @@ _CONFLICT_CODES = ("PreconditionFailed", "412", "ConditionalRequestConflict", "4
 
 def _require_conditional_writes(s3) -> None:
     # Feature-detect via the service model rather than comparing versions:
-    # ``IfMatch`` on PutObject shipped in late 2024 (boto3 ~1.35.x), but
+    # ``IfMatch`` on PutObject shipped in boto3/botocore 1.35.51, but
     # Glue 5.0 bundles 1.34.x and the package floor stays low for it.
     members = s3.meta.service_model.operation_model("PutObject").input_shape.members
     if "IfMatch" not in members:
         raise ConditionalWriteUnsupportedError(
-            "S3 conditional writes need a newer boto3/botocore: PutObject has "
-            "no 'IfMatch' parameter. Upgrade boto3 to use this helper."
+            "S3 conditional writes need boto3/botocore >= 1.35.51: PutObject "
+            "has no 'IfMatch' parameter. Upgrade boto3 to use this helper."
         )
 
 
@@ -357,11 +357,12 @@ def put_object_if_unchanged(
 
     Uses ``IfMatch=etag``, or ``IfNoneMatch="*"`` (create only) when *etag* is
     ``None``. Returns ``False`` when S3 rejects the write with 412 or 409
-    (a concurrent writer won); re-raises any other error.
+    (a concurrent writer won), or with 404 on an ``IfMatch`` write (the object
+    was deleted since the read); re-raises any other error.
 
     Raises:
-        ConditionalWriteUnsupportedError: If boto3 is too old to support S3
-            conditional writes (roughly < 1.35).
+        ConditionalWriteUnsupportedError: If boto3 is older than 1.35.51 and
+            can't send S3 conditional-write headers.
     """
     s3 = boto3.client("s3")
     _require_conditional_writes(s3)
@@ -375,7 +376,11 @@ def put_object_if_unchanged(
     try:
         s3.put_object(**kwargs)
     except botocore.exceptions.ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") in _CONFLICT_CODES:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in _CONFLICT_CODES:
+            return False
+        # An IfMatch write to a key deleted since the read is a lost race too.
+        if etag is not None and code in ("404", "NoSuchKey"):
             return False
         raise
     return True
@@ -387,7 +392,7 @@ def put_object_if_absent(
     """Create ``bucket/key`` only if it doesn't exist; ``False`` if it already does.
 
     Named form of ``put_object_if_unchanged(..., etag=None)``, useful for
-    claim/lock-style markers where the first writer wins.
+    claim/lock-style markers where the first writer wins. Requires boto3 >= 1.35.51.
     """
     return put_object_if_unchanged(bucket, key, body, None, content_type)
 
@@ -406,9 +411,12 @@ def update_object(
     writer wins. *fn* may run more than once, so it must not have side
     effects.
 
+    Requires boto3/botocore >= 1.35.51; on older versions this raises
+    :class:`ConditionalWriteUnsupportedError`.
+
     Raises:
         ConditionalWriteConflictError: If every one of *max_attempts* lost the race.
-        ConditionalWriteUnsupportedError: If boto3 lacks conditional writes.
+        ConditionalWriteUnsupportedError: If boto3 is older than 1.35.51.
     """
     for attempt in range(max_attempts):
         body, etag = get_object_with_etag(bucket, key)

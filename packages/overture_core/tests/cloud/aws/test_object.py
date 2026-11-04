@@ -310,6 +310,20 @@ class TestPutObjectIfUnchanged:
         with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
             assert put_object_if_unchanged("b", "k", b"x", etag) is False
 
+    @pytest.mark.parametrize("code", ["404", "NoSuchKey"])
+    def test_deleted_since_read_returns_false(self, code):
+        s3 = _s3_with_conditional_support()
+        s3.put_object.side_effect = _conflict_error(code)
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            assert put_object_if_unchanged("b", "k", b"x", '"e"') is False
+
+    def test_missing_on_create_only_write_is_reraised(self):
+        s3 = _s3_with_conditional_support()
+        s3.put_object.side_effect = _conflict_error("NoSuchBucket")
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            with pytest.raises(botocore.exceptions.ClientError):
+                put_object_if_unchanged("b", "k", b"x", None)
+
     def test_reraises_other_client_errors(self):
         s3 = _s3_with_conditional_support()
         s3.put_object.side_effect = _conflict_error("AccessDenied")

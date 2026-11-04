@@ -52,6 +52,20 @@ class TestConditionalWrites:
         assert get_object_with_etag(BUCKET, "k")[0] == b"v2"
 
 
+class TestDeletedBetweenReadAndWrite:
+    def test_update_object_recreates_after_delete(self, s3):
+        put_object(BUCKET, "k", b"a")
+        raced = []
+
+        def fn(body):
+            if not raced:
+                raced.append(True)
+                s3.delete_object(Bucket=BUCKET, Key="k")
+            return (body or b"") + b"!"
+
+        assert update_object(BUCKET, "k", fn) == b"!"
+
+
 class TestUpdateObject:
     def test_creates_missing_object(self):
         assert update_object(BUCKET, "k", lambda body: b"new") == b"new"
