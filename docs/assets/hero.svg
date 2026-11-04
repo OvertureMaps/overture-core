@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="140" viewBox="0 0 980 140" role="img" aria-labelledby="title desc">
+  <title id="title">overture-core</title>
+  <desc id="desc">The repository name beside an unlabeled graph of small library modules flowing into a stack of map tiles.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#001A39"/>
+      <stop offset="1" stop-color="#14205A"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0EC1BD"/>
+      <stop offset="1" stop-color="#4051CC"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="frame"><rect width="980" height="140" rx="12"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="980" height="140" fill="url(#bg)"/>
+    <g stroke="#4EDAD8" stroke-opacity="0.05" stroke-width="1">
+      <path d="M0 35 H980 M0 70 H980 M0 105 H980"/>
+      <path d="M560 0 V140 M640 0 V140 M720 0 V140 M800 0 V140 M880 0 V140"/>
+    </g>
+    <g fill="none" stroke="#4EDAD8" stroke-width="1.2">
+      <ellipse cx="900" cy="155" rx="70" ry="34" stroke-opacity="0.16"/>
+      <ellipse cx="900" cy="155" rx="130" ry="62" stroke-opacity="0.11"/>
+      <ellipse cx="900" cy="155" rx="200" ry="95" stroke-opacity="0.07"/>
+      <ellipse cx="900" cy="155" rx="280" ry="130" stroke-opacity="0.045"/>
+    </g>
+  </g>
+
+  <g font-family="Montserrat, Arial, sans-serif">
+    <text x="36" y="70" font-size="44" font-weight="700" fill="#FFFFFF">overture-core</text>
+    <text x="38" y="102" font-size="19" font-weight="300" fill="#4EDAD8">Shared libraries for the Overture data platform</text>
+  </g>
+
+  <g fill="none" stroke="url(#edge)" stroke-width="2.5" stroke-linecap="round">
+    <path d="M610 34 C640 34 640 70 668 70"/>
+    <path d="M610 70 H668"/>
+    <path d="M610 106 C640 106 640 70 668 70"/>
+    <path d="M720 70 H790"/>
+    <path d="M842 70 H868"/>
+  </g>
+
+  <g stroke-width="2">
+    <rect x="558" y="21" width="52" height="26" rx="7" fill="#001A39" stroke="#0EC1BD"/>
+    <circle cx="571" cy="34" r="3.5" fill="#00A790"/>
+    <path d="M581 34 H599" stroke="#4EDAD8" stroke-opacity="0.6" stroke-linecap="round"/>
+    <rect x="558" y="57" width="52" height="26" rx="7" fill="#001A39" stroke="#0EC1BD"/>
+    <circle cx="571" cy="70" r="3.5" fill="#96C93D"/>
+    <path d="M581 70 H599" stroke="#4EDAD8" stroke-opacity="0.6" stroke-linecap="round"/>
+    <rect x="558" y="93" width="52" height="26" rx="7" fill="#001A39" stroke="#0EC1BD"/>
+    <circle cx="571" cy="106" r="3.5" fill="#00A790"/>
+    <path d="M581 106 H599" stroke="#4EDAD8" stroke-opacity="0.6" stroke-linecap="round"/>
+    <rect x="668" y="57" width="52" height="26" rx="7" fill="#001A39" stroke="#4051CC"/>
+    <circle cx="681" cy="70" r="3.5" fill="#00A790"/>
+    <path d="M691 70 H709" stroke="#4EDAD8" stroke-opacity="0.6" stroke-linecap="round"/>
+    <rect x="790" y="57" width="52" height="26" rx="7" fill="#001A39" stroke="#4051CC"/>
+    <circle cx="803" cy="70" r="3.5" fill="#96C93D"/>
+    <path d="M813 70 H831" stroke="#4EDAD8" stroke-opacity="0.6" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <path d="M912 78 L956 96 L912 114 L868 96 Z" fill="#2C2E7F" stroke="#4051CC" stroke-width="1.5"/>
+    <path d="M912 64 L956 82 L912 100 L868 82 Z" fill="#4051CC" fill-opacity="0.85" stroke="#4EDAD8" stroke-opacity="0.5" stroke-width="1.5"/>
+    <path d="M912 50 L956 68 L912 86 L868 68 Z" fill="#0EC1BD" fill-opacity="0.9" stroke="#4EDAD8" stroke-width="1.5"/>
+  </g>
+  <path d="M890 59 L934 77 M934 59 L890 77" stroke="#001A39" stroke-opacity="0.45" stroke-width="1" fill="none"/>
+  <circle cx="912" cy="66" r="3.5" fill="#96C93D"/>
+</svg>
