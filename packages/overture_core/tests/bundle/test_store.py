@@ -5,15 +5,14 @@ import datetime as dt
 import pickle
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import parse_qs, urlsplit
 
 import boto3
 import pytest
 
 from overture_core.bundle.store import BundleStore, InMemoryBundleStore, S3BundleStore
-
-# Matches the `store` fixture's clock and `FakeS3`'s default LastModified.
-DEFAULT_LAST_MODIFIED = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
 
 CLONERS = pytest.mark.parametrize(
     "clone",
@@ -22,12 +21,23 @@ CLONERS = pytest.mark.parametrize(
 )
 
 
-@pytest.fixture(params=["memory", "s3"])
-def any_store(request) -> BundleStore:
-    """Each `BundleStore` implementation, empty."""
+@pytest.fixture(params=["memory", "s3", "moto"])
+def any_store(request, monkeypatch) -> Iterator[BundleStore]:
+    """Each `BundleStore` implementation, empty; ``moto`` runs on in-process S3."""
     if request.param == "memory":
-        return request.getfixturevalue("store")
-    return S3BundleStore(client=request.getfixturevalue("fake_s3"))
+        yield request.getfixturevalue("store")
+    elif request.param == "s3":
+        yield S3BundleStore(client=request.getfixturevalue("fake_s3"))
+    else:
+        moto = pytest.importorskip("moto")
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+            monkeypatch.setenv(name, "testing")
+        with moto.mock_aws():
+            # A session client bypasses the `_no_aws` patch on `boto3.client`.
+            client = boto3.session.Session().client("s3", region_name="us-east-1")
+            for bucket in ("bkt", "bkt1", "bkt2"):
+                client.create_bucket(Bucket=bucket)
+            yield S3BundleStore(client=client)
 
 
 class TestContract:
@@ -35,35 +45,35 @@ class TestContract:
         assert isinstance(any_store, BundleStore)
 
     def test_write_read_exists_round_trip(self, any_store):
-        assert any_store.exists("b", "k") is False
-        assert any_store.read("b", "k") is None
-        assert any_store.last_modified("b", "k") is None
+        assert any_store.exists("bkt", "k") is False
+        assert any_store.read("bkt", "k") is None
+        assert any_store.last_modified("bkt", "k") is None
 
-        any_store.write("b", "k", b"hello")
-        assert any_store.exists("b", "k") is True
-        assert any_store.read("b", "k") == b"hello"
-        assert any_store.last_modified("b", "k") == DEFAULT_LAST_MODIFIED
+        any_store.write("bkt", "k", b"hello")
+        assert any_store.exists("bkt", "k") is True
+        assert any_store.read("bkt", "k") == b"hello"
+        assert any_store.last_modified("bkt", "k").utcoffset() == dt.timedelta(0)
 
     def test_write_defaults_to_empty_marker(self, any_store):
-        any_store.write("b", "run/success")
-        assert any_store.read("b", "run/success") == b""
+        any_store.write("bkt", "run/success")
+        assert any_store.read("bkt", "run/success") == b""
 
     def test_write_replaces(self, any_store):
-        any_store.write("b", "k", b"one")
-        any_store.write("b", "k", b"two")
-        assert any_store.read("b", "k") == b"two"
+        any_store.write("bkt", "k", b"one")
+        any_store.write("bkt", "k", b"two")
+        assert any_store.read("bkt", "k") == b"two"
 
     def test_buckets_are_isolated(self, any_store):
-        any_store.write("b1", "k/x", b"1")
-        assert any_store.exists("b2", "k/x") is False
-        assert any_store.prefix_exists("b2", "k/") is False
-        assert list(any_store.iter_keys("b2", "")) == []
+        any_store.write("bkt1", "k/x", b"1")
+        assert any_store.exists("bkt2", "k/x") is False
+        assert any_store.prefix_exists("bkt2", "k/") is False
+        assert list(any_store.iter_keys("bkt2", "")) == []
 
     def test_prefix_exists_matches_as_is(self, any_store):
-        any_store.write("b", "root/v=10/success")
-        assert any_store.prefix_exists("b", "root/v=1") is True
-        assert any_store.prefix_exists("b", "root/v=1/") is False
-        assert any_store.prefix_exists("b", "root/v=10/") is True
+        any_store.write("bkt", "root/v=10/success")
+        assert any_store.prefix_exists("bkt", "root/v=1") is True
+        assert any_store.prefix_exists("bkt", "root/v=1/") is False
+        assert any_store.prefix_exists("bkt", "root/v=10/") is True
 
     def test_list_children(self, any_store):
         for key in (
@@ -77,53 +87,58 @@ class TestContract:
             "root//empty-segment",
             "rootless/v=9/x",
         ):
-            any_store.write("b", key)
-        assert any_store.list_children("b", "root/") == [
+            any_store.write("bkt", key)
+        assert any_store.list_children("bkt", "root/") == [
             "v=1.0",
             "v=1",
             "v=10",
             "v=2",
         ]
-        assert any_store.list_children("b", "root/v=2/") == ["run=a"]
-        assert any_store.list_children("b", "missing/") == []
+        assert any_store.list_children("bkt", "root/v=2/") == ["run=a"]
+        assert any_store.list_children("bkt", "missing/") == []
 
     def test_iter_keys_is_recursive_and_sorted(self, any_store):
         for key in ("r/v=2/x", "r/v=1/y/z", "r/v=10/x", "other/x"):
-            any_store.write("b", key)
-        assert list(any_store.iter_keys("b", "r/")) == [
+            any_store.write("bkt", key)
+        assert list(any_store.iter_keys("bkt", "r/")) == [
             "r/v=1/y/z",
             "r/v=10/x",
             "r/v=2/x",
         ]
-        assert list(any_store.iter_keys("b", "r/v=1")) == ["r/v=1/y/z", "r/v=10/x"]
+        assert list(any_store.iter_keys("bkt", "r/v=1")) == ["r/v=1/y/z", "r/v=10/x"]
 
     def test_delete(self, any_store):
-        any_store.write("b", "k")
-        any_store.delete("b", "k")
-        assert any_store.exists("b", "k") is False
-        any_store.delete("b", "k")  # missing is fine
+        any_store.write("bkt", "k")
+        any_store.delete("bkt", "k")
+        assert any_store.exists("bkt", "k") is False
+        any_store.delete("bkt", "k")  # missing is fine
 
     @pytest.mark.parametrize("prefix", ["root/v=1", "root/v=1/", "/root/v=1/"])
     def test_delete_prefix_is_a_directory(self, any_store, prefix):
         for key in ("root/v=1/a", "root/v=1/b/c", "root/v=10/a", "root/v=1x"):
-            any_store.write("b", key)
-        assert any_store.delete_prefix("b", prefix) == 2
-        assert list(any_store.iter_keys("b", "")) == ["root/v=10/a", "root/v=1x"]
-        assert any_store.delete_prefix("b", prefix) == 0
+            any_store.write("bkt", key)
+        assert any_store.delete_prefix("bkt", prefix) == 2
+        assert list(any_store.iter_keys("bkt", "")) == ["root/v=10/a", "root/v=1x"]
+        assert any_store.delete_prefix("bkt", prefix) == 0
 
     @pytest.mark.parametrize("prefix", ["", "/", "//"])
     def test_delete_prefix_refuses_whole_bucket(self, any_store, prefix):
-        any_store.write("b", "k/x")
+        any_store.write("bkt", "k/x")
         with pytest.raises(ValueError, match="whole bucket"):
-            any_store.delete_prefix("b", prefix)
-        assert any_store.exists("b", "k/x") is True
+            any_store.delete_prefix("bkt", prefix)
+        assert any_store.exists("bkt", "k/x") is True
 
     def test_presigned_url(self, any_store):
         any_store.write("bkt", "run/data/part-0.parquet")
         url = any_store.presigned_url("bkt", "run/data/part-0.parquet", expires_in=60)
-        assert "bkt" in url
-        assert "/run/data/part-0.parquet?" in url
-        assert url.endswith("=60")
+        parts = urlsplit(url)
+        assert parts.netloc.startswith("bkt")
+        assert parts.path == "/run/data/part-0.parquet"
+        query = parse_qs(parts.query)
+        if "Expires" in query:  # SigV2 signs an absolute epoch
+            assert 55 < int(query["Expires"][0]) - time.time() <= 60
+        else:
+            assert query.get("X-Amz-Expires", query.get("expires_in")) == ["60"]
 
 
 class TestInMemoryBundleStore:
