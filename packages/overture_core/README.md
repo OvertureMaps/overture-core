@@ -1,13 +1,29 @@
 # overture_core
 
-[![PyPI](https://img.shields.io/pypi/v/overture-core.svg)](https://pypi.org/project/overture-core/)
-[![Python versions](https://img.shields.io/pypi/pyversions/overture-core.svg)](https://pypi.org/project/overture-core/)
+[![PyPI](https://img.shields.io/pypi/v/overture-core?color=4051CC&labelColor=001A39)](https://pypi.org/project/overture-core/)
+[![Python versions](https://img.shields.io/pypi/pyversions/overture-core?color=4051CC&labelColor=001A39)](https://pypi.org/project/overture-core/)
+[![uv](https://img.shields.io/badge/managed%20with-uv-0EC1BD?labelColor=001A39)](https://docs.astral.sh/uv/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-05A5AF?labelColor=001A39)](LICENSE)
 
-Shared, framework-agnostic business logic — portable job classes built on [`overture-serverless`](../overture_serverless).
+Shared, framework-agnostic business logic for the Overture data platform: helpers and portable job classes built on [`overture-serverless`](../overture_serverless).
 
-`overture-stac` (and its `pyarrow>=16` floor via `stac-geoparquet`) is an optional extra. Install `overture-core[stac]` (quote it in shells like zsh that glob brackets: `pip install 'overture-core[stac]'`) if you need `stac.job.PublishStac` or `stac.catalog.build_release_catalog`. `stac.latest_release_job.LatestRelease` only reads the STAC root catalog over HTTPS via `pystac`, so it works without the extra. Plain `overture-core` covers the `cloud`/`iceberg`/`versioning`/`uuids`/`uuids_sql`/`spark_sql`/`strings_sql` modules too. `cloud.azure` needs `overture-core[azure]`, and `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path.
+## Install
 
-`maproulette`/`geojson`/`shapely` are likewise behind an optional `overture-core[maproulette]` extra, needed only for `apis.maproulette.MapRouletteClient`.
+```sh
+uv add overture-core
+uv add 'overture-core[stac]'  # with an extra
+```
+
+Heavier dependencies are optional extras, so consumers on constrained runtimes (for example MWAA's pinned `pyarrow`) stay installable. Quote the extra in shells like zsh that glob brackets. For local development, run `uv sync --extra dev`, then `uv run pytest`.
+
+| Extra | Needed for |
+| --- | --- |
+| `stac` | `stac.job.PublishStac`, `stac.catalog.build_release_catalog` (`stac.latest_release_job.LatestRelease` works without it) |
+| `azure` | `cloud.azure` |
+| `maproulette` | `apis.maproulette.MapRouletteClient` |
+| `sql-spark`, `sql-trino` | The SQL-engine test lanes only |
+
+`cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path. Optional provider SDKs stay out of the base dependencies: add an extra and import the SDK lazily inside the helper.
 
 ## Modules
 
@@ -31,7 +47,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `iceberg` | Shared Iceberg + Sedona catalog configuration, reusable across platforms/engines. |
 | [`cloud`](overture_core/cloud/README.md) | Cloud helpers: provider-agnostic code plus one subpackage per vendor (`aws`, `azure`, `databricks`). |
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
-| `apis` | Clients for third-party HTTP APIs, one module per vendor (`apis.tomtom` for TomTom's Map Content API, `apis.maproulette` for MapRoulette's project/challenge API — the latter needs `overture-core[maproulette]`). Anything that's not a cloud platform but still an external service belongs here. |
+| `apis` | Clients for third-party HTTP APIs, one module per vendor (`apis.tomtom`, `apis.maproulette`, and `apis.github`, which mints GitHub App installation tokens from a PEM in Secrets Manager; see the [reference doc](https://github.com/OvertureMaps/omf-github-terraform/blob/main/docs/github-app-tokens.md)). Anything that's not a cloud platform but still an external service belongs here. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac` | STAC catalog reads/writes and the jobs that publish them (see [Jobs](#jobs)). |

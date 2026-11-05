@@ -66,7 +66,9 @@ def update_docs_for_release(
     # deps to be resolvable in every environment that just needs the rest of
     # overture_core; callers that invoke this function already need PyGithub
     # installed (it's a hard dependency of this package).
-    from github import Auth, Github, GithubException, InputGitAuthor
+    from github import GithubException, InputGitAuthor
+
+    from overture_core.apis.github import get_github_client
 
     s3 = boto3.client("s3")
     try:
@@ -81,15 +83,12 @@ def update_docs_for_release(
     attribution_body = obj["Body"].read().decode("utf-8")
     log.info("Read attribution body from s3://%s/%s", s3_bucket, s3_key)
 
-    # Auth.AppAuth signs a JWT with the PEM; .get_installation_auth exchanges
-    # it for a short-lived installation token scoped to this org's install.
-    # PyGithub refreshes the token automatically as it nears expiry.
-    sm = boto3.client("secretsmanager", region_name=secrets_region)
-    pem = sm.get_secret_value(SecretId=pem_secret_name)["SecretString"]
-    installation_auth = Auth.AppAuth(app_client_id, pem).get_installation_auth(
-        app_installation_id
+    gh = get_github_client(
+        pem_secret_name,
+        app_client_id,
+        app_installation_id,
+        region=secrets_region,
     )
-    gh = Github(auth=installation_auth)
     repo = gh.get_repo(docs_repo)
 
     # Identity for commit author + DCO Signed-off-by trailer. cncf/dco2 fails

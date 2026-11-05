@@ -3,7 +3,9 @@
 import datetime
 import logging
 import os
-from collections.abc import Iterator
+import random
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -333,6 +335,129 @@ def put_object(
     if content_type is not None:
         kwargs["ContentType"] = content_type
     boto3.client("s3").put_object(**kwargs)
+
+
+class ConditionalWriteUnsupportedError(RuntimeError):
+    """The installed boto3/botocore can't send S3 conditional-write headers."""
+
+
+class ConditionalWriteConflictError(RuntimeError):
+    """:func:`update_object` lost the write race on every attempt."""
+
+
+_CONFLICT_CODES = ("PreconditionFailed", "412", "ConditionalRequestConflict", "409")
+
+
+def _require_conditional_writes(s3) -> None:
+    # Feature-detect via the service model rather than comparing versions:
+    # ``IfMatch`` on PutObject shipped in boto3/botocore 1.35.51, but
+    # Glue 5.0 bundles 1.34.x and the package floor stays low for it.
+    members = s3.meta.service_model.operation_model("PutObject").input_shape.members
+    if "IfMatch" not in members:
+        raise ConditionalWriteUnsupportedError(
+            "S3 conditional writes need boto3/botocore >= 1.35.51: PutObject "
+            "has no 'IfMatch' parameter. Upgrade boto3 to use this helper."
+        )
+
+
+def get_object_with_etag(bucket: str, key: str) -> tuple[bytes | None, str | None]:
+    """Read an object's body and ETag, or ``(None, None)`` if it doesn't exist.
+
+    Pass the returned ETag to :func:`put_object_if_unchanged` to write back
+    only if the object hasn't changed since this read. Raises for any error
+    other than a missing key.
+    """
+    try:
+        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            return None, None
+        raise
+    return response["Body"].read(), response["ETag"]
+
+
+def put_object_if_unchanged(
+    bucket: str,
+    key: str,
+    body: bytes,
+    etag: str | None,
+    content_type: str | None = None,
+) -> bool:
+    """Write *body* to ``bucket/key`` only if the object is unchanged since *etag*.
+
+    Uses ``IfMatch=etag``, or ``IfNoneMatch="*"`` (create only) when *etag* is
+    ``None``. Returns ``False`` when S3 rejects the write with 412 or 409
+    (a concurrent writer won), or with 404 on an ``IfMatch`` write (the object
+    was deleted since the read); re-raises any other error.
+
+    Raises:
+        ConditionalWriteUnsupportedError: If boto3 is older than 1.35.51 and
+            can't send S3 conditional-write headers.
+    """
+    s3 = boto3.client("s3")
+    _require_conditional_writes(s3)
+    kwargs = {"Bucket": bucket, "Key": key, "Body": body}
+    if etag is None:
+        kwargs["IfNoneMatch"] = "*"
+    else:
+        kwargs["IfMatch"] = etag
+    if content_type is not None:
+        kwargs["ContentType"] = content_type
+    try:
+        s3.put_object(**kwargs)
+    except botocore.exceptions.ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in _CONFLICT_CODES:
+            return False
+        # An IfMatch write to a key deleted since the read is a lost race too.
+        if etag is not None and code in ("404", "NoSuchKey"):
+            return False
+        raise
+    return True
+
+
+def put_object_if_absent(
+    bucket: str, key: str, body: bytes, content_type: str | None = None
+) -> bool:
+    """Create ``bucket/key`` only if it doesn't exist; ``False`` if it already does.
+
+    Named form of ``put_object_if_unchanged(..., etag=None)``, useful for
+    claim/lock-style markers where the first writer wins. Requires boto3 >= 1.35.51.
+    """
+    return put_object_if_unchanged(bucket, key, body, None, content_type)
+
+
+def update_object(
+    bucket: str,
+    key: str,
+    fn: Callable[[bytes | None], bytes],
+    content_type: str | None = None,
+    max_attempts: int = 10,
+) -> bytes:
+    """Atomically read-modify-write ``bucket/key`` and return the written bytes.
+
+    Reads the object, applies ``fn(current_body_or_None)``, and writes the
+    result conditionally, retrying with jittered backoff when a concurrent
+    writer wins. *fn* may run more than once, so it must not have side
+    effects.
+
+    Requires boto3/botocore >= 1.35.51; on older versions this raises
+    :class:`ConditionalWriteUnsupportedError`.
+
+    Raises:
+        ConditionalWriteConflictError: If every one of *max_attempts* lost the race.
+        ConditionalWriteUnsupportedError: If boto3 is older than 1.35.51.
+    """
+    for attempt in range(max_attempts):
+        body, etag = get_object_with_etag(bucket, key)
+        updated = fn(body)
+        if put_object_if_unchanged(bucket, key, updated, etag, content_type):
+            return updated
+        if attempt < max_attempts - 1:
+            time.sleep(random.uniform(0, min(0.05 * 2**attempt, 2.0)))
+    raise ConditionalWriteConflictError(
+        f"Could not update s3://{bucket}/{key} after {max_attempts} attempts"
+    )
 
 
 @dataclass(frozen=True)
