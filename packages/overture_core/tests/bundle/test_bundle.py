@@ -2121,21 +2121,25 @@ class TestClientReuse:
         assert b.store is None
 
     def test_status(self, counted_s3):
-        fake, calls = counted_s3
+        s3, calls = counted_s3
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
         assert b.status().exists is False  # marker, metadata, then a listing
         assert calls == [("s3",)]
 
-        fake.put("bkt", "scratch/purpose=p/run=r1/metadata.json", b'{"d": {}}')
+        s3.put_object(
+            Bucket="bkt",
+            Key="scratch/purpose=p/run=r1/metadata.json",
+            Body=b'{"d": {}}',
+        )
         assert b.status().has_metadata is True
         assert calls == [("s3",)] * 2
 
     def test_status_subclass_extends_on_the_same_store(self, counted_s3):
         """A subclass extending `_status_report` adds requests, not clients."""
-        fake, calls = counted_s3
+        s3, calls = counted_s3
         prefix = "release_candidate/release=R/run=r1"
-        fake.put("bkt", f"{prefix}/success")
-        fake.put("bkt", f"{prefix}/released")
+        _put(s3, f"{prefix}/success")
+        _put(s3, f"{prefix}/released")
 
         class Released(ReleaseCandidateBundle):
             released = False
