@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from overture_spark import MAX_PLAN_STRING_LENGTH, MAX_PLAN_STRING_LENGTH_KEY
 from overture_spark.plan import (
     DEFAULT_MAX_PLAN_CHARS,
     PlanTooLargeError,
@@ -45,6 +46,17 @@ class TestPlanSizeMocked(unittest.TestCase):
     def testErrorIsAnAssertionError(self):
         self.assertTrue(issubclass(PlanTooLargeError, AssertionError))
 
+    def testTruncatedPlanReportsTrueSize(self):
+        text = "x" * 470 + "... 1589 more characters"
+        self.assertEqual(2059, plan_size(df_with_plan(text)))
+        with self.assertRaises(PlanTooLargeError) as ctx:
+            assert_plan_size(df_with_plan(text), 1000)
+        self.assertEqual(2059, ctx.exception.size)
+
+    def testSuffixOnlyCountsAtTheEnd(self):
+        text = "... 99 more characters in the middle" + "x" * 50
+        self.assertEqual(len(text), plan_size(df_with_plan(text)))
+
     def testDefaultLimitIsPositive(self):
         self.assertGreater(DEFAULT_MAX_PLAN_CHARS, 0)
 
@@ -83,22 +95,49 @@ class TestPlanSizeRealSpark(unittest.TestCase):
 
     def testDefaultMaxPlanStringLengthIsSet(self):
         self.assertEqual(
-            "100000000", self.spark.conf.get("spark.sql.maxPlanStringLength")
+            MAX_PLAN_STRING_LENGTH, self.spark.conf.get(MAX_PLAN_STRING_LENGTH_KEY)
         )
 
-    def testPlanStringIsTruncatedPastConfiguredLimit(self):
+    def testPlanSizeIsExactUnderASmallCap(self):
         grown = self._union_chain(50)
-        full = len(grown._jdf.queryExecution().toString())
         full_plan = plan_size(grown)
-        self.spark.conf.set("spark.sql.maxPlanStringLength", "500")
+        self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, "500")
         try:
-            truncated = grown._jdf.queryExecution().toString()
+            raw = grown._jdf.queryExecution().analyzed().toString()
             capped_plan = plan_size(grown)
+            with self.assertRaises(PlanTooLargeError) as ctx:
+                assert_plan_size(grown, full_plan - 1)
         finally:
-            self.spark.conf.set("spark.sql.maxPlanStringLength", "100000000")
-        self.assertLess(len(truncated), full)
-        self.assertLessEqual(len(truncated), 500 + 100)
-        self.assertLess(capped_plan, full_plan)
+            self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
+        self.assertLess(len(raw), full_plan)
+        self.assertIn("more characters", raw)
+        self.assertEqual(full_plan, capped_plan)
+        self.assertEqual(full_plan, ctx.exception.size)
+
+    def _getSessionAgain(self, **kwargs):
+        from overture_spark import SparkPlatform, getSparkSedonaSession
+
+        return getSparkSedonaSession(
+            spark_platform=SparkPlatform.LOCAL, app_name="PlanSizeTest", **kwargs
+        )
+
+    def testExistingPlanStringLengthIsNotOverwritten(self):
+        self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, "5000")
+        try:
+            self.assertEqual(
+                "5000", self._getSessionAgain().conf.get(MAX_PLAN_STRING_LENGTH_KEY)
+            )
+        finally:
+            self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
+
+    def testExtraSparkConfOverridesPlanStringLength(self):
+        try:
+            session = self._getSessionAgain(
+                extra_spark_conf={MAX_PLAN_STRING_LENGTH_KEY: "7777"}
+            )
+            self.assertEqual("7777", session.conf.get(MAX_PLAN_STRING_LENGTH_KEY))
+        finally:
+            self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
 
 
 @pytest.mark.spark

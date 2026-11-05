@@ -34,10 +34,11 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 
-# Caps the plan string Spark renders for the UI and event log so a runaway plan
-# can't OOM the driver (Spark's own default is effectively unlimited). Truncates
-# only the string, not the plan. Well above normal plans so debugging output is
-# intact; override via extra_spark_conf.
+# Default cap on the plan string Spark renders for the UI and event log, to
+# reduce the risk of a runaway plan exhausting driver memory (Spark's own
+# default is effectively unlimited). Truncates only the string, not the plan.
+# Applied only when unset, so cluster/--conf values and extra_spark_conf win.
+# Well above normal plans so debugging output is intact.
 MAX_PLAN_STRING_LENGTH_KEY = "spark.sql.maxPlanStringLength"
 MAX_PLAN_STRING_LENGTH = "100000000"
 
@@ -232,9 +233,6 @@ def getSparkSedonaSession(
             )
         # Databricks injects `spark` into __main__'s namespace
         spark = sys.modules["__main__"].spark
-        # Only fill in the default; a cluster or notebook override wins.
-        if spark.conf.get(MAX_PLAN_STRING_LENGTH_KEY, None) is None:
-            spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
     else:
         # init a new spark session
         builder = SparkSession.builder.appName(app_name)
@@ -267,10 +265,14 @@ def getSparkSedonaSession(
             # sedona jars for other (non-local) spark platforms are configured in SparkSedonaOperator*
             pass
         builder.config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
-        builder.config(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
         for k, v in extra_spark_conf.items():
             builder.config(k, v)
         spark = builder.getOrCreate()
+
+    # A builder default would override launch-time (--conf / cluster) values,
+    # so fill the default in afterwards, only when nothing has set it.
+    if spark.conf.get(MAX_PLAN_STRING_LENGTH_KEY, None) is None:
+        spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
 
     spark = SedonaContext.create(spark)
     is_glue = spark_platform == SparkPlatform.GLUE

@@ -73,16 +73,16 @@ from overture_spark.plan import assert_plan_size, plan_size
 assert_plan_size(build_checks(df), max_chars=200_000)
 ```
 
-`plan_size(df)` is the length of the analyzed plan string; the error message reports the measured size and the limit. Jobs can opt in to the same check before an expensive action such as the final write:
+`plan_size(df)` is the length of the analyzed plan string; the error message reports the measured size and the limit. When `spark.sql.maxPlanStringLength` truncates the string, `plan_size` recovers the true size from Spark's `... N more characters` suffix, so the guards work under any cap. Jobs can opt in to the same check before an expensive action such as the final write:
 
 ```python
 self.check_plan_size(df, name="final output")  # logs a warning past 10M chars
 self.check_plan_size(df, max_chars=1_000_000, fail=True)  # raises PlanTooLargeError
 ```
 
-Measuring builds the plan string on the driver, the same step that crashes on a huge plan, so it is never run automatically: call it once, not on every action.
+Measuring renders the plan string on the driver, so it is never run automatically: call it once, not on every action.
 
-`getSparkSedonaSession` also sets `spark.sql.maxPlanStringLength` to `100000000` (100M chars) so a runaway plan's string is truncated instead of exhausting driver memory. Only the string is truncated, not the plan or the event log, and it doesn't fix plan growth. Override it with `extra_spark_conf={"spark.sql.maxPlanStringLength": "..."}`. `plan_size` reads the same string, so it saturates near this value.
+`getSparkSedonaSession` also defaults `spark.sql.maxPlanStringLength` to `100000000` (100M chars) when nothing has set it, to bound the plan string Spark renders for the UI and event log and reduce the risk of driver OOM. A cluster or `--conf` value is kept, and `extra_spark_conf={"spark.sql.maxPlanStringLength": "..."}` overrides it. Only the string is truncated, not the plan or the event log, so it doesn't fix plan growth. Its effect on a plan string over 2 GB is not validated.
 
 ## Testing locally
 

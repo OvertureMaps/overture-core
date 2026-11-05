@@ -201,9 +201,10 @@ class SparkSedonaJob(ABC):
 
         Logs a warning when the plan string exceeds ``max_chars``, or raises
         ``PlanTooLargeError`` when ``fail`` is set, so a runaway plan fails
-        fast instead of killing the driver hours in. Measuring builds the plan
-        string on the driver, so call it once before the final write, not on
-        every action. Returns the measured size.
+        fast instead of killing the driver hours in. The size is the true plan
+        string length even when ``spark.sql.maxPlanStringLength`` truncates the
+        string. Measuring renders the plan on the driver, so call it once
+        before the final write, not on every action. Returns the measured size.
         """
         size = plan_size(df)
         self.log(f"{name} plan size: {size:,} chars (limit {max_chars:,})")
