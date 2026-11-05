@@ -34,6 +34,8 @@ Class hierarchy
 - `ReleaseCandidateBundle` -- release candidate with bridge files, pmtiles,
   changelog, metrics, and metrics_summary.
 - `ScratchBundle` -- ephemeral debug/intermediate output, labeled by purpose.
+- `ModelBundle` -- a trained model per training run, with a pointer naming
+  the model's default run.
 
 Deployment-specific inputs
 --------------------------
@@ -54,6 +56,7 @@ classes to supply defaults.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import re
 from collections.abc import Callable, Collection, Iterator
@@ -68,12 +71,14 @@ import boto3
 from overture_core.cloud.aws.object import (
     delete_prefix,
     delete_success_file,
+    get_object_bytes,
     iter_keys,
     list_common_prefixes,
     object_exists,
     object_last_modified,
     parse_s3_uri,
     prefix_exists,
+    put_object,
     write_success_file,
 )
 from overture_core.cloud.cloud import Partition
@@ -170,7 +175,9 @@ def _split_run_uri(s3_uri: str) -> tuple[str, str, str | None]:
     )
 
 
-def provenance_sections(dataset: Dataset, version: str = "") -> dict[str, Any]:
+def provenance_sections(
+    dataset: Dataset, version: str = ""
+) -> dict[str, dict[str, Any]]:
     """``provider`` and ``resource`` metadata sections for *dataset*.
 
     License artifacts credit any metadata dict that carries both.  A non-empty
@@ -1691,10 +1698,10 @@ class Bundle:
 # ---------------------------------------------------------------------------
 
 
-class SourceRawBundle(Bundle):
-    """Raw data collected from a provider.
+class _ProviderResourceBundle(Bundle):
+    """Source data partitioned by provider, resource, version and run.
 
-    Path structure: ``datasets/provider={provider}/resource={resource}/version={version}/run={run}``
+    Path structure: ``{ROOT_PATH}/provider={provider}/resource={resource}/version={version}/run={run}``
 
     Parameters
     ----------
@@ -1713,89 +1720,48 @@ class SourceRawBundle(Bundle):
     root_path : str | None
         Override for the root path (defaults to ``ROOT_PATH``).
     """
+
+    PARTITION_KEYS = ("provider", "resource", "version", "run")
+
+    def __init__(
+        self,
+        provider: str,
+        resource: str,
+        bucket: str,
+        version: str = "",
+        run: str = "",
+        namespace: str = "",
+        root_path: str | None = None,
+    ) -> None:
+        partitions = {
+            "provider": provider,
+            "resource": resource,
+            "version": version,
+            "run": run,
+        }
+        super().__init__(
+            bucket=bucket,
+            root_path=self.ROOT_PATH if root_path is None else root_path,
+            partitions=partitions,
+            namespace=namespace,
+        )
+        self.provider = provider
+        self.resource = resource
+
+
+class SourceRawBundle(_ProviderResourceBundle):
+    """Raw data collected from a provider, rooted at ``datasets``."""
 
     BUNDLE_TYPE = "source_raw"
     ROOT_PATH = "datasets"
-    PARTITION_KEYS = ("provider", "resource", "version", "run")
-
-    def __init__(
-        self,
-        provider: str,
-        resource: str,
-        bucket: str,
-        version: str = "",
-        run: str = "",
-        namespace: str = "",
-        root_path: str | None = None,
-    ) -> None:
-        partitions = {
-            "provider": provider,
-            "resource": resource,
-            "version": version,
-            "run": run,
-        }
-        super().__init__(
-            bucket=bucket,
-            root_path=self.ROOT_PATH if root_path is None else root_path,
-            partitions=partitions,
-            namespace=namespace,
-        )
-        self.provider = provider
-        self.resource = resource
 
 
-class SourceIngestBundle(Bundle):
-    """Ingested / normalised source data.
-
-    Path structure: ``feeds/provider={provider}/resource={resource}/version={version}/run={run}``
-
-    Parameters
-    ----------
-    provider : str
-        Data provider name (e.g. ``"esri"``, ``"microsoft"``).
-    resource : str
-        Resource type (e.g. ``"building"``).
-    bucket : str
-        S3 bucket name.
-    version : str
-        Snapshot datestamp (e.g. ``"2026-01-01"``). May be set later.
-    run : str
-        Run identifier. May be set later.
-    namespace : str
-        Optional prefix prepended to the root path.
-    root_path : str | None
-        Override for the root path (defaults to ``ROOT_PATH``).
-    """
+class SourceIngestBundle(_ProviderResourceBundle):
+    """Ingested / normalised source data, rooted at ``feeds``."""
 
     BUNDLE_TYPE = "source_ingest"
     ROOT_PATH = "feeds"
-    PARTITION_KEYS = ("provider", "resource", "version", "run")
     _EXTRA_DIRS = ("changelog", "metrics", "metrics_summary")
-
-    def __init__(
-        self,
-        provider: str,
-        resource: str,
-        bucket: str,
-        version: str = "",
-        run: str = "",
-        namespace: str = "",
-        root_path: str | None = None,
-    ) -> None:
-        partitions = {
-            "provider": provider,
-            "resource": resource,
-            "version": version,
-            "run": run,
-        }
-        super().__init__(
-            bucket=bucket,
-            root_path=self.ROOT_PATH if root_path is None else root_path,
-            partitions=partitions,
-            namespace=namespace,
-        )
-        self.provider = provider
-        self.resource = resource
 
     @classmethod
     def from_path(
@@ -2163,4 +2129,61 @@ class ScratchBundle(Bundle):
             root_path=self.ROOT_PATH if root_path is None else root_path,
             partitions=partitions,
             namespace=namespace,
+        )
+
+
+class ModelBundle(Bundle):
+    """A trained model, one bundle per training run, kept indefinitely.
+
+    Path structure: ``{root_path}/model={model}/run={run}``, with
+    ``model_pointer.json`` under ``model={model}`` naming the default run.
+    There is no standard root, so `discover_all` and `cleanup_all` don't
+    apply.
+
+    Parameters
+    ----------
+    model : str
+        Model name (e.g. ``"places_quality"``).
+    bucket : str
+        S3 bucket name.
+    root_path : str
+        Root path the models are stored under.
+    run : str
+        Training run identifier. May be set later.
+    namespace : str
+        Optional prefix prepended to the root path.
+    """
+
+    BUNDLE_TYPE = "model"
+    PARTITION_KEYS = ("model", "run")
+
+    def __init__(
+        self,
+        model: str,
+        bucket: str,
+        root_path: str,
+        run: str = "",
+        namespace: str = "",
+    ) -> None:
+        super().__init__(
+            bucket=bucket,
+            root_path=root_path,
+            partitions={"model": model, "run": run},
+            namespace=namespace,
+        )
+
+    @property
+    def pointer_uri(self) -> str:
+        """URI of ``model_pointer.json``, which names the model's default run."""
+        return f"{self.uri_through_partition('model')}/model_pointer.json"
+
+    def read_pointer(self) -> str | None:
+        """Return the run the model pointer names, or ``None`` without a pointer."""
+        body = get_object_bytes(*parse_s3_uri(self.pointer_uri))
+        return json.loads(body)["run"] if body else None
+
+    def write_pointer(self) -> None:
+        """Point the model at this bundle's run."""
+        put_object(
+            *parse_s3_uri(self.pointer_uri), json.dumps({"run": self.run}).encode()
         )

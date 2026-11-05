@@ -1,6 +1,7 @@
 """Tests for the bundle model."""
 
 import datetime as dt
+import io
 import json
 
 import boto3
@@ -13,6 +14,7 @@ from overture_core.bundle.bundle import (
     BundleDecision,
     CleanupReport,
     DeleteResult,
+    ModelBundle,
     PartitionResolutionError,
     ReleaseCandidateBundle,
     ScratchBundle,
@@ -76,6 +78,11 @@ class FakeS3:
     def put_object(self, Bucket, Key, Body=b"", **_kwargs):
         self.store[(Bucket, Key)] = Body if isinstance(Body, bytes) else Body.encode()
         return {}
+
+    def get_object(self, Bucket, Key):
+        if (Bucket, Key) not in self.store:
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return {"Body": io.BytesIO(self.store[(Bucket, Key)])}
 
     def delete_object(self, Bucket, Key):
         self.store.pop((Bucket, Key), None)
@@ -287,6 +294,7 @@ class TestSubclasses:
             ThemePromoteBundle(theme="t", bucket="bkt", schema="v1", run="a"),
             ReleaseCandidateBundle(bucket="bkt", release="R", run="a"),
             ScratchBundle(purpose="p", bucket="bkt", run="a", root_path="tmp/x"),
+            ModelBundle(model="m", bucket="bkt", root_path="cache/models", run="a"),
             Bundle(bucket="bkt", root_path="root", partitions={"k": "v"}),
         ],
         ids=lambda b: type(b).__name__,
@@ -355,6 +363,21 @@ class TestSubclasses:
         assert b.base_uri == "s3://bkt/scratch/purpose=debug/run=r1"
         assert b.BUNDLE_TYPE == "scratch"
 
+    def test_model_pointer_round_trips_the_run(self, s3):
+        b = ModelBundle("places_quality", "bkt", "model_cache/models", run="r1")
+        assert b.base_uri == "s3://bkt/model_cache/models/model=places_quality/run=r1"
+        reader = ModelBundle("places_quality", "bkt", "model_cache/models")
+        assert reader.read_pointer() is None
+        b.write_pointer()
+        assert reader.read_pointer() == "r1"
+        assert s3.keys() == {
+            "model_cache/models/model=places_quality/model_pointer.json"
+        }
+
+    def test_model_has_no_standard_root(self):
+        with pytest.raises(NotImplementedError):
+            ModelBundle.discover_all(bucket="bkt")
+
     @pytest.mark.parametrize(
         "cls",
         [
@@ -364,6 +387,7 @@ class TestSubclasses:
             ThemePromoteBundle,
             ReleaseCandidateBundle,
             ScratchBundle,
+            ModelBundle,
         ],
     )
     def test_from_base_uri_keeps_bucket_root(self, cls):
@@ -832,6 +856,7 @@ class TestNeedsProcessing:
 
     @pytest.mark.parametrize("value", ["1", 2643])
     def test_non_latest_override_forces_true(self, s3, value):
+        s3.put("bkt", f"{self._PARENT}/run=r1/success")
         assert self._bundle().needs_processing({"version": value}) is True
 
     def test_no_runs_returns_true(self, s3):
