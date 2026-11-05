@@ -1,6 +1,6 @@
 # overture_core.dataset
 
-Parsing, validating and rendering provider/resource dataset config files, plus the `overture-datasets` CLI. Nothing here assumes where the config files live; callers always pass paths or directories explicitly.
+The `overture-datasets` CLI over dataset config files. The config classes (schema, `Dataset`, license policy, attribution, SPDX) live in [`overture-dataset-configs`](https://github.com/OvertureMaps/overture-providers/tree/main/packages/overture_dataset_configs); the `schema`, `dataset`, `license_policy`, `attribution` and `spdx` modules here are thin aliases kept for backward-compatible import paths. Prefer importing from `overture_dataset_configs`.
 
 `dataset/__init__.py` is intentionally empty. Import the submodule you need so importing one doesn't pull in the others.
 
@@ -8,11 +8,7 @@ Parsing, validating and rendering provider/resource dataset config files, plus t
 
 | Module | Scope |
 | --- | --- |
-| `dataset` | Parsing a provider/resource JSON config into its collection/ingestion/matching sections. |
-| `schema` | Validating provider/resource JSON configs, including as a standalone CI check. |
-| `attribution` | Flattening provider/resource configs into license entries and rendering them as Markdown or plain text. |
-| `spdx` | Fetching canonical SPDX license texts from a pinned `license-list-data` release. |
-| `license_policy` | Validating and querying the per-theme license allowlist. |
+| `dataset`, `schema`, `attribution`, `spdx`, `license_policy` | Aliases of the same-named `overture_dataset_configs` modules. |
 | `cli` | The `overture-datasets` command-line interface over the modules above. |
 
 ## CLI
