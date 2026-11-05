@@ -98,6 +98,9 @@ dev = [
     # needed here so tests can spec MagicMock(spec=WorkspaceClient) against
     # the real class shape instead of a hand-maintained duck-typed stub.
     "databricks-sdk>=0.20",
+    # In-process S3 for the conditional-write tests; needs a release that
+    # honors IfMatch/IfNoneMatch on PutObject.
+    "moto[s3]>=5.1.5",
 ]
 
 [build-system]
