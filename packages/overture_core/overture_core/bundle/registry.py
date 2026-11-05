@@ -86,7 +86,7 @@ class BundleLocation:
 
     @property
     def component(self) -> BundleComponent | None:
-        """The listed component ``relative_path`` is in, or ``None``."""
+        """The declared component ``relative_path`` is in, or ``None``."""
         name, _, rest = self.relative_path.partition("/")
         if not name:
             return None
@@ -121,13 +121,9 @@ class BundleRegistry:
     """
 
     def __init__(self, types: Iterable[type[Bundle]]) -> None:
-        registered: list[type[Bundle]] = []
+        self._types = tuple(dict.fromkeys(types))
         by_name: dict[str, type[Bundle]] = {}
-        for bundle_type in types:
-            if not (isinstance(bundle_type, type) and issubclass(bundle_type, Bundle)):
-                raise TypeError(f"Expected a Bundle subclass, got {bundle_type!r}")
-            if bundle_type in registered:
-                raise ValueError(f"{bundle_type.__name__} is registered twice")
+        for bundle_type in self._types:
             root = bundle_type.ROOT_PATH.strip("/")
             if not root or not bundle_type.PARTITION_KEYS:
                 raise ValueError(
@@ -141,8 +137,6 @@ class BundleRegistry:
                         f"{bundle_type.__name__} and {other.__name__} both use "
                         f"the name {name!r}"
                     )
-            registered.append(bundle_type)
-        self._types = tuple(registered)
         self._by_name = by_name
         # Longest root first, so "a/b" wins over "a" at the same position.
         self._by_root_length = sorted(
@@ -151,18 +145,6 @@ class BundleRegistry:
 
     def __iter__(self) -> Iterator[type[Bundle]]:
         return iter(self._types)
-
-    def __len__(self) -> int:
-        return len(self._types)
-
-    def __contains__(self, item: object) -> bool:
-        """Whether *item*, a type or a ``BUNDLE_TYPE``/``ROOT_PATH``, is registered."""
-        if isinstance(item, str):
-            return item.strip("/") in self._by_name
-        return item in self._types
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}([{', '.join(t.__name__ for t in self)}])"
 
     def get(self, name: str) -> type[Bundle]:
         """Return the type whose ``BUNDLE_TYPE`` or ``ROOT_PATH`` is *name*.
@@ -183,8 +165,11 @@ class BundleRegistry:
         *path* is an ``s3://`` URI or a bare key at any depth: a root, a
         partial position, a bundle, or an object inside one.  Segments before
         the root are the namespace; so is a root followed by a non-partition
-        segment before its last partition.  Raises ValueError for any scheme
-        besides ``s3``, or an ``s3://`` URI without a bucket.
+        segment before its last partition.  When several roots fit, the
+        leftmost wins, so a namespace segment equal to a root name is read as
+        that root if the segments after it fit its partitions.  Raises
+        ValueError for any scheme besides ``s3``, or an ``s3://`` URI without
+        a bucket.
         """
         bucket, key = "", path
         if "://" in path:

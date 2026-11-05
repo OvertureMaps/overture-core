@@ -18,9 +18,9 @@ from overture_core.bundle.cleanup import (
     TableDropper,
 )
 from overture_core.bundle.components import (
-    _DATA,
-    _METADATA,
-    _SUCCESS,
+    DATA,
+    METADATA,
+    SUCCESS,
     BundleComponent,
 )
 from overture_core.bundle.metadata import (
@@ -140,8 +140,8 @@ class Bundle:
     # Partition key names, in path order.
     PARTITION_KEYS: tuple[str, ...] = ()
 
-    # In display order; subclasses extend it as (*Bundle.COMPONENTS, ...).
-    COMPONENTS: ClassVar[tuple[BundleComponent, ...]] = (_DATA, _METADATA, _SUCCESS)
+    # In display order; subclasses extend their parent's tuple.
+    COMPONENTS: ClassVar[tuple[BundleComponent, ...]] = (DATA, METADATA, SUCCESS)
 
     def __init__(
         self,
@@ -344,22 +344,22 @@ class Bundle:
     @property
     def data_uri(self) -> str:
         """S3 URI of the ``data/`` directory."""
-        return self.component_uri(_DATA.name)
+        return self.component_uri(DATA.name)
 
     @property
     def data_prefix(self) -> str:
         """S3 key prefix (no ``s3://bucket/``) for the ``data/`` directory."""
-        return self.component_prefix(_DATA.name)
+        return self.component_prefix(DATA.name)
 
     @property
     def metadata_uri(self) -> str:
         """S3 URI of ``metadata.json``."""
-        return self.component_uri(_METADATA.name)
+        return self.component_uri(METADATA.name)
 
     @property
     def success_uri(self) -> str:
         """S3 URI of the ``success`` marker."""
-        return self.component_uri(_SUCCESS.name)
+        return self.component_uri(SUCCESS.name)
 
     def sub_directory(self, name: str) -> str:
         """S3 URI of a named sub-directory inside this bundle."""
@@ -514,7 +514,7 @@ class Bundle:
 
     def _success_marker(self) -> tuple[str, str]:
         """``(bucket, key)`` of the ``success`` marker."""
-        return self._object_key(_SUCCESS.name)
+        return self._object_key(SUCCESS.name)
 
     def _object_key(self, name: str) -> tuple[str, str]:
         """``(bucket, key)`` of the object *name* directly under `base_uri`."""
@@ -819,9 +819,8 @@ class Bundle:
     def _status_report(self, store: BundleStore) -> BundleStatusReport:
         """Build `status`'s report, making every request on *store*."""
         bucket, directory = self._object_key("")  # "" at the bucket root
-        success_key = f"{directory}{_SUCCESS.name}"
-        metadata_key = f"{directory}{_METADATA.name}"
-        has_success = store.exists(bucket, success_key)
+        _, metadata_key = self._object_key(METADATA.name)
+        has_success = store.exists(*self._success_marker())
         body = store.read(bucket, metadata_key)
         has_metadata = body is not None
         sections = (
@@ -1266,7 +1265,7 @@ class Bundle:
         best_order: dict[str, tuple[_NaturalKey, ...]] = {}
         for key in _store_or_default(store).iter_keys(bucket, prefix):
             segments = key[len(prefix) :].split("/")
-            if len(segments) != len(keys) + 1 or segments[-1] != _SUCCESS.name:
+            if len(segments) != len(keys) + 1 or segments[-1] != SUCCESS.name:
                 continue
             values: dict[str, str] = {}
             for name, segment in zip(keys, segments[:-1], strict=True):

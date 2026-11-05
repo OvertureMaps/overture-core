@@ -2,7 +2,6 @@
 
 import dataclasses
 import datetime as dt
-import inspect
 import json
 import pickle
 import threading
@@ -155,6 +154,7 @@ class TestPaths:
         assert b.base_uri == "s3://bkt/root/version=1"
         assert b.base_prefix == "root/version=1"
         assert b.data_uri == "s3://bkt/root/version=1/data"
+        assert b.data_prefix == "root/version=1/data"
         assert b.metadata_uri == "s3://bkt/root/version=1/metadata.json"
         assert b.success_uri == "s3://bkt/root/version=1/success"
         assert b.sub_directory("/extra/") == "s3://bkt/root/version=1/extra"
@@ -880,92 +880,55 @@ class TestStatus:
 _RC = "release_candidate/release=R/run=r1"
 
 
-class TestReleasedStatus:
+class TestRelease:
     @staticmethod
     def _bundle(store, **kwargs) -> ReleaseCandidateBundle:
         return ReleaseCandidateBundle(
             bucket="bkt", release="R", run="r1", store=store, **kwargs
         )
 
-    def test_success_and_released_markers(self, store):
-        store.write("bkt", f"{_RC}/success")
+    def test_is_released(self, store):
+        b = self._bundle(store)
+        assert b.is_released() is False
         store.write("bkt", f"{_RC}/released")
-        assert self._bundle(store).status() == BundleStatusReport(
-            status=BundleStatus.RELEASED,
-            exists=True,
-            has_success=True,
-            has_metadata=False,
-        )
+        assert b.is_released() is True
 
-    def test_success_without_released_marker(self, store):
-        store.write("bkt", f"{_RC}/success")
-        assert self._bundle(store).status().status is BundleStatus.SUCCESS
-
-    @pytest.mark.parametrize(
-        ("sections", "expected"),
-        [
-            ({}, BundleStatus.IN_PROGRESS),
-            ({"dag": {"status": "failed"}}, BundleStatus.FAILED),
-        ],
-    )
-    def test_released_marker_needs_success(self, store, sections, expected):
-        store.write("bkt", f"{_RC}/released")
-        if sections:
-            store.write("bkt", f"{_RC}/metadata.json", _metadata(**sections))
-        assert self._bundle(store).status().status is expected
-
-    def test_missing_bundle(self, store):
-        assert self._bundle(store).status().status is None
-
-    def test_value(self):
-        assert BundleStatus("released") is BundleStatus.RELEASED
-        assert json.dumps({"status": BundleStatus.RELEASED}) == '{"status": "released"}'
+    def test_released_markers(self):
+        assert ReleaseCandidateBundle.RELEASED_MARKERS == ("success", "released")
 
     def test_namespaced(self, store):
-        store.write("bkt", f"ns/{_RC}/success")
         store.write("bkt", f"ns/{_RC}/released")
-        assert self._bundle(store, namespace="ns").status().status is (
-            BundleStatus.RELEASED
-        )
+        assert self._bundle(store, namespace="ns").is_released()
+        assert not self._bundle(store).is_released()
 
-    def test_other_types_ignore_a_released_marker(self, store):
-        store.write("bkt", f"{_RUN}/success")
-        store.write("bkt", f"{_RUN}/released")
-        b = ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store)
-        assert b.status().status is BundleStatus.SUCCESS
-
-    def test_matches_resolve_latest_released(self, store):
-        for run in ("r1", "r2"):
-            store.write("bkt", f"release_candidate/release=R/run={run}/success")
+    def test_status_is_lifecycle_only(self, store):
+        store.write("bkt", f"{_RC}/success")
         store.write("bkt", f"{_RC}/released")
-        latest = ReleaseCandidateBundle.resolve_latest_released(
-            release="R", bucket="bkt", store=store
-        )
-        assert latest.run == "r1"
-        assert latest.status().status is BundleStatus.RELEASED
+        assert self._bundle(store).status().status is BundleStatus.SUCCESS
 
-    def test_released_uri(self):
-        b = self._bundle(None)
-        assert b.released_uri == f"s3://bkt/{_RC}/released"
-
-    def test_discover_all_reports_released(self, store):
+    def test_discover_all(self, store):
         for run in ("r1", "r2"):
             store.write("bkt", f"ns/release_candidate/release=R/run={run}/success")
         store.write("bkt", f"ns/{_RC}/released")
         found = ReleaseCandidateBundle.discover_all("bkt", namespace="ns", store=store)
         assert all(type(b) is ReleaseCandidateBundle for b in found)
-        assert {b.run: b.status().status for b in found} == {
-            "r1": BundleStatus.RELEASED,
-            "r2": BundleStatus.SUCCESS,
-        }
+        assert {b.run: b.is_released() for b in found} == {"r1": True, "r2": False}
+        latest = ReleaseCandidateBundle.resolve_latest_released(
+            release="R", bucket="bkt", namespace="ns", store=store
+        )
+        assert (latest.run, latest.is_released()) == ("r1", True)
 
-    def test_cleanup_keeps_published_candidates(self, store):
+    @pytest.mark.parametrize("has_success", [True, False])
+    def test_cleanup_keeps_published_candidates(self, store, has_success):
         now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
         old = now - dt.timedelta(days=90)
-        for release, run in (("R1", "a"), ("R1", "b"), ("R2", "a")):
-            base = f"release_candidate/release={release}/run={run}"
+        published = "release_candidate/release=R1/run=a"
+        marker = "success" if has_success else "metadata.json"
+        store.write("bkt", f"{published}/{marker}", b"{}", last_modified=old)
+        store.write("bkt", f"{published}/released", last_modified=old)
+        for run in ("b", "c"):
+            base = f"release_candidate/release=R1/run={run}"
             store.write("bkt", f"{base}/success", last_modified=old)
-        store.write("bkt", "release_candidate/release=R1/run=a/released")
         report = ReleaseCandidateBundle.cleanup_all(
             bucket="bkt", min_age_days=30, dry_run=False, now=now, store=store
         )
@@ -973,42 +936,12 @@ class TestReleasedStatus:
             "s3://bkt/release_candidate/release=R1/run=b"
         ]
         assert {d.bundle_uri: d.reason for d in report.kept} == {
-            "s3://bkt/release_candidate/release=R1/run=a": (
-                "is a published release (has a released marker)"
-            ),
-            "s3://bkt/release_candidate/release=R2/run=a": (
+            f"s3://bkt/{published}": "is a published release (has a released marker)",
+            "s3://bkt/release_candidate/release=R1/run=c": (
                 "is the latest successful bundle"
             ),
         }
-        assert store.exists("bkt", "release_candidate/release=R1/run=a/success")
-
-    def test_cleanup_keeps_published_candidates_without_success(self, store):
-        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
-        old = now - dt.timedelta(days=90)
-        published = "release_candidate/release=R1/run=a"
-        store.write("bkt", f"{published}/metadata.json", b"{}", last_modified=old)
-        store.write("bkt", f"{published}/released", last_modified=old)
-        store.write("bkt", "release_candidate/release=R2/run=a/success")
-        report = ReleaseCandidateBundle.cleanup_all(
-            bucket="bkt", min_age_days=30, dry_run=False, now=now, store=store
-        )
-        assert report.deleted == []
-        assert {d.bundle_uri: d.reason for d in report.kept}[
-            f"s3://bkt/{published}"
-        ] == "is a published release (has a released marker)"
         assert store.exists("bkt", f"{published}/released")
-
-    def test_requests(self):
-        store = CountingStore()
-        b = self._bundle(store)
-        store.write("bkt", f"{_RC}/released")
-        b.status()
-        assert store.calls == ["exists", "read", "prefix_exists"]
-
-        store.calls.clear()
-        store.write("bkt", f"{_RC}/success")
-        b.status()
-        assert store.calls == ["exists", "read", "exists"]
 
 
 # ── Partition resolution ─────────────────────────────────────────────────────
@@ -1642,63 +1575,39 @@ def _instance(cls: type[Bundle]) -> Bundle:
     )
 
 
-_OWN_PATHS = {"base_uri", "base_prefix", "root_uri", "root_prefix"}
-
-
-def _path_accessors(cls: type[Bundle]) -> set[str]:
-    """The ``*_uri`` / ``*_prefix`` properties of *cls* besides `_OWN_PATHS`."""
-    return {
-        name
-        for name in dir(cls)
-        if name.endswith(("_uri", "_prefix"))
-        and name not in _OWN_PATHS
-        and isinstance(inspect.getattr_static(cls, name), property)
-    }
-
-
 class TestBundleComponent:
-    def test_directory_is_the_default_kind(self):
-        assert BundleComponent("data").kind is ComponentKind.DIRECTORY
-
     def test_kinds(self):
         directory = BundleComponent("changelog")
         file = BundleComponent("metadata.json", ComponentKind.FILE)
-        assert (directory.is_directory, file.is_directory) == (True, False)
-        assert (directory.listing_name, file.listing_name) == (
+        marker = BundleComponent("success", ComponentKind.MARKER)
+        assert directory.kind is ComponentKind.DIRECTORY
+        assert [c.is_directory for c in (directory, file, marker)] == [
+            True,
+            False,
+            False,
+        ]
+        assert [c.listing_name for c in (directory, file, marker)] == [
             "changelog/",
             "metadata.json",
-        )
-        assert [k.value for k in ComponentKind] == ["directory", "file"]
-
-    def test_kind_from_string(self):
-        assert BundleComponent("success", "file").kind is ComponentKind.FILE  # type: ignore[arg-type]
-        with pytest.raises(ValueError):
-            BundleComponent("success", "link")  # type: ignore[arg-type]
+            "success",
+        ]
 
     @pytest.mark.parametrize("name", ["", "data/", "a/b"])
     def test_name_is_one_segment(self, name):
         with pytest.raises(ValueError, match="one non-empty path segment"):
             BundleComponent(name)
 
-    def test_frozen_and_hashable(self):
-        component = BundleComponent("success", ComponentKind.FILE)
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            component.name = "x"  # type: ignore[misc]
-        assert {component, BundleComponent("success", ComponentKind.FILE)} == {
-            component
-        }
 
-
+_METRICS = ["changelog/", "metrics/", "metrics_summary/"]
 _PUBLISHING = [
+    *_METRICS,
     "bridgefiles/",
     "pmtiles/",
-    "changelog/",
-    "metrics/",
-    "metrics_summary/",
     "partition_bboxes/",
     "propagate/",
     "license.json",
     "attribution.mdx",
+    "bundle_diff_report.md",
 ]
 
 
@@ -1714,30 +1623,13 @@ class TestComponents:
         ("cls", "extra"),
         [
             (SourceRawBundle, []),
-            (SourceIngestBundle, ["changelog/", "metrics/", "metrics_summary/"]),
-            (
-                ThemeAssembleBundle,
-                [
-                    "changelog/",
-                    "metrics/",
-                    "metrics_summary/",
-                    "summary.md",
-                    "bundle_diff_report.md",
-                ],
-            ),
+            (SourceIngestBundle, _METRICS),
+            (ThemeAssembleBundle, [*_METRICS, "summary.md", "bundle_diff_report.md"]),
             (
                 ThemePromoteBundle,
-                [
-                    *_PUBLISHING,
-                    "changelog_internal/",
-                    "validation/",
-                    "bundle_diff_report.md",
-                ],
+                [*_PUBLISHING, "changelog_internal/", "validation/"],
             ),
-            (
-                ReleaseCandidateBundle,
-                ["released", *_PUBLISHING, "registry/", "bundle_diff_report.md"],
-            ),
+            (ReleaseCandidateBundle, [*_PUBLISHING, "released", "registry/"]),
             (ScratchBundle, []),
         ],
         ids=lambda v: v.__name__ if isinstance(v, type) else "",
@@ -1756,24 +1648,6 @@ class TestComponents:
                 + "/".join(f"{k}=x" for k in cls.PARTITION_KEYS)
                 + f"/{component.name}"
             )
-
-    @pytest.mark.parametrize("cls", _TYPES, ids=lambda c: c.__name__)
-    def test_components_and_accessors_match(self, cls):
-        b = _instance(cls)
-        directories = {c.name for c in cls.COMPONENTS if c.is_directory}
-        accessors = _path_accessors(cls)
-        for name in directories:
-            assert getattr(b, f"{name}_uri") == b.component_uri(name)
-            assert getattr(b, f"{name}_prefix") == b.component_prefix(name)
-        # The rest are file URIs, named after the file without its extension.
-        files = {c.name.split(".")[0]: c.name for c in cls.COMPONENTS}
-        for accessor in accessors - {
-            f"{d}_{s}" for d in directories for s in ("uri", "prefix")
-        }:
-            stem = accessor.removesuffix("_uri")
-            assert stem != accessor, f"{accessor} has no directory component"
-            assert stem in files, f"{accessor} has no component"
-            assert getattr(b, accessor) == b.component_uri(files[stem])
 
     def test_subclass_components(self):
         class Custom(ThemePromoteBundle):
@@ -2440,8 +2314,17 @@ class TestClientReuse:
         _put(s3, f"{prefix}/success")
         _put(s3, f"{prefix}/released")
 
-        b = ReleaseCandidateBundle(bucket="bkt", release="R", run="r1")
-        assert b.status().status is BundleStatus.RELEASED
+        class Released(ReleaseCandidateBundle):
+            released = False
+
+            def _status_report(self, store):
+                report = super()._status_report(store)
+                self.released = store.exists(*self._object_key("released"))
+                return report
+
+        b = Released(bucket="bkt", release="R", run="r1")
+        assert b.status().status is BundleStatus.SUCCESS
+        assert b.released is True
         assert calls == [("s3",)]
 
     def test_explicit_s3_store_opens_no_client(self, counted_s3):

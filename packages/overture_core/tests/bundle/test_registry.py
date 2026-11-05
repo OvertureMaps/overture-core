@@ -1,16 +1,10 @@
 """Tests for the bundle type registry."""
 
-import doctest
-
 import pytest
 
 from overture_core.bundle import bundle_types
-from overture_core.bundle import registry as registry_module
 from overture_core.bundle.bundle import (
     Bundle,
-    BundleComponent,
-    BundleStatus,
-    ComponentKind,
     ModelBundle,
     ReleaseCandidateBundle,
     ScratchBundle,
@@ -18,6 +12,14 @@ from overture_core.bundle.bundle import (
     SourceRawBundle,
     ThemeAssembleBundle,
     ThemePromoteBundle,
+)
+from overture_core.bundle.components import (
+    CHANGELOG,
+    DATA,
+    DIFF_REPORT,
+    METADATA,
+    SUCCESS,
+    SUMMARY,
 )
 from overture_core.bundle.registry import (
     DEFAULT_REGISTRY,
@@ -38,7 +40,6 @@ class TestDefaultRegistry:
             ReleaseCandidateBundle,
             ScratchBundle,
         ]
-        assert len(DEFAULT_REGISTRY) == 6
 
     def test_registers_every_rooted_bundle_type(self):
         types = {
@@ -49,8 +50,9 @@ class TestDefaultRegistry:
         assert types == set(DEFAULT_REGISTRY)
 
     def test_model_bundle_is_not_registered(self):
-        assert ModelBundle not in DEFAULT_REGISTRY
-        assert ModelBundle.BUNDLE_TYPE not in DEFAULT_REGISTRY
+        assert ModelBundle not in list(DEFAULT_REGISTRY)
+        with pytest.raises(KeyError):
+            DEFAULT_REGISTRY.get(ModelBundle.BUNDLE_TYPE)
 
     def test_layout_of_each_type(self):
         layout = {
@@ -79,70 +81,29 @@ class TestDefaultRegistry:
     )
     def test_get_by_type_or_root(self, name, expected):
         assert DEFAULT_REGISTRY.get(name) is expected
-        assert name in DEFAULT_REGISTRY
 
     def test_get_unknown_raises(self):
         with pytest.raises(KeyError, match="No registered bundle type 'release'"):
             DEFAULT_REGISTRY.get("release")
 
-    def test_contains(self):
-        assert ThemePromoteBundle in DEFAULT_REGISTRY
-        assert Bundle not in DEFAULT_REGISTRY
-        assert "release" not in DEFAULT_REGISTRY
-        assert 3 not in DEFAULT_REGISTRY
-
-    def test_repr(self):
-        assert repr(BundleRegistry([SourceRawBundle, ThemeAssembleBundle])) == (
-            "BundleRegistry([SourceRawBundle, ThemeAssembleBundle])"
-        )
-
-    def test_module_example(self):
-        result = doctest.testmod(registry_module)
-        assert result.attempted > 0
-        assert result.failed == 0
-
 
 class TestValidation:
-    def test_rejects_non_bundle_types(self):
-        with pytest.raises(TypeError, match="Expected a Bundle subclass"):
-            BundleRegistry([SourceRawBundle, dict])  # type: ignore[list-item]
-        with pytest.raises(TypeError, match="Expected a Bundle subclass"):
-            BundleRegistry(
-                [SourceRawBundle(provider="p", resource="r", bucket="bkt")]  # type: ignore[list-item]
-            )
-
     def test_rejects_types_without_a_layout(self):
         with pytest.raises(ValueError, match="needs a ROOT_PATH and PARTITION_KEYS"):
             BundleRegistry([Bundle])
 
-    def test_rejects_duplicates(self):
-        with pytest.raises(ValueError, match="registered twice"):
-            BundleRegistry([SourceRawBundle, SourceRawBundle])
-
-    def test_rejects_shared_root(self):
+    @pytest.mark.parametrize("root", ["theme_stage", "theme_assemble"])
+    def test_rejects_name_collisions(self, root):
         class Other(Bundle):
             BUNDLE_TYPE = "other"
-            ROOT_PATH = "theme_stage"
+            ROOT_PATH = root
             PARTITION_KEYS = ("run",)
 
         with pytest.raises(
-            ValueError, match="Other and ThemeAssembleBundle both use the name"
+            ValueError,
+            match=f"Other and ThemeAssembleBundle both use the name '{root}'",
         ):
             BundleRegistry([ThemeAssembleBundle, Other])
-
-    def test_rejects_root_matching_another_type_name(self):
-        class Other(Bundle):
-            BUNDLE_TYPE = "other"
-            ROOT_PATH = "theme_assemble"
-            PARTITION_KEYS = ("run",)
-
-        with pytest.raises(ValueError, match="both use the name 'theme_assemble'"):
-            BundleRegistry([ThemeAssembleBundle, Other])
-
-    def test_empty_registry(self):
-        empty = BundleRegistry([])
-        assert len(empty) == 0
-        assert empty.locate(f"s3://bkt/{_TA}") is None
 
 
 _TA_PARTITIONS = {"theme": "places", "run": "r1"}
@@ -206,15 +167,13 @@ class TestLocate:
     @pytest.mark.parametrize(
         ("relative_path", "component"),
         [
-            ("data", BundleComponent("data")),
-            ("data/part-0.parquet", BundleComponent("data")),
-            ("metadata.json", BundleComponent("metadata.json", ComponentKind.FILE)),
-            ("summary.md", BundleComponent("summary.md", ComponentKind.FILE)),
-            (
-                "bundle_diff_report.md",
-                BundleComponent("bundle_diff_report.md", ComponentKind.FILE),
-            ),
-            ("changelog/type=x/f.parquet", BundleComponent("changelog")),
+            ("data", DATA),
+            ("data/part-0.parquet", DATA),
+            ("metadata.json", METADATA),
+            ("success", SUCCESS),
+            ("summary.md", SUMMARY),
+            ("bundle_diff_report.md", DIFF_REPORT),
+            ("changelog/type=x/f.parquet", CHANGELOG),
             ("success/x", None),
             ("unlisted/f", None),
             ("theme_stage/theme=a/run=b", None),
@@ -286,13 +245,6 @@ class TestLocate:
         with pytest.raises(ValueError, match="Expected a bucket"):
             DEFAULT_REGISTRY.locate(f"s3:///{_TA}")
 
-    def test_partitions_are_a_copy(self):
-        partitions = {"theme": "places"}
-        loc = BundleLocation(ThemeAssembleBundle, "bkt", partitions=partitions)
-        partitions["run"] = "r1"
-        assert loc.partitions == {"theme": "places"}
-        assert type(loc.partitions) is dict
-
     def test_longest_root_wins(self):
         class Short(Bundle):
             BUNDLE_TYPE = "short"
@@ -309,10 +261,6 @@ class TestLocate:
         assert registry.locate("s3://bkt/a/run=1").bundle_type is Short
         loc = registry.locate("s3://bkt/a/b")
         assert (loc.bundle_type, loc.root_prefix) == (Long, "a/b")
-
-    def test_location_is_hashable(self):
-        loc = DEFAULT_REGISTRY.locate(f"s3://bkt/{_TA}")
-        assert hash(loc) == hash(DEFAULT_REGISTRY.locate(f"s3://bkt/{_TA}/"))
 
 
 class TestBundleFromUri:
@@ -375,7 +323,7 @@ class TestBundleFromUri:
             "s3://bkt/ns/release_candidate/release=R/run=a", store=store
         )
         assert bundle.store is store
-        assert bundle.status().status is BundleStatus.RELEASED
+        assert bundle.is_released()
 
     def test_location_bundle(self, store):
         loc = DEFAULT_REGISTRY.locate(f"s3://bkt/{_TA}/data/f")

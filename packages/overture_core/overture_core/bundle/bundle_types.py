@@ -5,29 +5,29 @@ from __future__ import annotations
 import datetime
 import json
 from collections.abc import Collection
-from dataclasses import replace
 from typing import Self
 from urllib.parse import urlparse
 
 from overture_core.bundle.base import Bundle, _with_store
 from overture_core.bundle.components import (
-    _CHANGELOG,
-    _CHANGELOG_INTERNAL,
-    _DIFF_REPORT,
-    _METRICS,
-    _METRICS_SUMMARY,
-    _PUBLISHING,
-    _REGISTRY,
-    _RELEASED,
-    _SUCCESS,
-    _VALIDATION,
-    BundleComponent,
+    ATTRIBUTION,
+    BRIDGEFILES,
+    CHANGELOG,
+    CHANGELOG_INTERNAL,
+    DIFF_REPORT,
+    LICENSE,
+    METRICS,
+    METRICS_SUMMARY,
+    PARTITION_BBOXES,
+    PMTILES,
+    PROPAGATE,
+    REGISTRY,
+    RELEASED,
+    SUMMARY,
+    VALIDATION,
     ComponentKind,
-    _MetricsAccessors,
-    _PublishingAccessors,
 )
 from overture_core.bundle.partitions import _compose_root, _resolve_partitions
-from overture_core.bundle.status import BundleStatus, BundleStatusReport
 from overture_core.bundle.store import BundleStore
 from overture_core.cloud.aws.object import parse_s3_uri
 
@@ -86,6 +86,75 @@ class _ProviderResourceBundle(Bundle):
         self.resource = resource
 
 
+class _MetricsBundle(Bundle):
+    """A bundle with a changelog and metrics."""
+
+    COMPONENTS = (*Bundle.COMPONENTS, CHANGELOG, METRICS, METRICS_SUMMARY)
+
+    @property
+    def changelog_uri(self) -> str:
+        return self.component_uri(CHANGELOG.name)
+
+    @property
+    def changelog_prefix(self) -> str:
+        return self.component_prefix(CHANGELOG.name)
+
+    @property
+    def metrics_uri(self) -> str:
+        return self.component_uri(METRICS.name)
+
+    @property
+    def metrics_prefix(self) -> str:
+        return self.component_prefix(METRICS.name)
+
+    @property
+    def metrics_summary_uri(self) -> str:
+        return self.component_uri(METRICS_SUMMARY.name)
+
+    @property
+    def metrics_summary_prefix(self) -> str:
+        return self.component_prefix(METRICS_SUMMARY.name)
+
+
+class _PublishingBundle(_MetricsBundle):
+    """A bundle with the artifacts written for publishing."""
+
+    COMPONENTS = (
+        *_MetricsBundle.COMPONENTS,
+        BRIDGEFILES,
+        PMTILES,
+        PARTITION_BBOXES,
+        PROPAGATE,
+        LICENSE,
+        ATTRIBUTION,
+        DIFF_REPORT,
+    )
+
+    @property
+    def bridgefiles_uri(self) -> str:
+        return self.component_uri(BRIDGEFILES.name)
+
+    @property
+    def bridgefiles_prefix(self) -> str:
+        return self.component_prefix(BRIDGEFILES.name)
+
+    @property
+    def pmtiles_uri(self) -> str:
+        return self.component_uri(PMTILES.name)
+
+    @property
+    def pmtiles_prefix(self) -> str:
+        return self.component_prefix(PMTILES.name)
+
+    @property
+    def partition_bboxes_uri(self) -> str:
+        return self.component_uri(PARTITION_BBOXES.name)
+
+    @property
+    def partition_bboxes_prefix(self) -> str:
+        return self.component_prefix(PARTITION_BBOXES.name)
+
+
 class SourceRawBundle(_ProviderResourceBundle):
     """Raw data collected from a provider, rooted at ``datasets``."""
 
@@ -93,12 +162,11 @@ class SourceRawBundle(_ProviderResourceBundle):
     ROOT_PATH = "datasets"
 
 
-class SourceIngestBundle(_MetricsAccessors, _ProviderResourceBundle):
+class SourceIngestBundle(_MetricsBundle, _ProviderResourceBundle):
     """Ingested / normalised source data, rooted at ``feeds``."""
 
     BUNDLE_TYPE = "source_ingest"
     ROOT_PATH = "feeds"
-    COMPONENTS = (*Bundle.COMPONENTS, _CHANGELOG, _METRICS, _METRICS_SUMMARY)
 
     @classmethod
     def from_path(
@@ -131,20 +199,13 @@ class SourceIngestBundle(_MetricsAccessors, _ProviderResourceBundle):
         return cls._from_root(parsed.netloc, root, values, store=store)
 
 
-class ThemeAssembleBundle(_MetricsAccessors, Bundle):
+class ThemeAssembleBundle(_MetricsBundle):
     """Assembled theme data from multiple corpus sources."""
 
     BUNDLE_TYPE = "theme_assemble"
     ROOT_PATH = "theme_stage"
     PARTITION_KEYS = ("theme", "run")
-    COMPONENTS = (
-        *Bundle.COMPONENTS,
-        _CHANGELOG,
-        _METRICS,
-        _METRICS_SUMMARY,
-        BundleComponent("summary.md", ComponentKind.FILE),
-        _DIFF_REPORT,
-    )
+    COMPONENTS = (*_MetricsBundle.COMPONENTS, SUMMARY, DIFF_REPORT)
 
     def __init__(
         self,
@@ -166,19 +227,13 @@ class ThemeAssembleBundle(_MetricsAccessors, Bundle):
         )
 
 
-class ThemePromoteBundle(_PublishingAccessors, Bundle):
+class ThemePromoteBundle(_PublishingBundle):
     """Promoted theme with supplemental artifacts."""
 
     BUNDLE_TYPE = "theme_promote"
     ROOT_PATH = "theme_promote"
     PARTITION_KEYS = ("theme", "schema", "run")
-    COMPONENTS = (
-        *Bundle.COMPONENTS,
-        *_PUBLISHING,
-        _CHANGELOG_INTERNAL,
-        _VALIDATION,
-        _DIFF_REPORT,
-    )
+    COMPONENTS = (*_PublishingBundle.COMPONENTS, CHANGELOG_INTERNAL, VALIDATION)
 
     def __init__(
         self,
@@ -202,38 +257,35 @@ class ThemePromoteBundle(_PublishingAccessors, Bundle):
 
     @property
     def changelog_internal_uri(self) -> str:
-        return self.component_uri(_CHANGELOG_INTERNAL.name)
+        return self.component_uri(CHANGELOG_INTERNAL.name)
 
     @property
     def changelog_internal_prefix(self) -> str:
-        return self.component_prefix(_CHANGELOG_INTERNAL.name)
+        return self.component_prefix(CHANGELOG_INTERNAL.name)
 
     @property
     def validation_uri(self) -> str:
-        return self.component_uri(_VALIDATION.name)
+        return self.component_uri(VALIDATION.name)
 
     @property
     def validation_prefix(self) -> str:
-        return self.component_prefix(_VALIDATION.name)
+        return self.component_prefix(VALIDATION.name)
 
 
-class ReleaseCandidateBundle(_PublishingAccessors, Bundle):
+class ReleaseCandidateBundle(_PublishingBundle):
     """Release candidate with supplemental artifacts.
 
     A published release is represented by its candidate, which then has a
-    ``released`` marker and reports `BundleStatus.RELEASED`.
+    ``released`` marker (see `is_released`).
     """
 
     BUNDLE_TYPE = "release_candidate"
     ROOT_PATH = "release_candidate"
     PARTITION_KEYS = ("release", "run")
-    RELEASED_MARKERS = (_SUCCESS.name, _RELEASED.name)
-    COMPONENTS = (
-        *Bundle.COMPONENTS,
-        _RELEASED,
-        *_PUBLISHING,
-        _REGISTRY,
-        _DIFF_REPORT,
+    COMPONENTS = (*_PublishingBundle.COMPONENTS, RELEASED, REGISTRY)
+    # A published candidate has every marker.
+    RELEASED_MARKERS = tuple(
+        c.name for c in COMPONENTS if c.kind is ComponentKind.MARKER
     )
 
     def __init__(
@@ -298,17 +350,16 @@ class ReleaseCandidateBundle(_PublishingAccessors, Bundle):
         return self._partitions.get("release", "")
 
     @property
-    def released_uri(self) -> str:
-        """S3 URI of the ``released`` marker."""
-        return self.component_uri(_RELEASED.name)
-
-    @property
     def registry_uri(self) -> str:
-        return self.component_uri(_REGISTRY.name)
+        return self.component_uri(REGISTRY.name)
 
     @property
     def registry_prefix(self) -> str:
-        return self.component_prefix(_REGISTRY.name)
+        return self.component_prefix(REGISTRY.name)
+
+    def is_released(self) -> bool:
+        """Return True if the candidate has a ``released`` marker."""
+        return self._open_store().exists(*self._object_key(RELEASED.name))
 
     def is_deletable(
         self,
@@ -319,21 +370,9 @@ class ReleaseCandidateBundle(_PublishingAccessors, Bundle):
         successful: Collection[Bundle] | None = None,
     ) -> tuple[bool, str]:
         """Like `Bundle.is_deletable`, but a published candidate is always kept."""
-        deletable, reason = super().is_deletable(
-            min_age_days, siblings, now, successful=successful
-        )
-        if deletable and self._open_store().exists(*self._object_key(_RELEASED.name)):
+        if self.is_released():
             return False, "is a published release (has a released marker)"
-        return deletable, reason
-
-    def _status_report(self, store: BundleStore) -> BundleStatusReport:
-        """Report `BundleStatus.RELEASED` for a successful, published candidate."""
-        report = super()._status_report(store)
-        if report.status is BundleStatus.SUCCESS and store.exists(
-            *self._object_key(_RELEASED.name)
-        ):
-            return replace(report, status=BundleStatus.RELEASED)
-        return report
+        return super().is_deletable(min_age_days, siblings, now, successful=successful)
 
 
 class ScratchBundle(Bundle):
