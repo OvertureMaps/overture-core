@@ -58,15 +58,15 @@ _RETENTION_ORDER_PARTITION_KEYS = ("version", "release", "schema", "run")
 
 def _run_batch(
     action: str,
-    fn: Callable[[Bundle, Bundle], None],
+    fn: Callable[[int, Bundle], None],
     bundles: list[Bundle],
     max_workers: int,
     store: BundleStore | None = None,
 ) -> None:
-    """Run ``fn(bundle, target)`` for every bundle across *max_workers* threads.
+    """Run ``fn(i, target)`` for each ``bundles[i]`` across *max_workers* threads.
 
     Every bundle uses *store* when given, else its own; bundles without one
-    share one `S3BundleStore` for the batch.  *target* is the bundle itself
+    share one `S3BundleStore` for the batch.  *target* is ``bundles[i]``
     when it keeps its own store, else a shallow copy carrying the batch's,
     so concurrent batches over the same bundles stay independent.  Every
     bundle is attempted.  Each failure is logged, then the first one in
@@ -80,7 +80,7 @@ def _run_batch(
         return _with_store(copy.copy(b), shared)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [(b, pool.submit(fn, b, _target(b))) for b in bundles]
+        futures = [(b, pool.submit(fn, i, _target(b))) for i, b in enumerate(bundles)]
     failures = [(b, exc) for b, f in futures if (exc := f.exception()) is not None]
     for b, exc in failures:
         log.error("%s failed for %r", action, b, exc_info=exc)
@@ -390,15 +390,12 @@ class Bundle:
         input_bundle_info: list[dict[str, str]] = []
         for b in input_bundles:
             info: dict[str, str] = {"path": b.base_uri}
-            p = getattr(b, "provider", "")
-            r = getattr(b, "resource", "")
-            v = getattr(b, "version", "")
-            if p:
-                info["provider"] = p
-            if r:
-                info["resource"] = r
-            if v:
-                info["version"] = v
+            # Partitions first so bundles rehydrated via from_base_uri carry provenance.
+            partitions = b.partitions
+            for key in ("provider", "resource", "version"):
+                value = partitions.get(key) or str(getattr(b, key, "") or "")
+                if value:
+                    info[key] = value
             input_bundle_info.append(info)
         return input_bundle_info
 
@@ -1282,6 +1279,7 @@ class Bundle:
         *,
         metadata_factory: Callable[[Bundle], BundleMetadata],
         input_bundles: list[Bundle] | None = None,
+        per_bundle_inputs: list[list[Bundle]] | None = None,
         capture_variables: bool = True,
         custom_metadata: dict[str, Any] | None = None,
         datasets_dir: str | PathLike[str] | None = None,
@@ -1291,19 +1289,34 @@ class Bundle:
     ) -> None:
         """Run `initialize` on every bundle across *max_workers* threads.
 
-        All bundles share the other arguments; *metadata_factory* builds each
-        bundle's `BundleMetadata` writer.  See `_run_batch` for *store* and
-        failures.
+        *input_bundles* is shared: every bundle records the same inputs.
+        *per_bundle_inputs* is positional: ``per_bundle_inputs[i]`` is recorded
+        as the inputs of ``bundles[i]`` (``[]`` for none).  The two are
+        mutually exclusive.  All bundles share the other arguments;
+        *metadata_factory* builds each bundle's `BundleMetadata` writer.  See
+        `_run_batch` for *store* and failures.
         """
         if not bundles:
             return
+        if per_bundle_inputs is not None:
+            if input_bundles is not None:
+                raise ValueError(
+                    "Pass either input_bundles or per_bundle_inputs, not both"
+                )
+            if len(per_bundle_inputs) != len(bundles):
+                raise ValueError(
+                    f"per_bundle_inputs has {len(per_bundle_inputs)} entries "
+                    f"for {len(bundles)} bundles"
+                )
 
-        def _one(b: Bundle, target: Bundle) -> None:
+        def _one(i: int, target: Bundle) -> None:
             target.initialize(
-                input_bundles=input_bundles,
+                input_bundles=(
+                    input_bundles if per_bundle_inputs is None else per_bundle_inputs[i]
+                ),
                 capture_variables=capture_variables,
                 custom_metadata=custom_metadata,
-                metadata=metadata_factory(b),
+                metadata=metadata_factory(bundles[i]),
                 datasets_dir=datasets_dir,
                 source_dataset=source_dataset,
             )
@@ -1328,8 +1341,8 @@ class Bundle:
         if not bundles:
             return
 
-        def _one(b: Bundle, target: Bundle) -> None:
-            target.finalize(status=status, metadata=metadata_factory(b))
+        def _one(i: int, target: Bundle) -> None:
+            target.finalize(status=status, metadata=metadata_factory(bundles[i]))
 
         _run_batch("finalize", _one, bundles, max_workers, store)
 

@@ -47,7 +47,8 @@ def _write_acme_dataset(directory) -> None:
                         "label": "widgets",
                         "name": "Acme Widgets",
                         "collection": {"license": {"type": "MIT"}},
-                    }
+                    },
+                    {"label": "gadgets", "name": "Acme Gadgets", "collection": {}},
                 ],
             }
         ),
@@ -501,6 +502,56 @@ class TestLifecycle:
     def test_batch_noop_on_empty(self):
         Bundle.initialize_batch([], metadata_factory=lambda b: RecordingMetadata())
         Bundle.finalize_batch([], metadata_factory=lambda b: RecordingMetadata())
+
+    def test_batch_per_bundle_inputs_enriches_rehydrated_inputs(self, store, tmp_path):
+        _write_acme_dataset(tmp_path)
+        raw_widgets = SourceRawBundle(
+            provider="acme", resource="widgets", bucket="raw", version="1", run="r0"
+        )
+        raw_gadgets = Bundle.from_base_uri(
+            "s3://raw/datasets/provider=acme/resource=gadgets/version=2/run=r0"
+        )
+        bundles = [
+            SourceIngestBundle(
+                provider="acme",
+                resource=r,
+                bucket="feeds",
+                version="v1",
+                run="r1",
+                store=store,
+            )
+            for r in ("widgets", "gadgets")
+        ]
+        made: dict[str, RecordingMetadata] = {}
+
+        def factory(b):
+            made[b.base_uri] = RecordingMetadata()
+            return made[b.base_uri]
+
+        Bundle.initialize_batch(
+            bundles,
+            metadata_factory=factory,
+            per_bundle_inputs=[[raw_widgets], [raw_gadgets]],
+            datasets_dir=tmp_path,
+        )
+        for b, raw, label, version in (
+            (bundles[0], raw_widgets, "widgets", "1"),
+            (bundles[1], raw_gadgets, "gadgets", "2"),
+        ):
+            (inp,) = made[b.base_uri].section["inputs"]
+            assert inp["path"] == raw.base_uri
+            assert inp["resource"]["label"] == label
+            assert inp["resource"]["version"] == version
+
+    def test_batch_per_bundle_inputs_validation(self):
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
+        factory = lambda b: RecordingMetadata()  # noqa: E731
+        with pytest.raises(ValueError, match="not both"):
+            Bundle.initialize_batch(
+                [b], metadata_factory=factory, input_bundles=[b], per_bundle_inputs=[[]]
+            )
+        with pytest.raises(ValueError, match="0 entries"):
+            Bundle.initialize_batch([b], metadata_factory=factory, per_bundle_inputs=[])
 
 
 # ── Partition resolution ─────────────────────────────────────────────────────
