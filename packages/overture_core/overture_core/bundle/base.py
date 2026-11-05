@@ -45,7 +45,6 @@ from overture_core.bundle.status import (
     _derive_status,
     _metadata_section_statuses,
 )
-from overture_core.cloud.aws.object import parse_s3_uri
 from overture_core.cloud.cloud import Partition
 from overture_core.dataset.dataset import Dataset
 
@@ -517,9 +516,10 @@ class Bundle:
         return self._object_key(SUCCESS.name)
 
     def _object_key(self, name: str) -> tuple[str, str]:
-        """``(bucket, key)`` of the object *name* directly under `base_uri`."""
-        bucket, prefix = parse_s3_uri(self.base_uri)
-        return bucket, _dir_prefix(prefix) + name
+        """``(bucket, key)`` of the object *name* directly under `base_prefix`."""
+        if not self.bucket:
+            raise ValueError(f"Not an S3 URI: {self.base_uri!r}")
+        return self.bucket, _dir_prefix(self.base_prefix) + name
 
     def resolve_partitions(
         self,
@@ -853,9 +853,8 @@ class Bundle:
         UTC time.
         """
         store = self._open_store()
-        for uri in (self.success_uri, self.metadata_uri):
-            _, key = parse_s3_uri(uri)
-            last_modified = store.last_modified(self.bucket, key)
+        for bucket, key in (self._success_marker(), self._object_key(METADATA.name)):
+            last_modified = store.last_modified(bucket, key)
             if last_modified is None:
                 continue
             now = now or datetime.datetime.now(datetime.timezone.utc)

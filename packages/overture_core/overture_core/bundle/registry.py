@@ -29,12 +29,13 @@ from overture_core.bundle.bundle_types import (
     ThemePromoteBundle,
 )
 from overture_core.bundle.components import BundleComponent
-from overture_core.bundle.partitions import _compose_root
 from overture_core.bundle.store import BundleStore
 
 
 def _segments(path: str) -> list[str]:
-    return [segment for segment in path.split("/") if segment]
+    # Interior empty segments are kept: "a//b" and "a/b" are different keys.
+    path = path.strip("/")
+    return path.split("/") if path else []
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,8 @@ class BundleLocation:
     @property
     def root_prefix(self) -> str:
         """Key prefix of the type's root, including any namespace."""
-        return _compose_root(self.bundle_type.ROOT_PATH, self.namespace)
+        root = self.bundle_type.ROOT_PATH.strip("/")
+        return f"{self.namespace}/{root}" if self.namespace else root
 
     @property
     def root_uri(self) -> str:
@@ -163,7 +165,8 @@ class BundleRegistry:
         """Place *path* in a registered type's hierarchy, or return ``None``.
 
         *path* is an ``s3://`` URI or a bare key at any depth: a root, a
-        partial position, a bundle, or an object inside one.  Segments before
+        partial position, a bundle, or an object inside one.  The key is used
+        as given apart from leading and trailing slashes.  Segments before
         the root are the namespace; so is a root followed by a non-partition
         segment before its last partition.  When several roots fit, the
         leftmost wins, so a namespace segment equal to a root name is read as

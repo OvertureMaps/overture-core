@@ -1,10 +1,13 @@
 """Tests for the bundle type registry."""
 
+import datetime as dt
+
 import pytest
 
 from overture_core.bundle import bundle_types
 from overture_core.bundle.bundle import (
     Bundle,
+    BundleStatus,
     ModelBundle,
     ReleaseCandidateBundle,
     ScratchBundle,
@@ -120,12 +123,6 @@ class TestLocate:
             (_TA, "", "", _TA_PARTITIONS),
             (f"/ns/{_TA}/", "", "ns", _TA_PARTITIONS),
             (f"S3://bkt/{_TA}", "bkt", "", _TA_PARTITIONS),
-            (
-                "s3://bkt//ns//theme_stage//theme=places//run=r1",
-                "bkt",
-                "ns",
-                _TA_PARTITIONS,
-            ),
             ("theme_stage/theme=a=b/run=c", "", "", {"theme": "a=b", "run": "c"}),
         ],
     )
@@ -212,6 +209,7 @@ class TestLocate:
             "s3://bkt/theme_stage/theme=/run=r1",
             "s3://bkt/theme_stage/theme/run=r1",
             "s3://bkt/theme_stage_old/theme=a/run=b",
+            "s3://bkt/theme_stage//theme=places/run=r1",
             "",
         ],
     )
@@ -293,6 +291,12 @@ class TestBundleFromUri:
                 ScratchBundle,
                 "s3://bkt/scratch/purpose=p/run=a",
             ),
+            (
+                f"s3://bkt/a//b/{_TA}/data//f",
+                ThemeAssembleBundle,
+                f"s3://bkt/a//b/{_TA}",
+            ),
+            (f"s3://bkt/ns//{_TA}", ThemeAssembleBundle, f"s3://bkt/ns//{_TA}"),
         ],
     )
     def test_typed_bundle(self, uri, cls, base_uri):
@@ -324,6 +328,16 @@ class TestBundleFromUri:
         )
         assert bundle.store is store
         assert bundle.is_released()
+
+    def test_keys_keep_hash_and_query_characters(self, store):
+        base = "n#s/release_candidate/release=a?b/run=c#d"
+        lm = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+        store.write("bkt", f"{base}/success", last_modified=lm)
+        store.write("bkt", f"{base}/released")
+        bundle = DEFAULT_REGISTRY.bundle_from_uri(f"s3://bkt/{base}", store=store)
+        assert bundle.status().status is BundleStatus.SUCCESS
+        assert bundle.is_released()
+        assert bundle.age_days(now=lm + dt.timedelta(days=2)) == 2.0
 
     def test_location_bundle(self, store):
         loc = DEFAULT_REGISTRY.locate(f"s3://bkt/{_TA}/data/f")

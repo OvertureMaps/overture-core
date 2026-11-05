@@ -1508,6 +1508,8 @@ class TestPathHelpers:
         b = Bundle(bucket="", root_path="templated/root", partitions={"run": "r1"})
         assert b.root_uri == "templated/root"
         assert b.base_uri == "templated/root/run=r1"
+        with pytest.raises(ValueError, match="Not an S3 URI"):
+            b.is_successful()
 
     @pytest.mark.parametrize(
         ("bundle", "dirs"),
