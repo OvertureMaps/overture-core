@@ -69,7 +69,8 @@ A plan that grows with the number of unions, joins or `withColumn` calls can kil
 ```python
 from overture_spark.plan import assert_plan_size, plan_size
 
-assert_plan_size(build_checks(df), max_chars=200_000)  # raises PlanTooLargeError (an AssertionError)
+# Raises PlanTooLargeError (an AssertionError) past the limit
+assert_plan_size(build_checks(df), max_chars=200_000)
 ```
 
 `plan_size(df)` is the length of the analyzed plan string; the error message reports the measured size and the limit. Jobs can opt in to the same check before an expensive action such as the final write:
