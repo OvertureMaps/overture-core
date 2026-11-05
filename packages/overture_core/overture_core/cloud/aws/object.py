@@ -127,23 +127,30 @@ def bucket_writable(bucket: str, test_key: str | None = None) -> bool:
                 pass
 
 
-def delete_object(bucket: str, key: str) -> None:
+def delete_object(bucket: str, key: str, *, client: Any = None) -> None:
     """Delete an object at ``bucket/key``.
 
     S3's ``DeleteObject`` is idempotent — it returns success whether or not
     the key existed, so this is a plain no-op-safe delete rather than a
     check-then-act (checking first with :func:`object_exists` would cost an
-    extra round trip and a TOCTOU race for no benefit).
+    extra round trip and a TOCTOU race for no benefit).  *client* is an
+    optional boto3 S3 client to reuse; see `_s3`.
     """
-    boto3.client("s3").delete_object(Bucket=bucket, Key=key)
+    _s3(client).delete_object(Bucket=bucket, Key=key)
 
 
-def write_marker(bucket: str, key: str) -> None:
-    """Write an empty marker object (e.g. a ``_SUCCESS`` file) to ``bucket/key``."""
-    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=b"")
+def write_marker(bucket: str, key: str, *, client: Any = None) -> None:
+    """Write an empty marker object (e.g. a ``_SUCCESS`` file) to ``bucket/key``.
+
+    *client* is an optional boto3 S3 client to reuse; see `_s3`.
+    """
+    _s3(client).put_object(Bucket=bucket, Key=key, Body=b"")
 
 
 SUCCESS_FILE_NAME = "success"
+
+# Directory placeholder object some S3 tools write; never a real child.
+FOLDER_PLACEHOLDER = "$folder$"
 
 
 def success_file_key(prefix: str) -> str:
@@ -306,15 +313,16 @@ def read_parquet_prefix(
     return pyarrow.concat_tables(tables).to_pylist()
 
 
-def get_object_bytes(bucket: str, key: str) -> bytes | None:
+def get_object_bytes(bucket: str, key: str, *, client: Any = None) -> bytes | None:
     """Read an object's body as bytes, or ``None`` if ``bucket/key`` doesn't exist.
 
     Collapses the "does this exist" question into the return value instead
     of a try/except at every call site. Raises for any error other than a
-    missing key.
+    missing key.  *client* is an optional boto3 S3 client to reuse; see
+    `_s3`.
     """
     try:
-        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        response = _s3(client).get_object(Bucket=bucket, Key=key)
     except botocore.exceptions.ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
             return None
@@ -323,18 +331,40 @@ def get_object_bytes(bucket: str, key: str) -> bytes | None:
 
 
 def put_object(
-    bucket: str, key: str, body: bytes, content_type: str | None = None
+    bucket: str,
+    key: str,
+    body: bytes,
+    content_type: str | None = None,
+    *,
+    client: Any = None,
 ) -> None:
     """Write *body* to ``bucket/key``, optionally setting *content_type*.
 
     Generalizes :func:`write_marker` (which always writes an empty body) to
     an arbitrary payload, the common case for writing a JSON or text
-    artifact rather than a zero-byte marker file.
+    artifact rather than a zero-byte marker file.  *client* is an optional
+    boto3 S3 client to reuse; see `_s3`.
     """
     kwargs = {"Bucket": bucket, "Key": key, "Body": body}
     if content_type is not None:
         kwargs["ContentType"] = content_type
-    boto3.client("s3").put_object(**kwargs)
+    _s3(client).put_object(**kwargs)
+
+
+def presigned_url(
+    bucket: str, key: str, *, expires_in: int = 3600, client: Any = None
+) -> str:
+    """Return a presigned ``GetObject`` URL for ``bucket/key``.
+
+    Signed locally with the caller's credentials and valid for *expires_in*
+    seconds; S3 checks the object only when the URL is used.  *client* is an
+    optional boto3 S3 client to reuse; see `_s3`.
+    """
+    return _s3(client).generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires_in,
+    )
 
 
 class ConditionalWriteUnsupportedError(RuntimeError):
@@ -553,11 +583,12 @@ class DeletePrefixError(RuntimeError):
         self.errors = errors
 
 
-def delete_prefix(bucket: str, prefix: str) -> int:
+def delete_prefix(bucket: str, prefix: str, *, client: Any = None) -> int:
     """Delete every object under *prefix* in *bucket*.
 
     *prefix* is treated as a directory: ``a/b`` deletes ``a/b/...`` but not
     ``a/bc``.  Stops at the first batch in which S3 reports a failure.
+    *client* is an optional boto3 S3 client to reuse; see `_s3`.
 
     Returns:
         The number of objects deleted.
@@ -572,7 +603,7 @@ def delete_prefix(bucket: str, prefix: str) -> int:
             f"Refusing to delete an empty prefix in s3://{bucket}: "
             "it would delete the whole bucket"
         )
-    s3 = boto3.client("s3")
+    s3 = _s3(client)
 
     deleted = 0
     paginator = s3.get_paginator("list_objects_v2")
@@ -610,8 +641,8 @@ def list_common_prefixes(bucket: str, prefix: str, *, client: Any = None) -> lis
 
     Paginates ``ListObjectsV2`` with ``Delimiter="/"`` and returns each
     ``CommonPrefixes`` entry trimmed to just its segment name (no bucket, no
-    *prefix*, no trailing slash). Skips the ``$folder$`` placeholder some
-    tools write.
+    *prefix*, no trailing slash), in the order S3 returns them (by name +
+    ``/``). Skips the ``$folder$`` placeholder some tools write.
 
     Example: for ``prefix="root/"`` with ``root/version=1/`` and
     ``root/version=2/`` present, returns ``["version=1", "version=2"]``.
@@ -624,7 +655,7 @@ def list_common_prefixes(bucket: str, prefix: str, *, client: Any = None) -> lis
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
             name = cp["Prefix"][len(prefix) :].rstrip("/")
-            if name and name != "$folder$":
+            if name and name != FOLDER_PLACEHOLDER:
                 names.append(name)
     return names
 
