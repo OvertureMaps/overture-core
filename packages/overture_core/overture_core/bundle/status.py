@@ -41,6 +41,19 @@ class BundleStatusReport:
         object.__setattr__(self, "sections", dict(self.sections))
 
 
+def _derive_status(
+    exists: bool, has_success: bool, sections: Mapping[str, str | None]
+) -> BundleStatus | None:
+    """Apply the `BundleStatus` rules to what `Bundle.status` found."""
+    if not exists:
+        return None
+    if has_success:
+        return BundleStatus.SUCCESS
+    if BundleStatus.FAILED in sections.values():
+        return BundleStatus.FAILED
+    return BundleStatus.IN_PROGRESS
+
+
 def _metadata_section_statuses(body: bytes, uri: str) -> dict[str, str | None]:
     """Map each section of the ``metadata.json`` *body* to its ``status``.
 

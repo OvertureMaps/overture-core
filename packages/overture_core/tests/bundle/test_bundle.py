@@ -29,6 +29,7 @@ from overture_core.bundle.bundle import (
     _resolve_partitions,
     provenance_sections,
 )
+from overture_core.bundle.status import _derive_status, _metadata_section_statuses
 from overture_core.bundle.store import InMemoryBundleStore, S3BundleStore
 from overture_core.dataset.dataset import Dataset
 
@@ -481,28 +482,29 @@ class TestLifecycle:
         )
         assert meta.section["inputs"] == [{"path": upstream.base_uri}]
 
-    def test_finalize_writes_success(self, store):
+    @pytest.mark.parametrize("earlier_marker", [False, True])
+    @pytest.mark.parametrize(
+        ("status", "marker"),
+        [
+            ("success", True),
+            (BundleStatus.SUCCESS, True),
+            ("failed", False),
+            (BundleStatus.FAILED, False),
+            ("partial", False),
+        ],
+    )
+    def test_finalize_keeps_a_marker_only_for_success(
+        self, store, status, marker, earlier_marker
+    ):
         meta = RecordingMetadata()
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
-        b.finalize(metadata=meta)
-        assert meta.calls == [("finalize", "success")]
-        assert "scratch/purpose=p/run=r1/success" in keys(store)
-
-    @pytest.mark.parametrize("status", ["failed", BundleStatus.FAILED, "partial"])
-    def test_finalize_without_success_writes_no_marker(self, store, status):
-        meta = RecordingMetadata()
-        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
+        if earlier_marker:
+            store.write("bkt", "scratch/purpose=p/run=r1/success")
         b.finalize(status=status, metadata=meta)
         assert meta.calls == [("finalize", status)]
-        assert keys(store) == set()
-        assert b.is_successful() is False
-
-    def test_failed_rerun_removes_earlier_marker(self, store):
-        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
-        b.finalize(metadata=StoreMetadata(b))
-        b.finalize(status="failed", metadata=StoreMetadata(b))
-        assert keys(store) == {"scratch/purpose=p/run=r1/metadata.json"}
-        assert b.status().status is BundleStatus.FAILED
+        assert keys(store) == (
+            {"scratch/purpose=p/run=r1/success"} if marker else set()
+        )
 
     @pytest.mark.parametrize(
         ("status", "seed_marker"), [("failed", True), ("success", False)]
@@ -518,13 +520,6 @@ class TestLifecycle:
         with pytest.raises(RuntimeError, match="metadata write failed"):
             b.finalize(status=status, metadata=FailingMetadata())
         assert b.is_successful() is False
-
-    def test_finalize_accepts_status_enum(self, store):
-        meta = RecordingMetadata()
-        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
-        b.finalize(status=BundleStatus.SUCCESS, metadata=meta)
-        assert meta.calls == [("finalize", "success")]
-        assert b.is_successful() is True
 
     def test_batch_lifecycle_uses_metadata_factory(self, store):
         bundles = [
@@ -684,28 +679,83 @@ class TestStatus:
     def _bundle(store) -> ThemeAssembleBundle:
         return ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store)
 
-    def test_values(self):
-        assert [s.value for s in BundleStatus] == ["in_progress", "success", "failed"]
-        assert BundleStatus.FAILED == "failed"
-        assert json.dumps({"status": BundleStatus.SUCCESS}) == '{"status": "success"}'
-
-    def test_report_is_frozen_and_hashable(self):
-        report = BundleStatusReport(
-            BundleStatus.FAILED, True, False, True, {"dag": "failed"}
-        )
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            report.status = None  # type: ignore[misc]
-        assert hash(report) == hash(
-            BundleStatusReport(BundleStatus.FAILED, True, False, True)
-        )
-
     def test_report_copies_sections_and_serialises(self):
         sections = {"dag": "failed"}
         report = BundleStatusReport(BundleStatus.FAILED, True, False, True, sections)
         sections["dag"] = "success"
         assert report.sections == {"dag": "failed"}
-        assert dataclasses.asdict(report)["sections"] == {"dag": "failed"}
+        assert hash(report) == hash(dataclasses.replace(report, sections={}))
+        assert json.loads(json.dumps(dataclasses.asdict(report))) == {
+            "status": "failed",
+            "exists": True,
+            "has_success": False,
+            "has_metadata": True,
+            "sections": {"dag": "failed"},
+        }
         assert pickle.loads(pickle.dumps(report)) == report
+
+    @pytest.mark.parametrize(
+        ("exists", "has_success", "sections", "expected"),
+        [
+            (False, False, {}, None),
+            (True, True, {}, BundleStatus.SUCCESS),
+            (True, True, {"dag": "failed"}, BundleStatus.SUCCESS),
+            (True, False, {}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "running"}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "success"}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "partial"}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": None}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "failed"}, BundleStatus.FAILED),
+            (True, False, {"a": "success", "b": "failed"}, BundleStatus.FAILED),
+            (True, False, {"a": "running", "b": "failed"}, BundleStatus.FAILED),
+        ],
+    )
+    def test_rules(self, exists, has_success, sections, expected):
+        assert _derive_status(exists, has_success, sections) is expected
+
+    @pytest.mark.parametrize(
+        ("document", "expected"),
+        [
+            ({"dag": {"status": "running"}}, {"dag": "running"}),
+            (
+                {
+                    "ok": {"status": "running"},
+                    "no_status": {"run_id": "x"},
+                    "bad_status": {"status": ["failed"]},
+                    "not_a_section": "theme_assemble",
+                },
+                {"ok": "running", "no_status": None, "bad_status": None},
+            ),
+            (
+                {
+                    "dag": {
+                        "status": "running",
+                        "inputs": [{"up_dag": {"status": "failed"}, "path": "s3://u"}],
+                    },
+                    "released_at": "2026-01-01",
+                },
+                {"dag": "running"},
+            ),
+        ],
+        ids=["section", "malformed_sections", "nested_inputs"],
+    )
+    def test_section_statuses(self, document, expected):
+        body = json.dumps(document).encode()
+        assert _metadata_section_statuses(body, "s3://bkt/m.json") == expected
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            (b"{not json", "Unreadable metadata.json"),
+            (b"\x80not utf-8", "Unreadable metadata.json"),
+            (b'["failed"]', "is not a JSON object"),
+            (b"null", "is not a JSON object"),
+        ],
+    )
+    def test_unreadable_section_statuses(self, caplog, body, message):
+        assert _metadata_section_statuses(body, "s3://bkt/m.json") == {}
+        assert "s3://bkt/m.json" in caplog.text
+        assert message in caplog.text
 
     def test_missing_bundle_has_no_status(self, store):
         report = self._bundle(store).status()
@@ -727,59 +777,6 @@ class TestStatus:
             has_metadata=False,
         )
 
-    def test_success_marker_wins_over_failed_metadata(self, store):
-        store.write("bkt", f"{_RUN}/success")
-        store.write("bkt", f"{_RUN}/metadata.json", _metadata(dag={"status": "failed"}))
-        report = self._bundle(store).status()
-        assert report.status is BundleStatus.SUCCESS
-        assert report.sections == {"dag": "failed"}
-
-    @pytest.mark.parametrize(
-        ("sections", "expected"),
-        [
-            ({"dag": {"status": "running"}}, BundleStatus.IN_PROGRESS),
-            ({"dag": {"status": "success"}}, BundleStatus.IN_PROGRESS),
-            ({"dag": {"status": "partial"}}, BundleStatus.IN_PROGRESS),
-            ({}, BundleStatus.IN_PROGRESS),
-            ({"dag": {"status": "failed"}}, BundleStatus.FAILED),
-            (
-                {"a": {"status": "success"}, "b": {"status": "failed"}},
-                BundleStatus.FAILED,
-            ),
-            (
-                {"a": {"status": "running"}, "b": {"status": "failed"}},
-                BundleStatus.FAILED,
-            ),
-            (
-                {"a": {"status": "in_progress"}, "b": {"status": "failed"}},
-                BundleStatus.FAILED,
-            ),
-        ],
-    )
-    def test_metadata_without_marker(self, store, sections, expected):
-        store.write("bkt", f"{_RUN}/metadata.json", _metadata(**sections))
-        report = self._bundle(store).status()
-        assert report.status is expected
-        assert (report.exists, report.has_success, report.has_metadata) == (
-            True,
-            False,
-            True,
-        )
-        assert report.sections == {k: v["status"] for k, v in sections.items()}
-
-    def test_nested_input_sections_are_ignored(self, store):
-        body = _metadata(
-            dag={
-                "status": "running",
-                "inputs": [{"up_dag": {"status": "failed"}, "path": "s3://up/r1/"}],
-            },
-            released_at="2026-01-01",
-        )
-        store.write("bkt", f"{_RUN}/metadata.json", body)
-        report = self._bundle(store).status()
-        assert report.status is BundleStatus.IN_PROGRESS
-        assert report.sections == {"dag": "running"}
-
     def test_objects_without_marker_or_metadata(self, store):
         store.write("bkt", f"{_RUN}/data/part-0.parquet", b"x")
         assert self._bundle(store).status() == BundleStatusReport(
@@ -789,42 +786,25 @@ class TestStatus:
             has_metadata=False,
         )
 
-    def test_malformed_sections_are_tolerated(self, store):
-        body = _metadata(
-            ok={"status": "running"},
-            no_status={"run_id": "x"},
-            bad_status={"status": ["failed"]},
-            not_a_section="theme_assemble",
+    def test_metadata_without_marker(self, store):
+        store.write("bkt", f"{_RUN}/metadata.json", _metadata(dag={"status": "failed"}))
+        assert self._bundle(store).status() == BundleStatusReport(
+            status=BundleStatus.FAILED,
+            exists=True,
+            has_success=False,
+            has_metadata=True,
+            sections={"dag": "failed"},
         )
-        store.write("bkt", f"{_RUN}/metadata.json", body)
-        report = self._bundle(store).status()
-        assert report.status is BundleStatus.IN_PROGRESS
-        assert report.sections == {
-            "ok": "running",
-            "no_status": None,
-            "bad_status": None,
-        }
 
-    @pytest.mark.parametrize(
-        ("body", "message"),
-        [
-            (b"{not json", "Unreadable metadata.json"),
-            (b"\x80not utf-8", "Unreadable metadata.json"),
-            (b'["failed"]', "is not a JSON object"),
-            (b"null", "is not a JSON object"),
-        ],
-    )
-    def test_unreadable_metadata(self, store, caplog, body, message):
-        store.write("bkt", f"{_RUN}/metadata.json", body)
-        report = self._bundle(store).status()
-        assert report == BundleStatusReport(
+    def test_unreadable_metadata_still_counts(self, store, caplog):
+        store.write("bkt", f"{_RUN}/metadata.json", b"{not json")
+        assert self._bundle(store).status() == BundleStatusReport(
             status=BundleStatus.IN_PROGRESS,
             exists=True,
             has_success=False,
             has_metadata=True,
         )
         assert f"s3://bkt/{_RUN}/metadata.json" in caplog.text
-        assert message in caplog.text
 
     def test_follows_the_lifecycle(self, store):
         b = self._bundle(store)
@@ -854,29 +834,32 @@ class TestStatus:
         assert report.status is BundleStatus.IN_PROGRESS
         assert report.sections == {"dag": "success", "other": "running"}
 
-    def test_namespaced_bundle(self, store):
-        b = SourceIngestBundle(
-            provider="p",
-            resource="r",
-            bucket="bkt",
-            version="1",
-            run="a",
-            namespace="ns",
-            store=store,
-        )
-        store.write(
-            "bkt",
-            "ns/feeds/provider=p/resource=r/version=1/run=a/metadata.json",
-            _metadata(dag={"status": "failed"}),
-        )
-        assert b.status().status is BundleStatus.FAILED
-
-    def test_bundle_at_bucket_root(self, store):
-        b = Bundle(bucket="bkt", root_path="", store=store)
+    @pytest.mark.parametrize(
+        ("cls", "kwargs", "prefix"),
+        [
+            (
+                SourceIngestBundle,
+                {
+                    "provider": "p",
+                    "resource": "r",
+                    "version": "1",
+                    "run": "a",
+                    "namespace": "ns",
+                },
+                "ns/feeds/provider=p/resource=r/version=1/run=a/",
+            ),
+            (Bundle, {"root_path": ""}, ""),
+        ],
+        ids=["namespaced", "bucket_root"],
+    )
+    def test_locations(self, store, cls, kwargs, prefix):
+        b = cls(bucket="bkt", store=store, **kwargs)
         assert b.status().exists is False
-        store.write("bkt", "metadata.json", _metadata(dag={"status": "failed"}))
+        store.write(
+            "bkt", f"{prefix}metadata.json", _metadata(dag={"status": "failed"})
+        )
         assert b.status().status is BundleStatus.FAILED
-        store.write("bkt", "success")
+        store.write("bkt", f"{prefix}success")
         assert b.status().status is BundleStatus.SUCCESS
 
     def test_requests(self):

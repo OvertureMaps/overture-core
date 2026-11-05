@@ -36,6 +36,7 @@ from overture_core.bundle.store import BundleStore, S3BundleStore, _store_or_def
 from overture_core.bundle.status import (
     BundleStatus,
     BundleStatusReport,
+    _derive_status,
     _metadata_section_statuses,
 )
 from overture_core.cloud.aws.object import parse_s3_uri
@@ -796,16 +797,8 @@ class Bundle:
             else {}
         )
         exists = has_success or has_metadata or store.prefix_exists(bucket, directory)
-        if not exists:
-            status = None
-        elif has_success:
-            status = BundleStatus.SUCCESS
-        elif BundleStatus.FAILED in sections.values():
-            status = BundleStatus.FAILED
-        else:
-            status = BundleStatus.IN_PROGRESS
         return BundleStatusReport(
-            status=status,
+            status=_derive_status(exists, has_success, sections),
             exists=exists,
             has_success=has_success,
             has_metadata=has_metadata,
