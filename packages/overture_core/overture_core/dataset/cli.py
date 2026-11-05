@@ -33,20 +33,20 @@ from rich.table import Table
 from rich.text import Text
 
 from overture_core.dataset import banner
-from overture_core.dataset.attribution import RENDERERS, entries_from_file
-from overture_core.dataset.license_policy import load_policy
-from overture_core.dataset.spdx import (
+from overture_dataset_configs.attribution import RENDERERS, entries_from_file
+from overture_dataset_configs.license_policy import load_policy
+from overture_dataset_configs.schema import (
+    LABEL_PATTERN,
+    DatasetFile,
+    validate_all,
+    validate_file,
+)
+from overture_dataset_configs.spdx import (
     SPDX_LICENSE_LIST_VERSION,
     SPDX_PAGE_URL,
     LicenseTextError,
     is_license_ref,
     license_texts,
-)
-from overture_core.dataset.schema import (
-    LABEL_PATTERN,
-    DatasetFile,
-    validate_all,
-    validate_file,
 )
 
 PROG = "overture-datasets"

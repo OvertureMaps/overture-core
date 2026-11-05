@@ -19,7 +19,10 @@ from typing import Any, Callable, Iterator, TypeVar
 from urllib.parse import urlparse
 
 from overture_core.cloud.aws.object import get_object_bytes, put_object
-from overture_core.dataset.attribution import license_entry, render_attribution_bullet
+from overture_dataset_configs.attribution import (
+    license_entry,
+    render_attribution_bullet,
+)
 
 log = logging.getLogger(__name__)
 
