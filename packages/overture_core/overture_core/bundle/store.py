@@ -264,3 +264,12 @@ class InMemoryBundleStore:
 
     def presigned_url(self, bucket: str, key: str, *, expires_in: int = 3600) -> str:
         return f"memory://{bucket}/{quote(key)}?expires_in={expires_in}"
+
+
+def _store_or_default(store: BundleStore | None) -> BundleStore:
+    """Return *store*, or a fresh `S3BundleStore` for one operation.
+
+    A per-operation store shares one boto3 client across a walk or check and
+    picks up fresh credentials on the next operation.
+    """
+    return store if store is not None else S3BundleStore()
