@@ -15,6 +15,8 @@ class BundleStatus(StrEnum):
     """Lifecycle state of an existing bundle, as reported by `Bundle.status`.
 
     - ``SUCCESS`` -- the ``success`` marker exists.
+    - ``RELEASED`` -- `ReleaseCandidateBundle` only: the ``success`` and
+      ``released`` markers both exist.
     - ``FAILED`` -- no marker, and any ``metadata.json`` section has
       ``"status": "failed"``, even while another section is running.
     - ``IN_PROGRESS`` -- no marker and no failed section, e.g. a running or
@@ -24,6 +26,7 @@ class BundleStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     SUCCESS = "success"
     FAILED = "failed"
+    RELEASED = "released"
 
 
 @dataclass(frozen=True)

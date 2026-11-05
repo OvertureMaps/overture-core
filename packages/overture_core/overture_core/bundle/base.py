@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
 from os import PathLike
-from typing import Any, Self, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 from urllib.parse import urlparse
 
 from overture_core.bundle.cleanup import (
@@ -16,6 +16,12 @@ from overture_core.bundle.cleanup import (
     CleanupReport,
     DeleteResult,
     TableDropper,
+)
+from overture_core.bundle.components import (
+    _DATA,
+    _METADATA,
+    _SUCCESS,
+    BundleComponent,
 )
 from overture_core.bundle.metadata import (
     BundleMetadata,
@@ -99,7 +105,7 @@ class Bundle:
     """Base data bundle on S3.
 
     Every bundle has a ``data`` directory, a ``metadata.json`` file, and a
-    ``success`` marker.  Subclasses add extra named directories.
+    ``success`` marker.  Subclasses add components (``COMPONENTS``).
 
     The path is composed of ``root_path`` followed by Hive-style
     ``key=value`` segments for each entry in the ``partitions`` dict.
@@ -128,14 +134,14 @@ class Bundle:
     # Class-level default for subclasses that skip ``Bundle.__init__``.
     store: BundleStore | None = None
 
-    # Bundle root before any namespace; required by discover_all / cleanup_all.
+    # Bundle root before any namespace; needed for discovery, cleanup, registry.
     ROOT_PATH: str = ""
 
     # Partition key names, in path order.
     PARTITION_KEYS: tuple[str, ...] = ()
 
-    # Bundle subdirectories besides ``data``.
-    _EXTRA_DIRS: tuple[str, ...] = ()
+    # In display order; subclasses extend it as (*Bundle.COMPONENTS, ...).
+    COMPONENTS: ClassVar[tuple[BundleComponent, ...]] = (_DATA, _METADATA, _SUCCESS)
 
     def __init__(
         self,
@@ -338,26 +344,53 @@ class Bundle:
     @property
     def data_uri(self) -> str:
         """S3 URI of the ``data/`` directory."""
-        return f"{self.base_uri}/data"
+        return self.component_uri(_DATA.name)
 
     @property
     def data_prefix(self) -> str:
         """S3 key prefix (no ``s3://bucket/``) for the ``data/`` directory."""
-        return f"{self.base_prefix}/data"
+        return self.component_prefix(_DATA.name)
 
     @property
     def metadata_uri(self) -> str:
         """S3 URI of ``metadata.json``."""
-        return f"{self.base_uri}/metadata.json"
+        return self.component_uri(_METADATA.name)
 
     @property
     def success_uri(self) -> str:
         """S3 URI of the ``success`` marker."""
-        return f"{self.base_uri}/success"
+        return self.component_uri(_SUCCESS.name)
 
     def sub_directory(self, name: str) -> str:
         """S3 URI of a named sub-directory inside this bundle."""
         return f"{self.base_uri}/{name.strip('/')}"
+
+    # ------------------------------------------------------------------
+    # Components
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def get_component(cls, name: str) -> BundleComponent:
+        """Return the component named *name*, which may end in ``/`` as listed.
+
+        Raises KeyError for a name not in ``COMPONENTS``.
+        """
+        wanted = name.rstrip("/")
+        for component in cls.COMPONENTS:
+            if component.name == wanted:
+                return component
+        raise KeyError(
+            f"{cls.__name__} has no component {name!r}; expected one of "
+            f"{[c.name for c in cls.COMPONENTS]}"
+        )
+
+    def component_uri(self, name: str) -> str:
+        """S3 URI of the component *name* (see `get_component`)."""
+        return f"{self.base_uri}/{self.get_component(name).name}"
+
+    def component_prefix(self, name: str) -> str:
+        """S3 key prefix (no ``s3://bucket/``) of the component *name*."""
+        return f"{self.base_prefix}/{self.get_component(name).name}"
 
     # ------------------------------------------------------------------
     # Static path helpers
@@ -481,7 +514,7 @@ class Bundle:
 
     def _success_marker(self) -> tuple[str, str]:
         """``(bucket, key)`` of the ``success`` marker."""
-        return self._object_key("success")
+        return self._object_key(_SUCCESS.name)
 
     def _object_key(self, name: str) -> tuple[str, str]:
         """``(bucket, key)`` of the object *name* directly under `base_uri`."""
@@ -786,8 +819,8 @@ class Bundle:
     def _status_report(self, store: BundleStore) -> BundleStatusReport:
         """Build `status`'s report, making every request on *store*."""
         bucket, directory = self._object_key("")  # "" at the bucket root
-        success_key = f"{directory}success"
-        metadata_key = f"{directory}metadata.json"
+        success_key = f"{directory}{_SUCCESS.name}"
+        metadata_key = f"{directory}{_METADATA.name}"
         has_success = store.exists(bucket, success_key)
         body = store.read(bucket, metadata_key)
         has_metadata = body is not None
@@ -1233,7 +1266,7 @@ class Bundle:
         best_order: dict[str, tuple[_NaturalKey, ...]] = {}
         for key in _store_or_default(store).iter_keys(bucket, prefix):
             segments = key[len(prefix) :].split("/")
-            if len(segments) != len(keys) + 1 or segments[-1] != "success":
+            if len(segments) != len(keys) + 1 or segments[-1] != _SUCCESS.name:
                 continue
             values: dict[str, str] = {}
             for name, segment in zip(keys, segments[:-1], strict=True):

@@ -23,18 +23,25 @@ Each bundle type defines an ordered ``partitions`` dict whose keys
 become Hive-style ``key=value`` path segments appended to the root
 path.
 
+Layout
+------
+Each bundle type declares ``BUNDLE_TYPE`` (the stage name in
+``metadata.json``), ``ROOT_PATH`` (except `ModelBundle`, whose callers pass
+the root), ``PARTITION_KEYS`` and ``COMPONENTS`` (the standard directories
+and files under its base path; DAGs may add others, e.g. ``violations/``).
+Each directory component has ``<name>_uri`` / ``<name>_prefix`` properties.
+`overture_core.bundle.registry` maps an S3 path to its type.
+
 Class hierarchy
 ---------------
 - `Bundle` -- base class with ``data`` directory, metadata, and success file.
 - `SourceRawBundle` -- raw collected resource from a provider (a.k.a dataset).
-- `SourceIngestBundle` -- ingested/normalised dataset, with changelog,
-  metrics, and metrics_summary.
-- `ThemeAssembleBundle` -- assembled theme data from multiple datasets, with
-  changelog, metrics, and metrics_summary.
-- `ThemePromoteBundle` -- promoted theme data with bridge files, pmtiles,
-  changelog, metrics, metrics_summary, changelog_internal, and validation.
-- `ReleaseCandidateBundle` -- release candidate with bridge files, pmtiles,
-  changelog, metrics, and metrics_summary.
+- `SourceIngestBundle` -- ingested/normalised dataset, with changelog and
+  metrics.
+- `ThemeAssembleBundle` -- assembled theme data from multiple datasets.
+- `ThemePromoteBundle` -- promoted theme data with publishing artifacts.
+- `ReleaseCandidateBundle` -- release candidate with publishing artifacts; a
+  published one reports `BundleStatus.RELEASED`.
 - `ScratchBundle` -- ephemeral debug/intermediate output, labeled by purpose.
 - `ModelBundle` -- a trained model per training run, with a pointer naming
   the model's default run.
@@ -64,6 +71,7 @@ This module re-exports the model from:
 
 - `overture_core.bundle.base` -- `Bundle` and batch execution.
 - `overture_core.bundle.bundle_types` -- the concrete bundle types.
+- `overture_core.bundle.components` -- `BundleComponent` and `ComponentKind`.
 - `overture_core.bundle.partitions` -- partition paths, resolution and walking.
 - `overture_core.bundle.metadata` -- `BundleMetadata` and input provenance.
 - `overture_core.bundle.cleanup` -- cleanup reports and `TableDropper`.
@@ -87,6 +95,7 @@ from overture_core.bundle.cleanup import (
     DeleteResult,
     TableDropper,
 )
+from overture_core.bundle.components import BundleComponent, ComponentKind
 from overture_core.bundle.metadata import (
     BundleMetadata,
     provenance_sections,
@@ -102,12 +111,14 @@ from overture_core.bundle.store import BundleStore, S3BundleStore
 
 __all__ = [
     "Bundle",
+    "BundleComponent",
     "BundleDecision",
     "BundleMetadata",
     "BundleStatus",
     "BundleStatusReport",
     "BundleStore",
     "CleanupReport",
+    "ComponentKind",
     "DeleteResult",
     "ModelBundle",
     "PartitionResolutionError",

@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import datetime
 import json
+from collections.abc import Collection
+from dataclasses import replace
 from typing import Self
 from urllib.parse import urlparse
 
 from overture_core.bundle.base import Bundle, _with_store
+from overture_core.bundle.components import (
+    _CHANGELOG,
+    _CHANGELOG_INTERNAL,
+    _DIFF_REPORT,
+    _METRICS,
+    _METRICS_SUMMARY,
+    _PUBLISHING,
+    _REGISTRY,
+    _RELEASED,
+    _SUCCESS,
+    _VALIDATION,
+    BundleComponent,
+    ComponentKind,
+    _MetricsAccessors,
+    _PublishingAccessors,
+)
 from overture_core.bundle.partitions import _compose_root, _resolve_partitions
+from overture_core.bundle.status import BundleStatus, BundleStatusReport
 from overture_core.bundle.store import BundleStore
 from overture_core.cloud.aws.object import parse_s3_uri
 
@@ -73,12 +93,12 @@ class SourceRawBundle(_ProviderResourceBundle):
     ROOT_PATH = "datasets"
 
 
-class SourceIngestBundle(_ProviderResourceBundle):
+class SourceIngestBundle(_MetricsAccessors, _ProviderResourceBundle):
     """Ingested / normalised source data, rooted at ``feeds``."""
 
     BUNDLE_TYPE = "source_ingest"
     ROOT_PATH = "feeds"
-    _EXTRA_DIRS = ("changelog", "metrics", "metrics_summary")
+    COMPONENTS = (*Bundle.COMPONENTS, _CHANGELOG, _METRICS, _METRICS_SUMMARY)
 
     @classmethod
     def from_path(
@@ -110,38 +130,21 @@ class SourceIngestBundle(_ProviderResourceBundle):
         root = parsed.path.strip("/") or cls.ROOT_PATH
         return cls._from_root(parsed.netloc, root, values, store=store)
 
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
 
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
-
-class ThemeAssembleBundle(Bundle):
+class ThemeAssembleBundle(_MetricsAccessors, Bundle):
     """Assembled theme data from multiple corpus sources."""
 
     BUNDLE_TYPE = "theme_assemble"
     ROOT_PATH = "theme_stage"
     PARTITION_KEYS = ("theme", "run")
-    _EXTRA_DIRS = ("changelog", "metrics", "metrics_summary")
+    COMPONENTS = (
+        *Bundle.COMPONENTS,
+        _CHANGELOG,
+        _METRICS,
+        _METRICS_SUMMARY,
+        BundleComponent("summary.md", ComponentKind.FILE),
+        _DIFF_REPORT,
+    )
 
     def __init__(
         self,
@@ -162,46 +165,19 @@ class ThemeAssembleBundle(Bundle):
             store=store,
         )
 
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
 
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
-
-class ThemePromoteBundle(Bundle):
+class ThemePromoteBundle(_PublishingAccessors, Bundle):
     """Promoted theme with supplemental artifacts."""
 
     BUNDLE_TYPE = "theme_promote"
     ROOT_PATH = "theme_promote"
     PARTITION_KEYS = ("theme", "schema", "run")
-    _EXTRA_DIRS = (
-        "bridgefiles",
-        "pmtiles",
-        "changelog",
-        "metrics",
-        "metrics_summary",
-        "changelog_internal",
-        "validation",
-        "partition_bboxes",
+    COMPONENTS = (
+        *Bundle.COMPONENTS,
+        *_PUBLISHING,
+        _CHANGELOG_INTERNAL,
+        _VALIDATION,
+        _DIFF_REPORT,
     )
 
     def __init__(
@@ -225,84 +201,39 @@ class ThemePromoteBundle(Bundle):
         )
 
     @property
-    def bridgefiles_uri(self) -> str:
-        return f"{self.base_uri}/bridgefiles"
-
-    @property
-    def bridgefiles_prefix(self) -> str:
-        return f"{self.base_prefix}/bridgefiles"
-
-    @property
-    def pmtiles_uri(self) -> str:
-        return f"{self.base_uri}/pmtiles"
-
-    @property
-    def pmtiles_prefix(self) -> str:
-        return f"{self.base_prefix}/pmtiles"
-
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
-
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
-    @property
     def changelog_internal_uri(self) -> str:
-        return f"{self.base_uri}/changelog_internal"
+        return self.component_uri(_CHANGELOG_INTERNAL.name)
 
     @property
     def changelog_internal_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog_internal"
-
-    @property
-    def partition_bboxes_uri(self) -> str:
-        return f"{self.base_uri}/partition_bboxes"
-
-    @property
-    def partition_bboxes_prefix(self) -> str:
-        return f"{self.base_prefix}/partition_bboxes"
+        return self.component_prefix(_CHANGELOG_INTERNAL.name)
 
     @property
     def validation_uri(self) -> str:
-        return f"{self.base_uri}/validation"
+        return self.component_uri(_VALIDATION.name)
 
     @property
     def validation_prefix(self) -> str:
-        return f"{self.base_prefix}/validation"
+        return self.component_prefix(_VALIDATION.name)
 
 
-class ReleaseCandidateBundle(Bundle):
-    """Release candidate with supplemental artifacts."""
+class ReleaseCandidateBundle(_PublishingAccessors, Bundle):
+    """Release candidate with supplemental artifacts.
+
+    A published release is represented by its candidate, which then has a
+    ``released`` marker and reports `BundleStatus.RELEASED`.
+    """
 
     BUNDLE_TYPE = "release_candidate"
     ROOT_PATH = "release_candidate"
     PARTITION_KEYS = ("release", "run")
-    RELEASED_MARKERS = ("success", "released")
-    _EXTRA_DIRS = (
-        "bridgefiles",
-        "pmtiles",
-        "changelog",
-        "metrics",
-        "metrics_summary",
-        "partition_bboxes",
+    RELEASED_MARKERS = (_SUCCESS.name, _RELEASED.name)
+    COMPONENTS = (
+        *Bundle.COMPONENTS,
+        _RELEASED,
+        *_PUBLISHING,
+        _REGISTRY,
+        _DIFF_REPORT,
     )
 
     def __init__(
@@ -367,60 +298,42 @@ class ReleaseCandidateBundle(Bundle):
         return self._partitions.get("release", "")
 
     @property
-    def bridgefiles_uri(self) -> str:
-        return f"{self.base_uri}/bridgefiles"
-
-    @property
-    def bridgefiles_prefix(self) -> str:
-        return f"{self.base_prefix}/bridgefiles"
-
-    @property
-    def pmtiles_uri(self) -> str:
-        return f"{self.base_uri}/pmtiles"
-
-    @property
-    def pmtiles_prefix(self) -> str:
-        return f"{self.base_prefix}/pmtiles"
-
-    @property
-    def changelog_uri(self) -> str:
-        return f"{self.base_uri}/changelog"
-
-    @property
-    def changelog_prefix(self) -> str:
-        return f"{self.base_prefix}/changelog"
-
-    @property
-    def metrics_uri(self) -> str:
-        return f"{self.base_uri}/metrics"
-
-    @property
-    def metrics_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics"
-
-    @property
-    def metrics_summary_uri(self) -> str:
-        return f"{self.base_uri}/metrics_summary"
-
-    @property
-    def metrics_summary_prefix(self) -> str:
-        return f"{self.base_prefix}/metrics_summary"
-
-    @property
-    def partition_bboxes_uri(self) -> str:
-        return f"{self.base_uri}/partition_bboxes"
-
-    @property
-    def partition_bboxes_prefix(self) -> str:
-        return f"{self.base_prefix}/partition_bboxes"
+    def released_uri(self) -> str:
+        """S3 URI of the ``released`` marker."""
+        return self.component_uri(_RELEASED.name)
 
     @property
     def registry_uri(self) -> str:
-        return f"{self.base_uri}/registry"
+        return self.component_uri(_REGISTRY.name)
 
     @property
     def registry_prefix(self) -> str:
-        return f"{self.base_prefix}/registry"
+        return self.component_prefix(_REGISTRY.name)
+
+    def is_deletable(
+        self,
+        min_age_days: float,
+        siblings: list[Bundle],
+        now: datetime.datetime | None = None,
+        *,
+        successful: Collection[Bundle] | None = None,
+    ) -> tuple[bool, str]:
+        """Like `Bundle.is_deletable`, but a published candidate is always kept."""
+        deletable, reason = super().is_deletable(
+            min_age_days, siblings, now, successful=successful
+        )
+        if deletable and self._open_store().exists(*self._object_key(_RELEASED.name)):
+            return False, "is a published release (has a released marker)"
+        return deletable, reason
+
+    def _status_report(self, store: BundleStore) -> BundleStatusReport:
+        """Report `BundleStatus.RELEASED` for a successful, published candidate."""
+        report = super()._status_report(store)
+        if report.status is BundleStatus.SUCCESS and store.exists(
+            *self._object_key(_RELEASED.name)
+        ):
+            return replace(report, status=BundleStatus.RELEASED)
+        return report
 
 
 class ScratchBundle(Bundle):
