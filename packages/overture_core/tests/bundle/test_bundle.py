@@ -3,6 +3,8 @@
 import datetime as dt
 import json
 import pickle
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -1699,6 +1701,32 @@ class TestClientReuse:
         assert [b.store for b in bundles] == [None, own]
         Bundle.initialize_batch(bundles, **kwargs)
         assert list(store.iter_keys("bkt", "")) == []
+
+    @pytest.mark.parametrize("action", ["initialize_batch", "finalize_batch"])
+    def test_overlapping_batches_keep_their_own_store(self, action):
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
+        stores = [InMemoryBundleStore(), InMemoryBundleStore()]
+        for s in stores:
+            s.write("bkt", "scratch/purpose=p/run=r1/success")
+        both_started = threading.Barrier(2, timeout=5)
+
+        def factory(bundle):
+            assert bundle is b
+            both_started.wait()
+            return RecordingMetadata()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            runs = [
+                pool.submit(
+                    getattr(Bundle, action), [b], metadata_factory=factory, store=s
+                )
+                for s in stores
+            ]
+            for run in runs:
+                run.result()
+        expected = action == "finalize_batch"
+        assert [s.exists(*b._success_marker()) for s in stores] == [expected] * 2
+        assert b.store is None
 
     def test_explicit_s3_store_opens_no_client(self, counted_s3):
         fake, calls = counted_s3

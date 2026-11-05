@@ -59,6 +59,7 @@ classes to supply defaults.
 
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import logging
@@ -134,21 +135,6 @@ def _with_store(bundle: _BundleT, store: BundleStore | None) -> _BundleT:
     if store is not None:
         bundle.store = store
     return bundle
-
-
-def _share_store(
-    bundles: list[Bundle], store: BundleStore | None = None
-) -> list[tuple[Bundle, BundleStore | None]]:
-    """Attach *store* to every bundle, else one new `S3BundleStore` to storeless ones.
-
-    Returns ``(bundle, previous store)`` pairs for restoring.
-    """
-    shared = _store_or_default(store)
-    previous = [(b, b.store) for b in bundles]
-    for b in bundles:
-        if store is not None or b.store is None:
-            b.store = shared
-    return previous
 
 
 def _compose_root(root_path: str, namespace: str = "") -> str:
@@ -518,25 +504,29 @@ def _walk_partitions(
 
 def _run_batch(
     action: str,
-    fn: Callable[[Bundle], None],
+    fn: Callable[[Bundle, Bundle], None],
     bundles: list[Bundle],
     max_workers: int,
     store: BundleStore | None = None,
 ) -> None:
-    """Run *fn* on every bundle across *max_workers* threads.
+    """Run ``fn(bundle, target)`` for every bundle across *max_workers* threads.
 
     Every bundle uses *store* when given, else its own; bundles without one
-    share one `S3BundleStore` for the batch.  Their stores are restored
-    afterwards.  Every bundle is attempted.  Each failure is logged, then the
-    first one in *bundles* order is re-raised.
+    share one `S3BundleStore` for the batch.  *target* is the bundle itself
+    when it keeps its own store, else a shallow copy carrying the batch's,
+    so concurrent batches over the same bundles stay independent.  Every
+    bundle is attempted.  Each failure is logged, then the first one in
+    *bundles* order is re-raised.
     """
-    previous = _share_store(bundles, store)
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [(b, pool.submit(fn, b)) for b in bundles]
-    finally:
-        for b, s in previous:
-            b.store = s
+    shared = _store_or_default(store)
+
+    def _target(b: Bundle) -> Bundle:
+        if store is None and b.store is not None:
+            return b
+        return _with_store(copy.copy(b), shared)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [(b, pool.submit(fn, b, _target(b))) for b in bundles]
     failures = [(b, exc) for b, f in futures if (exc := f.exception()) is not None]
     for b, exc in failures:
         log.error("%s failed for %r", action, b, exc_info=exc)
@@ -1488,7 +1478,10 @@ class Bundle:
         bundles = cls.discover_all(
             bucket=bucket, namespace=namespace, **discover_kwargs
         )
-        _share_store(bundles, store)
+        shared = _store_or_default(store)
+        for b in bundles:
+            if store is not None or b.store is None:
+                b.store = shared
         log.info(
             "Discovered %d bundles of type %s under s3://%s",
             len(bundles),
@@ -1756,8 +1749,8 @@ class Bundle:
         if not bundles:
             return
 
-        def _one(b: Bundle) -> None:
-            b.initialize(
+        def _one(b: Bundle, target: Bundle) -> None:
+            target.initialize(
                 input_bundles=input_bundles,
                 capture_variables=capture_variables,
                 custom_metadata=custom_metadata,
@@ -1786,8 +1779,8 @@ class Bundle:
         if not bundles:
             return
 
-        def _one(b: Bundle) -> None:
-            b.finalize(status=status, metadata=metadata_factory(b))
+        def _one(b: Bundle, target: Bundle) -> None:
+            target.finalize(status=status, metadata=metadata_factory(b))
 
         _run_batch("finalize", _one, bundles, max_workers, store)
 
