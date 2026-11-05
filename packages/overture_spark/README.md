@@ -73,7 +73,7 @@ from overture_spark.plan import assert_plan_size, plan_size
 assert_plan_size(build_checks(df), max_chars=200_000)
 ```
 
-`plan_size(df)` is the length of the analyzed plan string; the error message reports the measured size and the limit. When `spark.sql.maxPlanStringLength` truncates the string, `plan_size` recovers the true size from Spark's `... N more characters` suffix, so the guards work under any cap. Jobs can opt in to the same check before an expensive action such as the final write:
+`plan_size(df)` is the length of the analyzed plan string in UTF-16 code units (the JVM's `String.length`, so a non-BMP character counts as 2); the error message reports the measured size and the limit. When `spark.sql.maxPlanStringLength` truncates the string, `plan_size` recovers the true size from Spark's `... N more characters` suffix (or its `Truncated plan of N characters` message at caps of 30 or lower), so the guards work under any cap. Jobs can opt in to the same check before an expensive action such as the final write:
 
 ```python
 self.check_plan_size(df, name="final output")  # logs a warning past 10M chars

@@ -17,8 +17,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame
 
-# Spark ends a string cut by spark.sql.maxPlanStringLength with this suffix.
+# Spark ends a string cut by spark.sql.maxPlanStringLength with this suffix; at
+# a cap of 30 or lower nothing is kept and the whole string is this message.
 _TRUNCATION_SUFFIX = re.compile(r"\.\.\. (\d+) more characters$")
+_TRUNCATED_ENTIRELY = re.compile(r"Truncated plan of (\d+) characters")
 
 
 # Default threshold for opt-in runtime checks: far above normal plans (well
@@ -40,18 +42,32 @@ class PlanTooLargeError(AssertionError):
         self.max_chars = max_chars
 
 
-def plan_size(df: "DataFrame") -> int:
-    """Length in characters of the DataFrame's analyzed plan string.
+def _utf16_len(text: str) -> int:
+    """Length in JVM ``String`` units (UTF-16 code units), as Spark counts."""
+    if text.isascii():
+        return len(text)
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
-    When ``spark.sql.maxPlanStringLength`` truncates the string, Spark ends it
-    with ``... N more characters``; the true size is recovered from that, so the
+
+def plan_size(df: "DataFrame") -> int:
+    """Length of the DataFrame's analyzed plan string, in UTF-16 code units.
+
+    Units match the JVM's ``String.length`` (what Spark's cap and omitted-character
+    count use), so a non-BMP character counts as 2. When
+    ``spark.sql.maxPlanStringLength`` truncates the string, the true size is
+    recovered from Spark's ``... N more characters`` suffix (or its
+    ``Truncated plan of N characters`` message when nothing is kept), so the
     result does not depend on the configured cap.
     """
     text = df._jdf.queryExecution().analyzed().toString()
-    match = _TRUNCATION_SUFFIX.search(text[-64:])
-    if match is None:
-        return len(text)
-    return len(text) - len(match.group(0)) + int(match.group(1))
+    if len(text) < 64:
+        entirely = _TRUNCATED_ENTIRELY.fullmatch(text)
+        if entirely:
+            return int(entirely.group(1))
+    suffix = _TRUNCATION_SUFFIX.search(text[-64:])
+    if suffix is None:
+        return _utf16_len(text)
+    return _utf16_len(text[: -len(suffix.group(0))]) + int(suffix.group(1))
 
 
 def assert_plan_size(df: "DataFrame", max_chars: int) -> int:

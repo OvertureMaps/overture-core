@@ -57,6 +57,17 @@ class TestPlanSizeMocked(unittest.TestCase):
         text = "... 99 more characters in the middle" + "x" * 50
         self.assertEqual(len(text), plan_size(df_with_plan(text)))
 
+    def testNothingKeptUnderLowCapReportsTrueSize(self):
+        self.assertEqual(
+            8059, plan_size(df_with_plan("Truncated plan of 8059 characters"))
+        )
+
+    def testNonBmpCharactersCountAsUtf16Units(self):
+        self.assertEqual(20, plan_size(df_with_plan("😀" * 10)))
+        self.assertEqual(
+            110, plan_size(df_with_plan("😀" * 5 + "... 100 more characters"))
+        )
+
     def testDefaultLimitIsPositive(self):
         self.assertGreater(DEFAULT_MAX_PLAN_CHARS, 0)
 
@@ -113,6 +124,33 @@ class TestPlanSizeRealSpark(unittest.TestCase):
         self.assertIn("more characters", raw)
         self.assertEqual(full_plan, capped_plan)
         self.assertEqual(full_plan, ctx.exception.size)
+
+    def testPlanSizeIsExactAtLowCapsIncludingNothingKept(self):
+        grown = self._union_chain(50)
+        full_plan = plan_size(grown)
+        try:
+            for cap in ("500", "31", "30", "20", "0"):
+                self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, cap)
+                with self.subTest(cap=cap):
+                    self.assertEqual(full_plan, plan_size(grown))
+                    with self.assertRaises(PlanTooLargeError):
+                        assert_plan_size(grown, full_plan - 1)
+        finally:
+            self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
+
+    def testPlanSizeCountsNonBmpAsUtf16UnitsUnderCap(self):
+        from pyspark.sql import functions as F
+
+        df = self.spark.range(1).select(F.lit("😀" * 200).alias("x"))
+        full_plan = plan_size(df)
+        self.assertGreater(full_plan, 400)
+        try:
+            for cap in ("200", "0"):
+                self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, cap)
+                with self.subTest(cap=cap):
+                    self.assertEqual(full_plan, plan_size(df))
+        finally:
+            self.spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
 
     def _getSessionAgain(self, **kwargs):
         from overture_spark import SparkPlatform, getSparkSedonaSession
