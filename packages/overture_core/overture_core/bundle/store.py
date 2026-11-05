@@ -57,8 +57,8 @@ class BundleStore(Protocol):
     def list_children(self, bucket: str, prefix: str) -> list[str]:
         """Return the immediate "subdirectory" names one level under *prefix*.
 
-        Names exclude *prefix* and the trailing ``/`` and are sorted as S3
-        orders CommonPrefixes (by name + ``/``, so ``v=1.0`` precedes
+        Names exclude *prefix* and the trailing ``/`` and are in the order S3
+        returns CommonPrefixes (by name + ``/``, so ``v=1.0`` precedes
         ``v=1``); empty segments and the ``$folder$`` placeholder are
         skipped.  *prefix* is matched as-is, so end it with ``/``.
         """
