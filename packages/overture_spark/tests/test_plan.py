@@ -1,8 +1,9 @@
 import json
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -67,6 +68,27 @@ class TestPlanSizeMocked(unittest.TestCase):
         self.assertEqual(
             110, plan_size(df_with_plan("😀" * 5 + "... 100 more characters"))
         )
+
+    def testChunkedCountMatchesAcrossChunkBoundaries(self):
+        text = "a😀é" * 50 + "... 100 more characters"
+        expected = 50 * 4 + 100
+        for chunk in (1, 3, 7, 64, 10_000):
+            with self.subTest(chunk=chunk), patch("overture_spark.plan._CHUNK", chunk):
+                self.assertEqual(expected, plan_size(df_with_plan(text)))
+                self.assertEqual(50 * 4, plan_size(df_with_plan("a😀é" * 50)))
+
+    def testLargeNonAsciiPlanDoesNotCopyWholePlan(self):
+        text = "é" * 20_000_000 + "... 5 more characters"
+        df = df_with_plan(text)
+        tracemalloc.start()
+        try:
+            size = plan_size(df)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(20_000_005, size)
+        # A whole-plan encode or slice would allocate 20 MB+ (40 MB for UTF-16)
+        self.assertLess(peak, 10_000_000)
 
     def testDefaultLimitIsPositive(self):
         self.assertGreater(DEFAULT_MAX_PLAN_CHARS, 0)

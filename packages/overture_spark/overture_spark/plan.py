@@ -42,11 +42,22 @@ class PlanTooLargeError(AssertionError):
         self.max_chars = max_chars
 
 
-def _utf16_len(text: str) -> int:
-    """Length in JVM ``String`` units (UTF-16 code units), as Spark counts."""
+_CHUNK = 1_000_000
+
+
+def _utf16_len(text: str, end: int = None) -> int:
+    """Length of ``text[:end]`` in JVM ``String`` units (UTF-16 code units).
+
+    Encodes bounded chunks, so temporary memory stays O(chunk) however large
+    the plan is, and never slices the whole string.
+    """
+    end = len(text) if end is None else end
     if text.isascii():
-        return len(text)
-    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+        return end
+    return sum(
+        len(text[i : min(i + _CHUNK, end)].encode("utf-16-le", "surrogatepass")) // 2
+        for i in range(0, end, _CHUNK)
+    )
 
 
 def plan_size(df: "DataFrame") -> int:
@@ -64,10 +75,10 @@ def plan_size(df: "DataFrame") -> int:
         entirely = _TRUNCATED_ENTIRELY.fullmatch(text)
         if entirely:
             return int(entirely.group(1))
-    suffix = _TRUNCATION_SUFFIX.search(text[-64:])
+    suffix = _TRUNCATION_SUFFIX.search(text, max(0, len(text) - 64))
     if suffix is None:
         return _utf16_len(text)
-    return _utf16_len(text[: -len(suffix.group(0))]) + int(suffix.group(1))
+    return _utf16_len(text, suffix.start()) + int(suffix.group(1))
 
 
 def assert_plan_size(df: "DataFrame", max_chars: int) -> int:
