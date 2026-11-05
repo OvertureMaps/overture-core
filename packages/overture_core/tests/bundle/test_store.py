@@ -5,7 +5,6 @@ import datetime as dt
 import pickle
 import threading
 import time
-from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, urlsplit
 
@@ -21,23 +20,12 @@ CLONERS = pytest.mark.parametrize(
 )
 
 
-@pytest.fixture(params=["memory", "s3", "moto"])
-def any_store(request, monkeypatch) -> Iterator[BundleStore]:
-    """Each `BundleStore` implementation, empty; ``moto`` runs on in-process S3."""
+@pytest.fixture(params=["memory", "s3"])
+def any_store(request) -> BundleStore:
+    """Each `BundleStore` implementation, empty; ``s3`` runs on moto."""
     if request.param == "memory":
-        yield request.getfixturevalue("store")
-    elif request.param == "s3":
-        yield S3BundleStore(client=request.getfixturevalue("fake_s3"))
-    else:
-        moto = pytest.importorskip("moto")
-        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
-            monkeypatch.setenv(name, "testing")
-        with moto.mock_aws():
-            # A session client bypasses the `_no_aws` patch on `boto3.client`.
-            client = boto3.session.Session().client("s3", region_name="us-east-1")
-            for bucket in ("bkt", "bkt1", "bkt2"):
-                client.create_bucket(Bucket=bucket)
-            yield S3BundleStore(client=client)
+        return request.getfixturevalue("store")
+    return S3BundleStore(client=request.getfixturevalue("s3_client"))
 
 
 class TestContract:
@@ -195,27 +183,29 @@ class TestInMemoryBundleStore:
 
 
 class TestS3BundleStore:
-    def test_injected_client(self, fake_s3):
-        assert S3BundleStore(client=fake_s3).client is fake_s3
+    def test_injected_client(self):
+        client = object()
+        assert S3BundleStore(client=client).client is client
 
     def test_client_is_lazy_and_reused(self, counted_s3):
-        fake, calls = counted_s3
+        client, calls = counted_s3
         store = S3BundleStore()
         assert calls == []
-        store.write("b", "k", b"x")
-        assert store.read("b", "k") == b"x"
-        assert store.exists("b", "k") is True
-        assert store.presigned_url("b", "k", expires_in=5).endswith("X-Amz-Expires=5")
-        assert store.client is fake
+        store.write("bkt", "k", b"x")
+        assert store.read("bkt", "k") == b"x"
+        assert store.exists("bkt", "k") is True
+        assert store.presigned_url("bkt", "k").startswith("https://")
+        assert store.client is client
         assert calls == [("s3",)]
 
-    def test_concurrent_first_use_opens_one_client(self, monkeypatch, fake_s3):
+    def test_concurrent_first_use_opens_one_client(self, monkeypatch):
         calls: list[tuple] = []
+        client = object()
 
         def _slow_client(*args, **_kw):
             calls.append(args)
             time.sleep(0.05)  # widen the window for a second creator
-            return fake_s3
+            return client
 
         monkeypatch.setattr(boto3, "client", _slow_client)
         store = S3BundleStore()
@@ -229,18 +219,18 @@ class TestS3BundleStore:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             clients = list(pool.map(_first_use, range(workers)))
         assert calls == [("s3",)]
-        assert all(c is fake_s3 for c in clients)
+        assert all(c is client for c in clients)
 
     def test_each_store_opens_its_own_client(self, counted_s3):
         _, calls = counted_s3
-        S3BundleStore().exists("b", "k")
-        S3BundleStore().exists("b", "k")
+        S3BundleStore().exists("bkt", "k")
+        S3BundleStore().exists("bkt", "k")
         assert calls == [("s3",), ("s3",)]
 
     @CLONERS
-    def test_copy_opens_its_own_client(self, counted_s3, fake_s3, clone):
-        fake, calls = counted_s3
-        twin = clone(S3BundleStore(client=fake_s3))
-        assert twin.exists("b", "k") is False
-        assert twin.client is fake
+    def test_copy_opens_its_own_client(self, counted_s3, clone):
+        client, calls = counted_s3
+        twin = clone(S3BundleStore(client=client))
+        assert twin.exists("bkt", "k") is False
+        assert twin.client is client
         assert calls == [("s3",)]

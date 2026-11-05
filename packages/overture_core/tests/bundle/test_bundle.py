@@ -1644,36 +1644,40 @@ class TestNaturalOrder:
 # ── S3 client reuse ──────────────────────────────────────────────────────────
 
 
+def _put(s3, key: str) -> None:
+    s3.put_object(Bucket="bkt", Key=key, Body=b"")
+
+
 class TestClientReuse:
     """A walk or check opens one S3 client, however many requests it makes."""
 
     _ROOT = "feeds/provider=p/resource=r"
 
-    def _seed(self, fake) -> None:
+    def _seed(self, s3) -> None:
         for version in ("1", "2", "3"):
             for run in ("a", "b"):
-                fake.put("bkt", f"{self._ROOT}/version={version}/run={run}/success")
-        fake.put("bkt", "feeds/provider=p/resource=s/version=1/run=a/success")
+                _put(s3, f"{self._ROOT}/version={version}/run={run}/success")
+        _put(s3, "feeds/provider=p/resource=s/version=1/run=a/success")
 
     def test_discover_all(self, counted_s3):
-        fake, calls = counted_s3
-        self._seed(fake)
+        s3, calls = counted_s3
+        self._seed(s3)
         assert len(SourceIngestBundle.discover_all(bucket="bkt")) == 7
         assert calls == [("s3",)]
 
     def test_resolve_partitions(self, counted_s3):
-        fake, calls = counted_s3
-        self._seed(fake)
-        fake.put("bkt", f"{self._ROOT}/version=4/run=a/data/f")
+        s3, calls = counted_s3
+        self._seed(s3)
+        _put(s3, f"{self._ROOT}/version=4/run=a/data/f")
         b = SourceIngestBundle(provider="p", resource="r", bucket="bkt")
         b.resolve_partitions()
         assert b.base_uri == f"s3://bkt/{self._ROOT}/version=3/run=b"
         assert calls == [("s3",)]
 
     def test_needs_processing(self, counted_s3):
-        fake, calls = counted_s3
+        s3, calls = counted_s3
         for run in ("a", "b", "c"):
-            fake.put("bkt", f"{self._ROOT}/version=1/run={run}/data/f")
+            _put(s3, f"{self._ROOT}/version=1/run={run}/data/f")
         b = SourceIngestBundle(
             provider="p", resource="r", bucket="bkt", version="1", run="d"
         )
@@ -1681,9 +1685,9 @@ class TestClientReuse:
         assert calls == [("s3",)]
 
     def test_find_previous_partition(self, counted_s3):
-        fake, calls = counted_s3
-        self._seed(fake)
-        fake.put("bkt", f"{self._ROOT}/version=3/run=c/data/f")
+        s3, calls = counted_s3
+        self._seed(s3)
+        _put(s3, f"{self._ROOT}/version=3/run=c/data/f")
         b = SourceIngestBundle(
             provider="p", resource="r", bucket="bkt", version="4", run="a"
         )
@@ -1692,8 +1696,8 @@ class TestClientReuse:
         assert calls == [("s3",)]
 
     def test_needs_processing_batch(self, counted_s3):
-        fake, calls = counted_s3
-        self._seed(fake)
+        s3, calls = counted_s3
+        self._seed(s3)
         bundles = [
             SourceIngestBundle(
                 provider="p", resource=res, bucket="bkt", version="9", run="z"
@@ -1708,14 +1712,14 @@ class TestClientReuse:
 
     def test_cleanup_all(self, counted_s3):
         # One client for the walk, one shared by every check and delete.
-        fake, calls = counted_s3
-        self._seed(fake)
+        s3, calls = counted_s3
+        self._seed(s3)
         report = SourceIngestBundle.cleanup_all(bucket="bkt", min_age_days=0)
         assert len(report.kept) + len(report.would_delete) == 7
         assert calls == [("s3",), ("s3",)]
 
     def test_lifecycle_and_age(self, counted_s3):
-        fake, calls = counted_s3
+        s3, calls = counted_s3
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
         b.finalize(metadata=RecordingMetadata())
         b.initialize(metadata=RecordingMetadata())  # exists, then delete
@@ -1780,9 +1784,9 @@ class TestClientReuse:
         assert b.store is None
 
     def test_explicit_s3_store_opens_no_client(self, counted_s3):
-        fake, calls = counted_s3
-        self._seed(fake)
-        store = S3BundleStore(client=fake)
+        s3, calls = counted_s3
+        self._seed(s3)
+        store = S3BundleStore(client=s3)
         report = SourceIngestBundle.cleanup_all(
             bucket="bkt", min_age_days=0, store=store
         )
@@ -1857,10 +1861,10 @@ class TestStoreInjection:
 
     def test_cleanup_all_with_discover_all_override(self, counted_s3):
         """Overrides with no ``store`` parameter, like tf-data-platform's adapter, work."""
-        fake, calls = counted_s3
-        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        s3, calls = counted_s3
         for run in ("r1", "r2"):
-            fake.put("bkt", f"theme_stage/theme=t/run={run}/success", lm=_DEFAULT_LM)
+            _put(s3, f"theme_stage/theme=t/run={run}/success")
+        now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=60)
 
         class Adapter(ThemeAssembleBundle):
             @classmethod
