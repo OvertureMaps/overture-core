@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -96,4 +99,58 @@ class TestPlanSizeRealSpark(unittest.TestCase):
         self.assertLess(len(truncated), full)
         self.assertLessEqual(len(truncated), 500 + 100)
         self.assertLess(capped_plan, full_plan)
-        self.assertEqual(51, grown.count())
+
+
+@pytest.mark.spark
+@pytest.mark.skipif(
+    pyspark is None, reason="pyspark not installed; requires the sql-spark extra"
+)
+class TestAqeEventLogTruncation(unittest.TestCase):
+    """The prod crash was the AQE event-log update
+    (SparkListenerSQLAdaptiveExecutionUpdate) rendering a huge plan string."""
+
+    LIMIT = 500
+
+    def testAqeEventLogPlanDescriptionIsTruncatedAndJobCompletes(self):
+        from overture_spark import SparkPlatform, getSparkSedonaSession
+
+        with tempfile.TemporaryDirectory() as log_dir:
+            spark = getSparkSedonaSession(
+                spark_platform=SparkPlatform.LOCAL,
+                app_name="AqeEventLogTest",
+                extra_spark_conf={
+                    "spark.eventLog.enabled": "true",
+                    "spark.eventLog.dir": Path(log_dir).as_uri(),
+                    "spark.sql.adaptive.enabled": "true",
+                    "spark.sql.maxPlanStringLength": str(self.LIMIT),
+                },
+            )
+            try:
+                base = spark.range(1)
+                df = base
+                for _ in range(50):
+                    df = df.union(base)
+                # groupBy adds a shuffle, so AQE re-plans and emits updates
+                result = df.groupBy("id").count().collect()
+            finally:
+                spark.stop()
+
+            self.assertEqual(1, len(result))
+            self.assertEqual(51, result[0]["count"])
+
+            events = [
+                json.loads(line)
+                for log in Path(log_dir).iterdir()
+                for line in log.read_text().splitlines()
+            ]
+
+        updates = [
+            e
+            for e in events
+            if e["Event"].endswith("SparkListenerSQLAdaptiveExecutionUpdate")
+        ]
+        self.assertTrue(updates, "no AQE update event was logged")
+        for event in updates:
+            description = event["physicalPlanDescription"]
+            self.assertLessEqual(len(description), self.LIMIT + 200)
+            self.assertIn("more characters", description)
