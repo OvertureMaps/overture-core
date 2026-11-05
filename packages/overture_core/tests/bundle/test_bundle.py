@@ -12,10 +12,12 @@ import pytest
 from overture_core.artifacts import LicenseArtifact
 from overture_core.bundle.bundle import (
     Bundle,
+    BundleComponent,
     BundleDecision,
     BundleStatus,
     BundleStatusReport,
     CleanupReport,
+    ComponentKind,
     DeleteResult,
     ModelBundle,
     PartitionResolutionError,
@@ -152,6 +154,7 @@ class TestPaths:
         assert b.base_uri == "s3://bkt/root/version=1"
         assert b.base_prefix == "root/version=1"
         assert b.data_uri == "s3://bkt/root/version=1/data"
+        assert b.data_prefix == "root/version=1/data"
         assert b.metadata_uri == "s3://bkt/root/version=1/metadata.json"
         assert b.success_uri == "s3://bkt/root/version=1/success"
         assert b.sub_directory("/extra/") == "s3://bkt/root/version=1/extra"
@@ -874,6 +877,73 @@ class TestStatus:
         assert store.calls == ["exists", "read"]
 
 
+_RC = "release_candidate/release=R/run=r1"
+
+
+class TestRelease:
+    @staticmethod
+    def _bundle(store, **kwargs) -> ReleaseCandidateBundle:
+        return ReleaseCandidateBundle(
+            bucket="bkt", release="R", run="r1", store=store, **kwargs
+        )
+
+    def test_is_released(self, store):
+        b = self._bundle(store)
+        assert b.is_released() is False
+        store.write("bkt", f"{_RC}/released")
+        assert b.is_released() is True
+
+    def test_released_markers(self):
+        assert ReleaseCandidateBundle.RELEASED_MARKERS == ("success", "released")
+
+    def test_namespaced(self, store):
+        store.write("bkt", f"ns/{_RC}/released")
+        assert self._bundle(store, namespace="ns").is_released()
+        assert not self._bundle(store).is_released()
+
+    def test_status_is_lifecycle_only(self, store):
+        store.write("bkt", f"{_RC}/success")
+        store.write("bkt", f"{_RC}/released")
+        assert self._bundle(store).status().status is BundleStatus.SUCCESS
+
+    def test_discover_all(self, store):
+        for run in ("r1", "r2"):
+            store.write("bkt", f"ns/release_candidate/release=R/run={run}/success")
+        store.write("bkt", f"ns/{_RC}/released")
+        found = ReleaseCandidateBundle.discover_all("bkt", namespace="ns", store=store)
+        assert all(type(b) is ReleaseCandidateBundle for b in found)
+        assert {b.run: b.is_released() for b in found} == {"r1": True, "r2": False}
+        latest = ReleaseCandidateBundle.resolve_latest_released(
+            release="R", bucket="bkt", namespace="ns", store=store
+        )
+        assert (latest.run, latest.is_released()) == ("r1", True)
+
+    @pytest.mark.parametrize("has_success", [True, False])
+    def test_cleanup_keeps_published_candidates(self, store, has_success):
+        now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+        old = now - dt.timedelta(days=90)
+        published = "release_candidate/release=R1/run=a"
+        marker = "success" if has_success else "metadata.json"
+        store.write("bkt", f"{published}/{marker}", b"{}", last_modified=old)
+        store.write("bkt", f"{published}/released", last_modified=old)
+        for run in ("b", "c"):
+            base = f"release_candidate/release=R1/run={run}"
+            store.write("bkt", f"{base}/success", last_modified=old)
+        report = ReleaseCandidateBundle.cleanup_all(
+            bucket="bkt", min_age_days=30, dry_run=False, now=now, store=store
+        )
+        assert [r.bundle_uri for r in report.deleted] == [
+            "s3://bkt/release_candidate/release=R1/run=b"
+        ]
+        assert {d.bundle_uri: d.reason for d in report.kept} == {
+            f"s3://bkt/{published}": "is a published release (has a released marker)",
+            "s3://bkt/release_candidate/release=R1/run=c": (
+                "is the latest successful bundle"
+            ),
+        }
+        assert store.exists("bkt", f"{published}/released")
+
+
 # ── Partition resolution ─────────────────────────────────────────────────────
 
 
@@ -1438,6 +1508,8 @@ class TestPathHelpers:
         b = Bundle(bucket="", root_path="templated/root", partitions={"run": "r1"})
         assert b.root_uri == "templated/root"
         assert b.base_uri == "templated/root/run=r1"
+        with pytest.raises(ValueError, match="Not an S3 URI"):
+            b.is_successful()
 
     @pytest.mark.parametrize(
         ("bundle", "dirs"),
@@ -1484,6 +1556,126 @@ class TestPathHelpers:
         for name in dirs:
             assert getattr(bundle, f"{name}_uri") == f"{bundle.base_uri}/{name}"
             assert getattr(bundle, f"{name}_prefix") == f"{bundle.base_prefix}/{name}"
+
+
+# ── Components ───────────────────────────────────────────────────────────────
+
+_TYPES = [
+    SourceRawBundle,
+    SourceIngestBundle,
+    ThemeAssembleBundle,
+    ThemePromoteBundle,
+    ReleaseCandidateBundle,
+    ScratchBundle,
+]
+
+
+def _instance(cls: type[Bundle]) -> Bundle:
+    """An instance of *cls* with every partition set, under namespace ``ns``."""
+    return cls._from_root(
+        "bkt", f"ns/{cls.ROOT_PATH}", {key: "x" for key in cls.PARTITION_KEYS}
+    )
+
+
+class TestBundleComponent:
+    def test_kinds(self):
+        directory = BundleComponent("changelog")
+        file = BundleComponent("metadata.json", ComponentKind.FILE)
+        marker = BundleComponent("success", ComponentKind.MARKER)
+        assert directory.kind is ComponentKind.DIRECTORY
+        assert [c.is_directory for c in (directory, file, marker)] == [
+            True,
+            False,
+            False,
+        ]
+        assert [c.listing_name for c in (directory, file, marker)] == [
+            "changelog/",
+            "metadata.json",
+            "success",
+        ]
+
+    @pytest.mark.parametrize("name", ["", "data/", "a/b"])
+    def test_name_is_one_segment(self, name):
+        with pytest.raises(ValueError, match="one non-empty path segment"):
+            BundleComponent(name)
+
+
+_METRICS = ["changelog/", "metrics/", "metrics_summary/"]
+_PUBLISHING = [
+    *_METRICS,
+    "bridgefiles/",
+    "pmtiles/",
+    "partition_bboxes/",
+    "propagate/",
+    "license.json",
+    "attribution.mdx",
+    "bundle_diff_report.md",
+]
+
+
+class TestComponents:
+    def test_base_components(self):
+        assert [c.listing_name for c in Bundle.COMPONENTS] == [
+            "data/",
+            "metadata.json",
+            "success",
+        ]
+
+    @pytest.mark.parametrize(
+        ("cls", "extra"),
+        [
+            (SourceRawBundle, []),
+            (SourceIngestBundle, _METRICS),
+            (ThemeAssembleBundle, [*_METRICS, "summary.md", "bundle_diff_report.md"]),
+            (
+                ThemePromoteBundle,
+                [*_PUBLISHING, "changelog_internal/", "validation/"],
+            ),
+            (ReleaseCandidateBundle, [*_PUBLISHING, "released", "registry/"]),
+            (ScratchBundle, []),
+        ],
+        ids=lambda v: v.__name__ if isinstance(v, type) else "",
+    )
+    def test_type_components(self, cls, extra):
+        names = [c.listing_name for c in cls.COMPONENTS]
+        assert names == ["data/", "metadata.json", "success", *extra]
+
+    @pytest.mark.parametrize("cls", _TYPES, ids=lambda c: c.__name__)
+    def test_component_paths(self, cls):
+        b = _instance(cls)
+        for component in cls.COMPONENTS:
+            assert b.component_uri(component.name) == f"{b.base_uri}/{component.name}"
+            assert b.component_prefix(component.name) == (
+                f"ns/{cls.ROOT_PATH}/"
+                + "/".join(f"{k}=x" for k in cls.PARTITION_KEYS)
+                + f"/{component.name}"
+            )
+
+    def test_subclass_components(self):
+        class Custom(ThemePromoteBundle):
+            COMPONENTS = (*ThemePromoteBundle.COMPONENTS, BundleComponent("logs-1"))
+
+        b = Custom(theme="t", bucket="bkt", schema="s", run="r")
+        assert b.validation_uri == f"{b.base_uri}/validation"
+        assert b.component_prefix("logs-1/") == f"{b.base_prefix}/logs-1"
+
+    @pytest.mark.parametrize("name", ["data", "data/", "metadata.json"])
+    def test_get_component(self, name):
+        component = ThemePromoteBundle.get_component(name)
+        assert component.name == name.rstrip("/")
+        assert _instance(ThemePromoteBundle).get_component(name) is component
+
+    @pytest.mark.parametrize("name", ["registry", "nope", ""])
+    def test_get_unknown_component_raises(self, name):
+        with pytest.raises(KeyError, match="ThemePromoteBundle has no component"):
+            ThemePromoteBundle.get_component(name)
+        with pytest.raises(KeyError):
+            _instance(ThemePromoteBundle).component_uri(name)
+
+    def test_component_names_are_unique(self):
+        for cls in _TYPES:
+            names = [c.name for c in cls.COMPONENTS]
+            assert len(names) == len(set(names)), cls.__name__
 
 
 # ── Partition resolution edge cases ──────────────────────────────────────────
