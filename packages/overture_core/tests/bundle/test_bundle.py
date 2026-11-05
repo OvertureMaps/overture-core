@@ -1,5 +1,6 @@
 """Tests for the bundle model."""
 
+import dataclasses
 import datetime as dt
 import json
 import pickle
@@ -12,6 +13,8 @@ from overture_core.artifacts import LicenseArtifact
 from overture_core.bundle.bundle import (
     Bundle,
     BundleDecision,
+    BundleStatus,
+    BundleStatusReport,
     CleanupReport,
     DeleteResult,
     ModelBundle,
@@ -26,6 +29,7 @@ from overture_core.bundle.bundle import (
     _resolve_partitions,
     provenance_sections,
 )
+from overture_core.bundle.status import _derive_status, _metadata_section_statuses
 from overture_core.bundle.store import InMemoryBundleStore, S3BundleStore
 from overture_core.dataset.dataset import Dataset
 
@@ -100,6 +104,43 @@ class RecordingDropper:
         if self.fail:
             raise RuntimeError("athena down")
         return list(self.tables)
+
+
+class StoreMetadata:
+    """`BundleMetadata` keeping one DAG's ``metadata.json`` section in a store.
+
+    Mirrors tf-data-platform's ``Metadata``.
+    """
+
+    def __init__(self, bundle: Bundle, dag_id: str = "dag") -> None:
+        self.store = bundle.store
+        self.bucket = bundle.bucket
+        self.key = f"{bundle.base_prefix}/metadata.json"
+        self.dag_id = dag_id
+
+    def _read(self) -> dict:
+        body = self.store.read(self.bucket, self.key)
+        return json.loads(body) if body is not None else {}
+
+    def _update(self, updates: dict) -> None:
+        document = self._read()
+        document.setdefault(self.dag_id, {}).update(updates)
+        self.store.write(self.bucket, self.key, json.dumps(document).encode())
+
+    def init(self, input_paths=None, capture_variables=True):
+        self._update({"status": "running", "completed_at": None})
+
+    def add(self, key, value):
+        self._update({key: value})
+
+    def read_dag_section(self):
+        return self._read().get(self.dag_id, {})
+
+    def update_inputs(self, inputs):
+        self._update({"inputs": inputs})
+
+    def finalize(self, status="success"):
+        self._update({"status": status, "completed_at": "2026-01-01T00:00:00Z"})
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -441,12 +482,44 @@ class TestLifecycle:
         )
         assert meta.section["inputs"] == [{"path": upstream.base_uri}]
 
-    def test_finalize_writes_success(self, store):
+    @pytest.mark.parametrize("earlier_marker", [False, True])
+    @pytest.mark.parametrize(
+        ("status", "marker"),
+        [
+            ("success", True),
+            (BundleStatus.SUCCESS, True),
+            ("failed", False),
+            (BundleStatus.FAILED, False),
+            ("partial", False),
+        ],
+    )
+    def test_finalize_keeps_a_marker_only_for_success(
+        self, store, status, marker, earlier_marker
+    ):
         meta = RecordingMetadata()
         b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
-        b.finalize(status="partial", metadata=meta)
-        assert meta.calls == [("finalize", "partial")]
-        assert "scratch/purpose=p/run=r1/success" in keys(store)
+        if earlier_marker:
+            store.write("bkt", "scratch/purpose=p/run=r1/success")
+        b.finalize(status=status, metadata=meta)
+        assert meta.calls == [("finalize", status)]
+        assert keys(store) == (
+            {"scratch/purpose=p/run=r1/success"} if marker else set()
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "seed_marker"), [("failed", True), ("success", False)]
+    )
+    def test_metadata_failure_leaves_no_marker(self, store, status, seed_marker):
+        class FailingMetadata(RecordingMetadata):
+            def finalize(self, status="success"):
+                raise RuntimeError("metadata write failed")
+
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1", store=store)
+        if seed_marker:
+            store.write("bkt", "scratch/purpose=p/run=r1/success")
+        with pytest.raises(RuntimeError, match="metadata write failed"):
+            b.finalize(status=status, metadata=FailingMetadata())
+        assert b.is_successful() is False
 
     def test_batch_lifecycle_uses_metadata_factory(self, store):
         bundles = [
@@ -498,6 +571,23 @@ class TestLifecycle:
         messages = [r.getMessage() for r in caplog.records]
         assert sum("failed for ScratchBundle" in m for m in messages) == 2
         assert any("failed for 2/3 bundle(s)" in m for m in messages)
+
+    def test_finalize_batch_failed_removes_markers(self, store):
+        bundles = [
+            ScratchBundle(purpose=p, bucket="bkt", run="r1", store=store) for p in "ab"
+        ]
+        store.write("bkt", "scratch/purpose=a/run=r1/success")
+        made: list[RecordingMetadata] = []
+
+        def factory(_b):
+            made.append(RecordingMetadata())
+            return made[-1]
+
+        Bundle.finalize_batch(
+            bundles, metadata_factory=factory, status="failed", max_workers=2
+        )
+        assert [m.calls for m in made] == [[("finalize", "failed")]] * 2
+        assert keys(store) == set()
 
     def test_batch_noop_on_empty(self):
         Bundle.initialize_batch([], metadata_factory=lambda b: RecordingMetadata())
@@ -552,6 +642,236 @@ class TestLifecycle:
             )
         with pytest.raises(ValueError, match="0 entries"):
             Bundle.initialize_batch([b], metadata_factory=factory, per_bundle_inputs=[])
+
+
+# ── Status ───────────────────────────────────────────────────────────────────
+
+_RUN = "theme_stage/theme=t/run=r1"
+
+
+def _metadata(**sections) -> bytes:
+    """A ``metadata.json`` body with the given top-level entries."""
+    return json.dumps(sections).encode()
+
+
+class CountingStore(InMemoryBundleStore):
+    """`InMemoryBundleStore` that records each lookup `Bundle.status` makes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[str] = []
+
+    def exists(self, bucket, key):
+        self.calls.append("exists")
+        return super().exists(bucket, key)
+
+    def read(self, bucket, key):
+        self.calls.append("read")
+        return super().read(bucket, key)
+
+    def prefix_exists(self, bucket, prefix):
+        self.calls.append("prefix_exists")
+        return super().prefix_exists(bucket, prefix)
+
+
+class TestStatus:
+    @staticmethod
+    def _bundle(store) -> ThemeAssembleBundle:
+        return ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store)
+
+    def test_report_copies_sections_and_serialises(self):
+        sections = {"dag": "failed"}
+        report = BundleStatusReport(BundleStatus.FAILED, True, False, True, sections)
+        sections["dag"] = "success"
+        assert report.sections == {"dag": "failed"}
+        assert hash(report) == hash(dataclasses.replace(report, sections={}))
+        assert json.loads(json.dumps(dataclasses.asdict(report))) == {
+            "status": "failed",
+            "exists": True,
+            "has_success": False,
+            "has_metadata": True,
+            "sections": {"dag": "failed"},
+        }
+        assert pickle.loads(pickle.dumps(report)) == report
+
+    @pytest.mark.parametrize(
+        ("exists", "has_success", "sections", "expected"),
+        [
+            (False, False, {}, None),
+            (True, True, {}, BundleStatus.SUCCESS),
+            (True, True, {"dag": "failed"}, BundleStatus.SUCCESS),
+            (True, False, {}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "running"}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "success"}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "partial"}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": None}, BundleStatus.IN_PROGRESS),
+            (True, False, {"dag": "failed"}, BundleStatus.FAILED),
+            (True, False, {"a": "success", "b": "failed"}, BundleStatus.FAILED),
+            (True, False, {"a": "running", "b": "failed"}, BundleStatus.FAILED),
+        ],
+    )
+    def test_rules(self, exists, has_success, sections, expected):
+        assert _derive_status(exists, has_success, sections) is expected
+
+    @pytest.mark.parametrize(
+        ("document", "expected"),
+        [
+            ({"dag": {"status": "running"}}, {"dag": "running"}),
+            (
+                {
+                    "ok": {"status": "running"},
+                    "no_status": {"run_id": "x"},
+                    "bad_status": {"status": ["failed"]},
+                    "not_a_section": "theme_assemble",
+                },
+                {"ok": "running", "no_status": None, "bad_status": None},
+            ),
+            (
+                {
+                    "dag": {
+                        "status": "running",
+                        "inputs": [{"up_dag": {"status": "failed"}, "path": "s3://u"}],
+                    },
+                    "released_at": "2026-01-01",
+                },
+                {"dag": "running"},
+            ),
+        ],
+        ids=["section", "malformed_sections", "nested_inputs"],
+    )
+    def test_section_statuses(self, document, expected):
+        body = json.dumps(document).encode()
+        assert _metadata_section_statuses(body, "s3://bkt/m.json") == expected
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            (b"{not json", "Unreadable metadata.json"),
+            (b"\x80not utf-8", "Unreadable metadata.json"),
+            (b'["failed"]', "is not a JSON object"),
+            (b"null", "is not a JSON object"),
+        ],
+    )
+    def test_unreadable_section_statuses(self, caplog, body, message):
+        assert _metadata_section_statuses(body, "s3://bkt/m.json") == {}
+        assert "s3://bkt/m.json" in caplog.text
+        assert message in caplog.text
+
+    def test_missing_bundle_has_no_status(self, store):
+        report = self._bundle(store).status()
+        assert report == BundleStatusReport(
+            status=None, exists=False, has_success=False, has_metadata=False
+        )
+        assert report.sections == {}
+
+    def test_sibling_prefix_is_not_the_bundle(self, store):
+        store.write("bkt", "theme_stage/theme=t/run=r10/success")
+        assert self._bundle(store).status().exists is False
+
+    def test_success_marker(self, store):
+        store.write("bkt", f"{_RUN}/success")
+        assert self._bundle(store).status() == BundleStatusReport(
+            status=BundleStatus.SUCCESS,
+            exists=True,
+            has_success=True,
+            has_metadata=False,
+        )
+
+    def test_objects_without_marker_or_metadata(self, store):
+        store.write("bkt", f"{_RUN}/data/part-0.parquet", b"x")
+        assert self._bundle(store).status() == BundleStatusReport(
+            status=BundleStatus.IN_PROGRESS,
+            exists=True,
+            has_success=False,
+            has_metadata=False,
+        )
+
+    def test_metadata_without_marker(self, store):
+        store.write("bkt", f"{_RUN}/metadata.json", _metadata(dag={"status": "failed"}))
+        assert self._bundle(store).status() == BundleStatusReport(
+            status=BundleStatus.FAILED,
+            exists=True,
+            has_success=False,
+            has_metadata=True,
+            sections={"dag": "failed"},
+        )
+
+    def test_unreadable_metadata_still_counts(self, store, caplog):
+        store.write("bkt", f"{_RUN}/metadata.json", b"{not json")
+        assert self._bundle(store).status() == BundleStatusReport(
+            status=BundleStatus.IN_PROGRESS,
+            exists=True,
+            has_success=False,
+            has_metadata=True,
+        )
+        assert f"s3://bkt/{_RUN}/metadata.json" in caplog.text
+
+    def test_follows_the_lifecycle(self, store):
+        b = self._bundle(store)
+        b.initialize(metadata=StoreMetadata(b))
+        assert b.status().status is BundleStatus.IN_PROGRESS
+
+        b.finalize(status="failed", metadata=StoreMetadata(b))
+        report = b.status()
+        assert report.status is BundleStatus.FAILED
+        assert report.sections == {"dag": "failed"}
+        assert b.is_successful() is False
+
+        b.initialize(metadata=StoreMetadata(b))  # rerun
+        assert b.status().status is BundleStatus.IN_PROGRESS
+
+        b.finalize(metadata=StoreMetadata(b))
+        assert b.status() == BundleStatusReport(
+            status=BundleStatus.SUCCESS,
+            exists=True,
+            has_success=True,
+            has_metadata=True,
+            sections={"dag": "success"},
+        )
+
+        b.initialize(metadata=StoreMetadata(b, dag_id="other"))
+        report = b.status()
+        assert report.status is BundleStatus.IN_PROGRESS
+        assert report.sections == {"dag": "success", "other": "running"}
+
+    @pytest.mark.parametrize(
+        ("cls", "kwargs", "prefix"),
+        [
+            (
+                SourceIngestBundle,
+                {
+                    "provider": "p",
+                    "resource": "r",
+                    "version": "1",
+                    "run": "a",
+                    "namespace": "ns",
+                },
+                "ns/feeds/provider=p/resource=r/version=1/run=a/",
+            ),
+            (Bundle, {"root_path": ""}, ""),
+        ],
+        ids=["namespaced", "bucket_root"],
+    )
+    def test_locations(self, store, cls, kwargs, prefix):
+        b = cls(bucket="bkt", store=store, **kwargs)
+        assert b.status().exists is False
+        store.write(
+            "bkt", f"{prefix}metadata.json", _metadata(dag={"status": "failed"})
+        )
+        assert b.status().status is BundleStatus.FAILED
+        store.write("bkt", f"{prefix}success")
+        assert b.status().status is BundleStatus.SUCCESS
+
+    def test_requests(self):
+        store = CountingStore()
+        b = self._bundle(store)
+        b.status()
+        assert store.calls == ["exists", "read", "prefix_exists"]
+
+        store.calls.clear()
+        store.write("bkt", f"{_RUN}/success")
+        b.status()
+        assert store.calls == ["exists", "read"]
 
 
 # ── Partition resolution ─────────────────────────────────────────────────────
@@ -1782,6 +2102,40 @@ class TestClientReuse:
         expected = action == "finalize_batch"
         assert [s.exists(*b._success_marker()) for s in stores] == [expected] * 2
         assert b.store is None
+
+    def test_status(self, counted_s3):
+        s3, calls = counted_s3
+        b = ScratchBundle(purpose="p", bucket="bkt", run="r1")
+        assert b.status().exists is False  # marker, metadata, then a listing
+        assert calls == [("s3",)]
+
+        s3.put_object(
+            Bucket="bkt",
+            Key="scratch/purpose=p/run=r1/metadata.json",
+            Body=b'{"d": {}}',
+        )
+        assert b.status().has_metadata is True
+        assert calls == [("s3",)] * 2
+
+    def test_status_subclass_extends_on_the_same_store(self, counted_s3):
+        """A subclass extending `_status_report` adds requests, not clients."""
+        s3, calls = counted_s3
+        prefix = "release_candidate/release=R/run=r1"
+        _put(s3, f"{prefix}/success")
+        _put(s3, f"{prefix}/released")
+
+        class Released(ReleaseCandidateBundle):
+            released = False
+
+            def _status_report(self, store):
+                report = super()._status_report(store)
+                self.released = store.exists(*self._object_key("released"))
+                return report
+
+        b = Released(bucket="bkt", release="R", run="r1")
+        assert b.status().status is BundleStatus.SUCCESS
+        assert b.released is True
+        assert calls == [("s3",)]
 
     def test_explicit_s3_store_opens_no_client(self, counted_s3):
         s3, calls = counted_s3

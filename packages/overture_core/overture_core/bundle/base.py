@@ -33,7 +33,13 @@ from overture_core.bundle.partitions import (
     _walk_partitions,
 )
 from overture_core.bundle.store import BundleStore, S3BundleStore, _store_or_default
-from overture_core.cloud.aws.object import parse_s3_uri, success_file_key
+from overture_core.bundle.status import (
+    BundleStatus,
+    BundleStatusReport,
+    _derive_status,
+    _metadata_section_statuses,
+)
+from overture_core.cloud.aws.object import parse_s3_uri
 from overture_core.cloud.cloud import Partition
 from overture_core.dataset.dataset import Dataset
 
@@ -450,20 +456,37 @@ class Bundle:
         *,
         metadata: BundleMetadata,
     ) -> None:
-        """Finalize the bundle: update metadata and write the success file.
+        """Stamp metadata with *status*; the marker exists only for ``"success"``.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``.
+        ``base_uri``.  ``"success"`` writes the marker after the metadata.
+        Any other status deletes an existing marker before the metadata, so a
+        failed rerun never reads as successful.  Partition resolution,
+        `needs_processing` and retention treat only bundles with the marker
+        as complete.
         """
-        metadata.finalize(status=status)
         bucket, key = self._success_marker()
+        if status != BundleStatus.SUCCESS:
+            self._open_store().delete(bucket, key)
+            metadata.finalize(status=status)
+            log.info(
+                "Finalized %s with status %s; removed any success file",
+                self.base_uri,
+                status,
+            )
+            return
+        metadata.finalize(status=status)
         self._open_store().write(bucket, key)
         log.info("Wrote success file s3://%s/%s", bucket, key)
 
     def _success_marker(self) -> tuple[str, str]:
-        """``(bucket, key)`` of the ``success`` marker, parsed from `base_uri`."""
+        """``(bucket, key)`` of the ``success`` marker."""
+        return self._object_key("success")
+
+    def _object_key(self, name: str) -> tuple[str, str]:
+        """``(bucket, key)`` of the object *name* directly under `base_uri`."""
         bucket, prefix = parse_s3_uri(self.base_uri)
-        return bucket, success_file_key(prefix)
+        return bucket, _dir_prefix(prefix) + name
 
     def resolve_partitions(
         self,
@@ -743,6 +766,44 @@ class Bundle:
             "rejected": rejected,
             "baseline_kind": None,
         }
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
+
+    def status(self) -> BundleStatusReport:
+        """Read this bundle's `BundleStatus` and related facts from storage.
+
+        Subclasses extend `_status_report`, so their requests share the one
+        store opened here.
+
+        Raises:
+            ValueError: If a partition has no value (call `resolve_partitions`
+                first), or the bundle has no bucket.
+        """
+        return self._status_report(self._open_store())
+
+    def _status_report(self, store: BundleStore) -> BundleStatusReport:
+        """Build `status`'s report, making every request on *store*."""
+        bucket, directory = self._object_key("")  # "" at the bucket root
+        success_key = f"{directory}success"
+        metadata_key = f"{directory}metadata.json"
+        has_success = store.exists(bucket, success_key)
+        body = store.read(bucket, metadata_key)
+        has_metadata = body is not None
+        sections = (
+            _metadata_section_statuses(body, f"s3://{bucket}/{metadata_key}")
+            if body is not None
+            else {}
+        )
+        exists = has_success or has_metadata or store.prefix_exists(bucket, directory)
+        return BundleStatusReport(
+            status=_derive_status(exists, has_success, sections),
+            exists=exists,
+            has_success=has_success,
+            has_metadata=has_metadata,
+            sections=sections,
+        )
 
     # ------------------------------------------------------------------
     # Cleanup / retention
