@@ -34,6 +34,13 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 
+# Caps the plan string Spark renders for the UI and event log so a runaway plan
+# can't OOM the driver (Spark's own default is effectively unlimited). Truncates
+# only the string, not the plan. Well above normal plans so debugging output is
+# intact; override via extra_spark_conf.
+MAX_PLAN_STRING_LENGTH = "100000000"
+
+
 class PackageNotFoundError(Exception):
     def __init__(self, package_name):
         super().__init__(
@@ -256,6 +263,7 @@ def getSparkSedonaSession(
             # sedona jars for other (non-local) spark platforms are configured in SparkSedonaOperator*
             pass
         builder.config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
+        builder.config("spark.sql.maxPlanStringLength", MAX_PLAN_STRING_LENGTH)
         for k, v in extra_spark_conf.items():
             builder.config(k, v)
         spark = builder.getOrCreate()

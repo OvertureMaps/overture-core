@@ -9,6 +9,7 @@ from overture_spark.job import (
     SparkSedonaJob,
     pretty_print_elapsed_time,
 )
+from overture_spark.plan import PlanTooLargeError
 
 try:
     import pyspark  # noqa: F401
@@ -293,6 +294,45 @@ class TestRunInvalidParams(unittest.TestCase):
         result = JobTest().run("not-json")
         self.assertFalse(result.isSuccess)
         self.assertIn("Cannot parse params", str(result.exception))
+
+
+class TestCheckPlanSize(unittest.TestCase):
+    class _Job(JobBaseMockSpark):
+        def execute_job(self):
+            pass
+
+    @staticmethod
+    def _df(chars):
+        df = Mock()
+        analyzed = df._jdf.queryExecution.return_value.analyzed.return_value
+        analyzed.toString.return_value = "a" * chars
+        return df
+
+    def testUnderLimitLogsSizeOnly(self):
+        job = self._Job()
+        self.assertEqual(10, job.check_plan_size(self._df(10), max_chars=100))
+        self.assertTrue(any("plan size: 10 chars" in m for m in job.result.messages))
+        self.assertFalse(any("WARNING" in m for m in job.result.messages))
+
+    def testOverLimitWarnsByDefault(self):
+        job = self._Job()
+        self.assertEqual(
+            200, job.check_plan_size(self._df(200), max_chars=100, name="final")
+        )
+        self.assertTrue(any("WARNING: final plan" in m for m in job.result.messages))
+
+    def testOverLimitRaisesWhenFail(self):
+        with self.assertRaises(PlanTooLargeError):
+            self._Job().check_plan_size(self._df(200), max_chars=100, fail=True)
+
+    def testFailRunMarksJobFailed(self):
+        class JobTest(JobBaseMockSpark):
+            def execute_job(self):
+                self.check_plan_size(TestCheckPlanSize._df(200), 100, fail=True)
+
+        result = JobTest().run()
+        self.assertFalse(result.isSuccess)
+        self.assertIsInstance(result.exception, PlanTooLargeError)
 
 
 class TestCheckOutputWritable(unittest.TestCase):

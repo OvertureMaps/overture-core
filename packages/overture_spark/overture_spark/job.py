@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Dict, Union
 
 from overture_spark import SparkPlatform, getSparkSedonaSession
+from overture_spark.plan import DEFAULT_MAX_PLAN_CHARS, PlanTooLargeError, plan_size
 from overture_spark.test_area import filter_df_to_area, validate_area
 
 if TYPE_CHECKING:
@@ -188,6 +189,32 @@ class SparkSedonaJob(ABC):
                 fs.delete(test_file, False)
             except Exception:
                 pass
+
+    def check_plan_size(
+        self,
+        df,
+        max_chars: int = DEFAULT_MAX_PLAN_CHARS,
+        fail: bool = False,
+        name: str = "DataFrame",
+    ) -> int:
+        """Opt-in guard: measure df's plan before an expensive action.
+
+        Logs a warning when the plan string exceeds ``max_chars``, or raises
+        ``PlanTooLargeError`` when ``fail`` is set, so a runaway plan fails
+        fast instead of killing the driver hours in. Measuring builds the plan
+        string on the driver, so call it once before the final write, not on
+        every action. Returns the measured size.
+        """
+        size = plan_size(df)
+        self.log(f"{name} plan size: {size:,} chars (limit {max_chars:,})")
+        if size > max_chars:
+            if fail:
+                raise PlanTooLargeError(size, max_chars)
+            self.log(
+                f"WARNING: {name} plan exceeds {max_chars:,} chars; the driver "
+                "may run out of memory rendering it"
+            )
+        return size
 
     @abstractmethod
     def execute_job(self):
