@@ -14,8 +14,10 @@ Bundles follow a lifecycle:
    bundle is being rebuilt) and create a fresh ``metadata.json``.
 2. **Process** -- the pipeline writes data into ``data/`` and any other
    subdirectories.
-3. **Finalize** -- stamp ``metadata.json`` as complete and write a new
-   ``success`` file.
+3. **Finalize** -- stamp ``metadata.json`` with the run's status and write
+   a new ``success`` file for ``"success"``, or delete it for any other.
+
+`Bundle.status` reports where a stored bundle is in this lifecycle.
 
 Each bundle type defines an ordered ``partitions`` dict whose keys
 become Hive-style ``key=value`` path segments appended to the root
@@ -65,6 +67,7 @@ This module re-exports the model from:
 - `overture_core.bundle.partitions` -- partition paths, resolution and walking.
 - `overture_core.bundle.metadata` -- `BundleMetadata` and input provenance.
 - `overture_core.bundle.cleanup` -- cleanup reports and `TableDropper`.
+- `overture_core.bundle.status` -- `BundleStatus` and `BundleStatusReport`.
 - `overture_core.bundle.store` -- `BundleStore` and its implementations.
 """
 
@@ -94,12 +97,15 @@ from overture_core.bundle.metadata import (
 from overture_core.bundle.partitions import PartitionResolutionError
 from overture_core.bundle.partitions import _natural_key as _natural_key
 from overture_core.bundle.partitions import _resolve_partitions as _resolve_partitions
+from overture_core.bundle.status import BundleStatus, BundleStatusReport
 from overture_core.bundle.store import BundleStore, S3BundleStore
 
 __all__ = [
     "Bundle",
     "BundleDecision",
     "BundleMetadata",
+    "BundleStatus",
+    "BundleStatusReport",
     "BundleStore",
     "CleanupReport",
     "DeleteResult",
