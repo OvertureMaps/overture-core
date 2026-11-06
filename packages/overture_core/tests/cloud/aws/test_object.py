@@ -702,7 +702,7 @@ class TestListDatePartitions:
             "2024-01-01",
         ]
 
-    @pytest.mark.parametrize("prefix", ["root", "root/", "root//"])
+    @pytest.mark.parametrize("prefix", ["root", "root/", "root//", "/root", "/root/"])
     def test_prefix_is_a_directory(self, s3, prefix):
         assert list_date_partitions("bucket", prefix, client=s3)[0] == "2024-03-01"
 

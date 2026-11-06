@@ -677,11 +677,11 @@ def list_date_partitions(
 ) -> list[str]:
     """List the dates of ``<key>=YYYY-MM-DD`` partitions one level under *prefix*.
 
-    *prefix* is treated as a directory: ``root`` and ``root/`` both list
-    ``root/...``, and ``""`` lists the bucket root.  A sub-prefix counts when
-    its key is in *keys* (one key name, or several) and its value is a real
-    calendar date written ``YYYY-MM-DD``; other names are ignored.  Dates found under more
-    than one key are returned once, newest first.
+    *prefix* is treated as a directory: ``root``, ``root/`` and ``/root/`` all
+    list ``root/...``, and ``""`` lists the bucket root.  A sub-prefix counts
+    when its key is in *keys* (one key name, or several) and its value is a
+    real calendar date written ``YYYY-MM-DD``; other names are ignored.
+    Dates found under more than one key are returned once, newest first.
 
     Example: for ``prefix="root/"`` with ``root/ds=2024-01-01/``,
     ``root/version=2024-01-02/`` and ``root/latest/`` present,
@@ -690,7 +690,7 @@ def list_date_partitions(
     *client* is an optional boto3 S3 client to reuse; see `_s3`.
     """
     wanted = {keys} if isinstance(keys, str) else set(keys)
-    prefix = prefix.rstrip("/")
+    prefix = prefix.strip("/")
     prefix = f"{prefix}/" if prefix else ""
     dates: set[str] = set()
     for name in list_common_prefixes(bucket, prefix, client=client):
