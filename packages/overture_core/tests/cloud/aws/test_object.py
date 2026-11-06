@@ -692,6 +692,26 @@ class TestListDatePartitions:
             "bucket", "root/", keys=("version",), client=s3
         ) == ["2024-04-01", "2024-02-01"]
 
+    @pytest.mark.parametrize("keys", ["ds", ["ds"], {"ds"}])
+    def test_accepts_one_key_name_or_any_iterable(self, s3, keys):
+        s3.put_object(Bucket="bucket", Key="root/d=2024-09-01/x", Body=b"")
+        s3.put_object(Bucket="bucket", Key="root/=2024-09-02/x", Body=b"")
+        assert list_date_partitions("bucket", "root/", keys=keys, client=s3) == [
+            "2024-03-01",
+            "2024-02-01",
+            "2024-01-01",
+        ]
+
+    @pytest.mark.parametrize("prefix", ["root", "root/", "root//"])
+    def test_prefix_is_a_directory(self, s3, prefix):
+        assert list_date_partitions("bucket", prefix, client=s3)[0] == "2024-03-01"
+
+    def test_bucket_root(self, moto_s3):
+        moto_s3.create_bucket(Bucket="bucket")
+        moto_s3.put_object(Bucket="bucket", Key="ds=2024-01-01/success", Body=b"")
+        assert list_date_partitions("bucket", "", client=moto_s3) == ["2024-01-01"]
+        assert list_date_partitions("bucket", "/", client=moto_s3) == ["2024-01-01"]
+
     def test_empty_when_nothing_matches(self, s3):
         assert list_date_partitions("bucket", "missing/", client=s3) == []
         assert list_date_partitions("bucket", "root/", keys=(), client=s3) == []
