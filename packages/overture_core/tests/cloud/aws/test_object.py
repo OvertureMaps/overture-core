@@ -712,6 +712,11 @@ class TestListDatePartitions:
         assert list_date_partitions("bucket", "", client=moto_s3) == ["2024-01-01"]
         assert list_date_partitions("bucket", "/", client=moto_s3) == ["2024-01-01"]
 
+    def test_skips_impossible_dates(self, s3):
+        for value in ["2024-99-99", "2024-02-30", "2023-02-29", "2024-02-29"]:
+            s3.put_object(Bucket="bucket", Key=f"dates/ds={value}/x", Body=b"")
+        assert list_date_partitions("bucket", "dates/", client=s3) == ["2024-02-29"]
+
     def test_empty_when_nothing_matches(self, s3):
         assert list_date_partitions("bucket", "missing/", client=s3) == []
         assert list_date_partitions("bucket", "root/", keys=(), client=s3) == []

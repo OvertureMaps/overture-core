@@ -679,8 +679,8 @@ def list_date_partitions(
 
     *prefix* is treated as a directory: ``root`` and ``root/`` both list
     ``root/...``, and ``""`` lists the bucket root.  A sub-prefix counts when
-    its key is in *keys* (one key name, or several) and its value is a
-    ``YYYY-MM-DD`` date; other names are ignored.  Dates found under more
+    its key is in *keys* (one key name, or several) and its value is a real
+    calendar date written ``YYYY-MM-DD``; other names are ignored.  Dates found under more
     than one key are returned once, newest first.
 
     Example: for ``prefix="root/"`` with ``root/ds=2024-01-01/``,
@@ -695,9 +695,19 @@ def list_date_partitions(
     dates: set[str] = set()
     for name in list_common_prefixes(bucket, prefix, client=client):
         key, sep, value = name.partition("=")
-        if sep and key in wanted and _ISO_DATE.fullmatch(value):
+        if sep and key in wanted and _is_iso_date(value):
             dates.add(value)
     return sorted(dates, reverse=True)
+
+
+def _is_iso_date(value: str) -> bool:
+    if not _ISO_DATE.fullmatch(value):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def upload_directory(
