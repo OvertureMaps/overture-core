@@ -10,6 +10,7 @@ It contains:
 - `test_area` — helpers for a job's optional `test_area` param (a bbox or WKT polygon that scopes a dev/test run to a small region instead of the full planet).
 - `s3` — S3 credentials for Python clients (boto3, PyArrow) that need the same access as Spark's S3A, e.g. on Wherobots, where only S3A gets the storage-integration role.
 - `hadoop_fs` — small driver-side file operations (read, list, delete) through Spark's Hadoop FileSystem, so they use S3A's credentials.
+- `plan` — `plan_size` / `assert_plan_size` guards against runaway Spark query plans (see [Guarding plan size](#guarding-plan-size)).
 
 ## Writing a job
 
@@ -60,6 +61,28 @@ delete_prefix(spark, "s3://bucket/tmp/run-1/")
 ```
 
 `read_text` decodes UTF-8. `list_files` returns sorted, Hadoop-qualified URIs of every file under the URI, recursively (`s3://b/p` lists `s3a://b/p/...`, `/tmp/x` lists `file:/tmp/x/...`), or `[]` if it doesn't exist. `delete_prefix` deletes a path recursively, not a string prefix (`s3://b/tmp/run` leaves `tmp/run-2/`), and is a no-op if the URI doesn't exist. All three read `s3://` as `s3a://`. Every byte goes through the driver over py4j, so keep files small. On S3A, deleting the last object under a parent creates an empty directory marker for the parent (`parent/`).
+
+## Guarding plan size
+
+A plan that grows with the number of unions, joins or `withColumn` calls can kill the driver: Spark renders the whole plan as one string for the UI and event log, and past the JVM's ~2 GB array limit the driver OOMs, however small the data. Guard it in unit tests:
+
+```python
+from overture_spark.plan import assert_plan_size, plan_size
+
+# Raises PlanTooLargeError (an AssertionError) past the limit
+assert_plan_size(build_checks(df), max_chars=200_000)
+```
+
+`plan_size(df)` is the length of the analyzed plan string in UTF-16 code units (the JVM's `String.length`, so a non-BMP character counts as 2); the error message reports the measured size and the limit. When `spark.sql.maxPlanStringLength` truncates the string, `plan_size` recovers the true size from Spark's `... N more characters` suffix (or its `Truncated plan of N characters` message at caps of 30 or lower), so the guards work under any cap. Jobs can opt in to the same check before an expensive action such as the final write:
+
+```python
+self.check_plan_size(df, name="final output")  # logs a warning past 10M chars
+self.check_plan_size(df, max_chars=1_000_000, fail=True)  # raises PlanTooLargeError
+```
+
+Measuring renders the plan string on the driver, so it is never run automatically: call it once, not on every action.
+
+`getSparkSedonaSession` also defaults `spark.sql.maxPlanStringLength` to `100000000` (100M chars) when nothing has set it, to bound the plan string Spark renders for the UI and event log and reduce the risk of driver OOM. A cluster or `--conf` value is kept, and `extra_spark_conf={"spark.sql.maxPlanStringLength": "..."}` overrides it. Only the string is truncated, not the plan or the event log, so it doesn't fix plan growth. Its effect on a plan string over 2 GB is not validated.
 
 ## Testing locally
 

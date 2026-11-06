@@ -3,7 +3,7 @@ import sys
 import tempfile
 import unittest
 from importlib.machinery import ModuleSpec
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -211,7 +211,8 @@ class TestGetSparkSedonaSessionDatabricksNotebook(unittest.TestCase):
     ):
         import __main__ as _main
 
-        fake_spark = object()
+        fake_spark = MagicMock()
+        fake_spark.conf.get.return_value = None
         _main.spark = fake_spark
         try:
             result = getSparkSedonaSession(spark_platform=SparkPlatform.DATABRICKS)
@@ -220,6 +221,29 @@ class TestGetSparkSedonaSessionDatabricksNotebook(unittest.TestCase):
 
         mock_sedona_create.assert_called_once_with(fake_spark)
         self.assertIs(fake_spark, result)
+        fake_spark.conf.set.assert_called_once_with(
+            "spark.sql.maxPlanStringLength", MAX_PLAN_STRING_LENGTH
+        )
+
+    @patch("sedona.spark.SedonaContext.SedonaContext.create", side_effect=lambda s: s)
+    @patch(
+        "overture_spark.SparkPlatform.isRunningInDatabricksNotebook",
+        return_value=True,
+    )
+    def testNotebookKeepsExistingPlanStringLength(
+        self, _mock_notebook, _mock_sedona_create
+    ):
+        import __main__ as _main
+
+        fake_spark = MagicMock()
+        fake_spark.conf.get.return_value = "5000"
+        _main.spark = fake_spark
+        try:
+            getSparkSedonaSession(spark_platform=SparkPlatform.DATABRICKS)
+        finally:
+            del _main.spark
+
+        fake_spark.conf.set.assert_not_called()
 
 
 @pytest.mark.spark

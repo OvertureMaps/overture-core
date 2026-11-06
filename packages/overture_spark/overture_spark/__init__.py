@@ -34,6 +34,15 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 
+# Default cap on the plan string Spark renders for the UI and event log, to
+# reduce the risk of a runaway plan exhausting driver memory (Spark's own
+# default is effectively unlimited). Truncates only the string, not the plan.
+# Applied only when unset, so cluster/--conf values and extra_spark_conf win.
+# Well above normal plans so debugging output is intact.
+MAX_PLAN_STRING_LENGTH_KEY = "spark.sql.maxPlanStringLength"
+MAX_PLAN_STRING_LENGTH = "100000000"
+
+
 class PackageNotFoundError(Exception):
     def __init__(self, package_name):
         super().__init__(
@@ -259,6 +268,11 @@ def getSparkSedonaSession(
         for k, v in extra_spark_conf.items():
             builder.config(k, v)
         spark = builder.getOrCreate()
+
+    # A builder default would override launch-time (--conf / cluster) values,
+    # so fill the default in afterwards, only when nothing has set it.
+    if spark.conf.get(MAX_PLAN_STRING_LENGTH_KEY, None) is None:
+        spark.conf.set(MAX_PLAN_STRING_LENGTH_KEY, MAX_PLAN_STRING_LENGTH)
 
     spark = SedonaContext.create(spark)
     is_glue = spark_platform == SparkPlatform.GLUE
