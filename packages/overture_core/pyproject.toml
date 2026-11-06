@@ -83,10 +83,15 @@ sql-trino = [
 azure = [
     "azure-storage-blob>=12.0",
 ]
+# deflate64 imports inflate64 lazily; it's a compiled wheel that only consumers
+# reading Deflate64 zips need.
+deflate64 = [
+    "inflate64>=1.0.4",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
-    "overture-core[stac,azure,maproulette]",
+    "overture-core[stac,azure,maproulette,deflate64]",
     # Renders BBOX_WKT_JINJA in tests the way consumers' templating
     # engines (e.g. Airflow) would.
     "jinja2>=3.0",
