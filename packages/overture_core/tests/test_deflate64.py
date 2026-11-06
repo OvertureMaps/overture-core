@@ -120,7 +120,7 @@ def test_missing_extra_raises_and_leaves_zipfile_unpatched(monkeypatch):
     monkeypatch.setitem(sys.modules, "inflate64", None)
     stock = zipfile._get_decompressor
 
-    with pytest.raises(ImportError, match=r"overture-core\[deflate64\]") as info:
+    with pytest.raises(ImportError, match=r"overture-core\[compression\]") as info:
         enable_zipfile_deflate64()
 
     assert isinstance(info.value.__cause__, ModuleNotFoundError)

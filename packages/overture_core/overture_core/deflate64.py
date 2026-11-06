@@ -7,9 +7,9 @@ methods. :func:`enable_zipfile_deflate64` therefore wraps the private
 changes that function can break it. Only reading is patched: ``zipfile``
 still can't write Deflate64.
 
-``inflate64`` ships compiled wheels, so it's the optional ``deflate64`` extra
-(``overture-core[deflate64]``), imported lazily: importing this module needs
-only the standard library.
+``inflate64`` ships compiled wheels, so it's in the optional ``compression``
+extra (``overture-core[compression]``), imported lazily: importing this module
+needs only the standard library.
 """
 
 import zipfile
@@ -26,7 +26,7 @@ def enable_zipfile_deflate64() -> None:
     are no-ops.
 
     Raises:
-        ImportError: If the ``deflate64`` extra (``inflate64``) isn't installed.
+        ImportError: If the ``compression`` extra (``inflate64``) isn't installed.
     """
     if getattr(zipfile, "_overture_deflate64", False):
         return
@@ -35,8 +35,8 @@ def enable_zipfile_deflate64() -> None:
         import inflate64
     except ModuleNotFoundError as exc:
         raise ImportError(
-            "enable_zipfile_deflate64 requires the 'deflate64' extra: "
-            "install with `pip install 'overture-core[deflate64]'`"
+            "enable_zipfile_deflate64 requires the 'compression' extra: "
+            "install with `pip install 'overture-core[compression]'`"
         ) from exc
 
     class _Deflate64Decompressor:

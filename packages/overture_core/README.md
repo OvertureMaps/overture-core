@@ -21,7 +21,7 @@ Heavier dependencies are optional extras, so consumers on constrained runtimes (
 | `stac` | `stac.job.PublishStac`, `stac.catalog.build_release_catalog` (`stac.latest_release_job.LatestRelease` works without it) |
 | `azure` | `cloud.azure` |
 | `maproulette` | `apis.maproulette.MapRouletteClient` |
-| `deflate64` | `deflate64.enable_zipfile_deflate64` |
+| `compression` | `deflate64.enable_zipfile_deflate64` |
 | `sql-spark`, `sql-trino` | The SQL-engine test lanes only |
 
 `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path. Optional provider SDKs stay out of the base dependencies: add an extra and import the SDK lazily inside the helper.

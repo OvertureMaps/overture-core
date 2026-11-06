@@ -1197,7 +1197,7 @@ dependencies = [
 azure = [
     { name = "azure-storage-blob" },
 ]
-deflate64 = [
+compression = [
     { name = "inflate64" },
 ]
 dev = [
@@ -1236,11 +1236,11 @@ requires-dist = [
     { name = "databricks-sdk", marker = "extra == 'dev'", specifier = ">=0.20" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "geojson", marker = "extra == 'maproulette'", specifier = ">=3.3.0" },
-    { name = "inflate64", marker = "extra == 'deflate64'", specifier = ">=1.0.4" },
+    { name = "inflate64", marker = "extra == 'compression'", specifier = ">=1.0.4" },
     { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "maproulette", marker = "extra == 'maproulette'", specifier = ">=1.8.1" },
     { name = "moto", extras = ["s3"], marker = "extra == 'dev'", specifier = ">=5.1.5" },
-    { name = "overture-core", extras = ["azure", "deflate64", "maproulette", "stac"], marker = "extra == 'dev'" },
+    { name = "overture-core", extras = ["azure", "compression", "maproulette", "stac"], marker = "extra == 'dev'" },
     { name = "overture-dataset-configs", specifier = ">=1.0.0" },
     { name = "overture-serverless", directory = "../overture_serverless" },
     { name = "overture-stac", marker = "extra == 'stac'" },
@@ -1257,7 +1257,7 @@ requires-dist = [
     { name = "sqlglot", specifier = ">=30.15.0" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
-provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "azure", "deflate64", "dev"]
+provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "azure", "compression", "dev"]
 
 [[package]]
 name = "overture-dataset-configs"
