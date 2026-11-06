@@ -44,7 +44,10 @@ def enable_zipfile_deflate64() -> None:
             self._inflater = inflate64.Inflater()
 
         def decompress(self, data: bytes) -> bytes:
-            return self._inflater.inflate(data)
+            try:
+                return self._inflater.inflate(data)
+            except ValueError as exc:
+                raise zipfile.BadZipFile(f"Corrupt Deflate64 stream: {exc}") from exc
 
         @property
         def eof(self) -> bool:
