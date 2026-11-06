@@ -4,6 +4,7 @@ import datetime
 import logging
 import os
 import random
+import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from boto3.s3.transfer import TransferConfig
 # copies without saturating a task's network allocation.
 _MULTIPART_CHUNK_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_CONCURRENCY = 10
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 
 
 def _s3(client: Any) -> Any:
@@ -336,18 +339,23 @@ def put_object(
     body: bytes,
     content_type: str | None = None,
     *,
+    cache_control: str | None = None,
     client: Any = None,
 ) -> None:
     """Write *body* to ``bucket/key``, optionally setting *content_type*.
 
     Generalizes :func:`write_marker` (which always writes an empty body) to
     an arbitrary payload, the common case for writing a JSON or text
-    artifact rather than a zero-byte marker file.  *client* is an optional
-    boto3 S3 client to reuse; see `_s3`.
+    artifact rather than a zero-byte marker file.  *cache_control* sets the
+    object's ``Cache-Control`` header (e.g. ``"max-age=300"``), which S3
+    and CloudFront return on reads.  *client* is an optional boto3 S3
+    client to reuse; see `_s3`.
     """
     kwargs = {"Bucket": bucket, "Key": key, "Body": body}
     if content_type is not None:
         kwargs["ContentType"] = content_type
+    if cache_control is not None:
+        kwargs["CacheControl"] = cache_control
     _s3(client).put_object(**kwargs)
 
 
@@ -658,6 +666,34 @@ def list_common_prefixes(bucket: str, prefix: str, *, client: Any = None) -> lis
             if name and name != FOLDER_PLACEHOLDER:
                 names.append(name)
     return names
+
+
+def list_date_partitions(
+    bucket: str,
+    prefix: str,
+    *,
+    keys: tuple[str, ...] = ("ds",),
+    client: Any = None,
+) -> list[str]:
+    """List the dates of ``<key>=YYYY-MM-DD`` partitions one level under *prefix*.
+
+    Built on :func:`list_common_prefixes`, so *prefix* needs its trailing
+    ``/``.  A sub-prefix counts when its key is any of *keys* and its value
+    is a ``YYYY-MM-DD`` date; other names are ignored.  Dates found under
+    more than one key are returned once, newest first.
+
+    Example: for ``prefix="root/"`` with ``root/ds=2024-01-01/``,
+    ``root/version=2024-01-02/`` and ``root/latest/`` present,
+    ``keys=("version", "ds")`` returns ``["2024-01-02", "2024-01-01"]``.
+
+    *client* is an optional boto3 S3 client to reuse; see `_s3`.
+    """
+    dates: set[str] = set()
+    for name in list_common_prefixes(bucket, prefix, client=client):
+        key, sep, value = name.partition("=")
+        if sep and key in keys and _ISO_DATE.fullmatch(value):
+            dates.add(value)
+    return sorted(dates, reverse=True)
 
 
 def upload_directory(

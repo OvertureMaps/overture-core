@@ -20,6 +20,7 @@ from overture_core.cloud.aws.object import (
     get_object_with_etag,
     iter_keys,
     list_common_prefixes,
+    list_date_partitions,
     object_exists,
     object_last_modified,
     parse_s3_uri,
@@ -272,6 +273,32 @@ class TestPutObject:
             Body=b"{}",
             ContentType="application/json",
         )
+
+    def test_writes_body_with_cache_control(self):
+        s3 = MagicMock()
+        with patch("overture_core.cloud.aws.object.boto3.client", return_value=s3):
+            put_object("bucket", "key", b"{}", cache_control="max-age=300")
+        s3.put_object.assert_called_once_with(
+            Bucket="bucket", Key="key", Body=b"{}", CacheControl="max-age=300"
+        )
+
+    def test_headers_round_trip_on_s3(self, moto_s3):
+        moto_s3.create_bucket(Bucket="bucket")
+        put_object(
+            "bucket",
+            "index.json",
+            b"{}",
+            "application/json",
+            cache_control="max-age=300",
+            client=moto_s3,
+        )
+        put_object("bucket", "plain", b"x", client=moto_s3)
+
+        head = moto_s3.head_object(Bucket="bucket", Key="index.json")
+        assert head["ContentType"] == "application/json"
+        assert head["CacheControl"] == "max-age=300"
+        assert "CacheControl" not in moto_s3.head_object(Bucket="bucket", Key="plain")
+        assert get_object_bytes("bucket", "index.json", client=moto_s3) == b"{}"
 
 
 def _conflict_error(code="PreconditionFailed"):
@@ -626,6 +653,50 @@ class TestListCommonPrefixes:
         assert names == ["real"]
 
 
+class TestListDatePartitions:
+    @pytest.fixture()
+    def s3(self, moto_s3):
+        moto_s3.create_bucket(Bucket="bucket")
+        for key in [
+            "root/ds=2024-01-01/success",
+            "root/ds=2024-03-01/data/part-0.parquet",
+            "root/ds=2024-02-01/success",
+            "root/version=2024-02-01/success",
+            "root/version=2024-04-01/success",
+            "root/ds=latest/success",
+            "root/ds=2024-1-5/success",
+            "root/ds=2024-01-01T00:00/success",
+            "root/dt=2024-05-01/success",
+            "root/2024-06-01/success",
+            "root/index.json",
+            "root/nested/ds=2024-07-01/success",
+            "other/ds=2024-08-01/success",
+        ]:
+            moto_s3.put_object(Bucket="bucket", Key=key, Body=b"")
+        return moto_s3
+
+    def test_defaults_to_ds_newest_first(self, s3):
+        assert list_date_partitions("bucket", "root/", client=s3) == [
+            "2024-03-01",
+            "2024-02-01",
+            "2024-01-01",
+        ]
+
+    def test_merges_and_deduplicates_keys(self, s3):
+        assert list_date_partitions(
+            "bucket", "root/", keys=("version", "ds"), client=s3
+        ) == ["2024-04-01", "2024-03-01", "2024-02-01", "2024-01-01"]
+
+    def test_only_the_given_keys(self, s3):
+        assert list_date_partitions(
+            "bucket", "root/", keys=("version",), client=s3
+        ) == ["2024-04-01", "2024-02-01"]
+
+    def test_empty_when_nothing_matches(self, s3):
+        assert list_date_partitions("bucket", "missing/", client=s3) == []
+        assert list_date_partitions("bucket", "root/", keys=(), client=s3) == []
+
+
 class TestUploadDirectory:
     @pytest.fixture()
     def s3_client(self):
@@ -674,6 +745,7 @@ class TestExplicitClient:
             lambda c: prefix_exists("bucket", "prefix/", client=c),
             lambda c: list(iter_keys("bucket", "prefix/", client=c)),
             lambda c: list_common_prefixes("bucket", "prefix/", client=c),
+            lambda c: list_date_partitions("bucket", "prefix/", client=c),
             lambda c: delete_object("bucket", "key", client=c),
             lambda c: write_marker("bucket", "key", client=c),
             lambda c: get_object_bytes("bucket", "key", client=c),
@@ -687,6 +759,7 @@ class TestExplicitClient:
             "prefix_exists",
             "iter_keys",
             "list_common_prefixes",
+            "list_date_partitions",
             "delete_object",
             "write_marker",
             "get_object_bytes",
