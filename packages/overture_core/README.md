@@ -21,6 +21,7 @@ Heavier dependencies are optional extras, so consumers on constrained runtimes (
 | `stac` | `stac.job.PublishStac`, `stac.catalog.build_release_catalog` (`stac.latest_release_job.LatestRelease` works without it) |
 | `azure` | `cloud.azure` |
 | `maproulette` | `apis.maproulette.MapRouletteClient` |
+| `compression` | `deflate64.enable_zipfile_deflate64` |
 | `sql-spark`, `sql-trino` | The SQL-engine test lanes only |
 
 `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path. Optional provider SDKs stay out of the base dependencies: add an extra and import the SDK lazily inside the helper.
@@ -49,6 +50,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
 | `apis` | Clients for third-party HTTP APIs, one module per vendor (`apis.tomtom`, `apis.maproulette`, and `apis.github`, which mints GitHub App installation tokens from a PEM in Secrets Manager; see the [reference doc](https://github.com/OvertureMaps/omf-github-terraform/blob/main/docs/github-app-tokens.md)). Anything that's not a cloud platform but still an external service belongs here. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
+| `deflate64` | Letting the stdlib `zipfile` read Deflate64 (method 9) archives, such as Windows-built vendor zips, which it otherwise rejects. Patches `zipfile` process-wide. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac` | STAC catalog reads/writes and the jobs that publish them (see [Jobs](#jobs)). |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |

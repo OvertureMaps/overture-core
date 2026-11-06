@@ -83,10 +83,16 @@ sql-trino = [
 azure = [
     "azure-storage-blob>=12.0",
 ]
+# Compression codecs the stdlib doesn't ship, imported lazily by the module
+# that needs each one. inflate64 (used by deflate64) is a compiled wheel that
+# only consumers reading Deflate64 zips need.
+compression = [
+    "inflate64>=1.0.4",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
-    "overture-core[stac,azure,maproulette]",
+    "overture-core[stac,azure,maproulette,compression]",
     # Renders BBOX_WKT_JINJA in tests the way consumers' templating
     # engines (e.g. Airflow) would.
     "jinja2>=3.0",
