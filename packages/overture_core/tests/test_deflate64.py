@@ -80,6 +80,10 @@ def test_zipfile_reads_deflate64_entry(deflate64_zip: Path):
     with zipfile.ZipFile(deflate64_zip) as zf:
         with zf.open("TXT/NAD_r24.txt") as f:
             assert f.read() == PAYLOAD
+        chunk_size = zipfile.ZipExtFile.MIN_READ_SIZE
+        assert zf.getinfo("TXT/NAD_r24.txt").compress_size > chunk_size
+        with zf.open("TXT/NAD_r24.txt") as f:
+            assert b"".join(iter(lambda: f.read(chunk_size), b"")) == PAYLOAD
         assert zf.read("NationalAddressDatabaseMetadata.xml") == SMALL
 
 
