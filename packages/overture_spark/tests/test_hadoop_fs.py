@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from overture_spark.hadoop_fs import delete_prefix, list_files, read_text
+from overture_spark.hadoop_fs import delete_prefix, list_files, read_json, read_text
 
 try:
     import pyspark  # noqa: F401
@@ -51,6 +51,23 @@ def test_read_text_larger_than_copy_buffer(spark, tmp_path: Path):
     f.write_text(text, encoding="utf-8")
 
     assert read_text(spark, str(f)) == text
+
+
+@pytest.mark.spark
+@needs_spark
+def test_read_json(spark, tmp_path: Path):
+    f = tmp_path / "doc.json"
+    f.write_text('{"k": [1, 2], "ü": "v"}', encoding="utf-8")
+
+    assert read_json(spark, str(f)) == {"k": [1, 2], "ü": "v"}
+
+
+def test_read_json_parses_read_text(monkeypatch):
+    monkeypatch.setattr(
+        "overture_spark.hadoop_fs.read_text", lambda spark, uri: '{"uri": "%s"}' % uri
+    )
+
+    assert read_json(None, "s3://b/k.json") == {"uri": "s3://b/k.json"}
 
 
 @pytest.mark.spark

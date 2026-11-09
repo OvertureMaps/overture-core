@@ -50,6 +50,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `pypi` | Provider-agnostic PyPI package download/publish helpers, usable against any index. |
 | `apis` | Clients for third-party HTTP APIs, one module per vendor (`apis.tomtom`, `apis.maproulette`, and `apis.github`, which mints GitHub App installation tokens from a PEM in Secrets Manager; see the [reference doc](https://github.com/OvertureMaps/omf-github-terraform/blob/main/docs/github-app-tokens.md)). Anything that's not a cloud platform but still an external service belongs here. |
 | `urls` | Generic URL string utilities not tied to any specific service or cloud provider. |
+| `file_io` | Stdlib-only file readers (CSV, TSV, JSON). Currently reads data files shipped inside a Python package, including from a zipped wheel. No Spark or pandas, so usable in UDF setup on workers. |
 | `deflate64` | Letting the stdlib `zipfile` read Deflate64 (method 9) archives, such as Windows-built vendor zips, which it otherwise rejects. Patches `zipfile` process-wide. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
 | `stac` | STAC catalog reads/writes and the jobs that publish them (see [Jobs](#jobs)). |
