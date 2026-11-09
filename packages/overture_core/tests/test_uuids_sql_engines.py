@@ -61,8 +61,8 @@ class TestTrinoEngine:
     the trinodb/trino service container the sql-engines CI workflow runs).
     """
 
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def cursor(cls):
         from trino.dbapi import connect
 
