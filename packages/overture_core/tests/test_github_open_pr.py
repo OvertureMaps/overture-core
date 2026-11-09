@@ -42,7 +42,6 @@ def repo():
     r.get_branch.return_value.commit.sha = "base-sha"
     r.get_git_ref.side_effect = GithubException(404, {}, None)
     r.get_pulls.return_value = []
-    r.get_git_tree.return_value.raw_data = {}
     r.get_git_tree.return_value.tree = []
     r.create_pull.return_value.html_url = PR_URL
     r.create_git_tree.return_value.sha = "new-tree"
@@ -372,3 +371,27 @@ def test_open_pr_updates_existing_pr_even_without_diff(repo, bot):
     repo.get_pulls.return_value = [mock.MagicMock(html_url="u")]
 
     assert _call(repo, bot) == "u"
+
+
+def test_commit_preserves_mode_in_subdirectory(repo, bot):
+    sub = mock.MagicMock(path="bin", type="tree", sha="sub-sha")
+    script = mock.MagicMock(path="run.sh", mode="100755")
+    repo.get_git_tree.side_effect = lambda sha: mock.MagicMock(
+        tree=[script] if sha == "sub-sha" else [sub]
+    )
+    ref = mock.MagicMock()
+    ref.object.sha = "head"
+
+    commit_files(repo, ref, bot, {"bin/run.sh": "x"}, "m")
+
+    elements = repo.create_git_tree.call_args.args[0]
+    assert elements[0]._identity["mode"] == "100755"
+
+
+def test_commit_checks_expected_head_against_refreshed_ref(repo, bot):
+    ref = mock.MagicMock()
+    ref.object.sha = "stale"
+    ref.update.side_effect = lambda: setattr(ref.object, "sha", "newer")
+
+    with pytest.raises(RuntimeError, match="found newer"):
+        commit_files(repo, ref, bot, {"a": "A"}, "m", expected_head="stale")

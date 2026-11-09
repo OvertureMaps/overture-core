@@ -288,6 +288,26 @@ def ensure_branch(
     return ref
 
 
+def _file_mode(repo: Repository, tree_sha: str, path: str) -> str | None:
+    """Return the git mode of ``path`` under ``tree_sha``, or None if absent.
+
+    Walks one directory level at a time instead of a recursive listing, which
+    GitHub truncates on large trees.
+    """
+
+    def find(sha: str, name: str):
+        return next((e for e in repo.get_git_tree(sha).tree if e.path == name), None)
+
+    *dirs, name = path.split("/")
+    for part in dirs:
+        entry = find(tree_sha, part)
+        if entry is None or entry.type != "tree":
+            return None
+        tree_sha = entry.sha
+    entry = find(tree_sha, name)
+    return entry.mode if entry else None
+
+
 def commit_files(
     repo: Repository,
     ref: GitRef,
@@ -306,23 +326,20 @@ def commit_files(
     Raises:
         RuntimeError: ``expected_head`` no longer matches the branch tip.
     """
+    ref.update()
     if expected_head is not None and ref.object.sha != expected_head:
         raise RuntimeError(
             f"{ref.ref} moved: expected {expected_head}, found {ref.object.sha}."
         )
     author, signoff = bot_author(bot)
     head = repo.get_git_commit(ref.object.sha)
-    # Keep existing modes (e.g. 100755) so rewriting a script isn't a mode change.
-    existing = repo.get_git_tree(head.tree.sha, recursive=True)
-    if existing.raw_data.get("truncated"):
-        log.warning(
-            "Tree of %s is truncated; new files default to mode 100644", ref.ref
-        )
-    modes = {e.path: e.mode for e in existing.tree}
     tree = repo.create_git_tree(
         [
             InputGitTreeElement(
-                path, modes.get(path, "100644"), "blob", content=content
+                path,
+                _file_mode(repo, head.tree.sha, path) or "100644",
+                "blob",
+                content=content,
             )
             for path, content in files.items()
         ],
