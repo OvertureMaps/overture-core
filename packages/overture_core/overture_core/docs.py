@@ -101,15 +101,12 @@ def update_docs_for_release(
     config_updated = FALLBACK_PATTERN.sub(rf"\g<1>{release_version}\2", config_current)
     config_changed = config_updated != config_current
 
-    if not attr_changed and not config_changed:
-        log.info("No docs changes needed for %s", release_version)
-        return "No docs changes detected, skipping PR."
-
-    files = {}
-    if attr_changed:
-        files[attribution_path] = attribution_body
-    if config_changed:
-        files[config_path] = config_updated
+    # Always pass both desired files: open_pr reconciles a branch reused on retry,
+    # and returns None if the result matches the base branch.
+    files = {
+        attribution_path: attribution_body if attr_changed else attr_current,
+        config_path: config_updated,
+    }
 
     url = open_pr(
         repo,
@@ -127,4 +124,7 @@ def update_docs_for_release(
         base=base_branch,
         draft=False,
     )
+    if url is None:
+        log.info("No docs changes needed for %s", release_version)
+        return "No docs changes detected, skipping PR."
     return f"PR created: {url}"

@@ -119,6 +119,7 @@ class TestNoChangesNeeded:
         self, fake_boto3_client, fake_s3, fake_github
     ):
         _, repo, open_pr = fake_github
+        open_pr.return_value = None
         attribution = "same body"
         fake_s3.get_object.return_value = {
             "Body": mock.MagicMock(read=lambda: attribution.encode())
@@ -132,7 +133,10 @@ class TestNoChangesNeeded:
             "bucket", "key", "2024-01-01.0", **_DEFAULT_KWARGS
         )
         assert result == "No docs changes detected, skipping PR."
-        open_pr.assert_not_called()
+        assert open_pr.call_args.kwargs["files"] == {
+            "docs/_generated_attribution.mdx": attribution,
+            "docusaurus.config.js": "const fallback = '2024-01-01.0';",
+        }
 
 
 class TestMissingFallbackPattern:
@@ -182,12 +186,16 @@ class TestOpensPullRequest:
         assert "Updated attribution page" in kwargs["body"]
         assert "Updated fallback release version" in kwargs["body"]
 
-    def test_only_includes_changed_files(self, fake_boto3_client, fake_s3, fake_github):
+    def test_unchanged_file_keeps_current_content(
+        self, fake_boto3_client, fake_s3, fake_github
+    ):
         _, repo, open_pr = fake_github
         self._run(
             fake_s3, repo, "old attribution body", "const fallback = '2024-08-01.0';"
         )
 
         kwargs = open_pr.call_args.kwargs
-        assert list(kwargs["files"]) == ["docs/_generated_attribution.mdx"]
+        assert kwargs["files"]["docusaurus.config.js"] == (
+            "const fallback = \x272024-08-01.0\x27;"
+        )
         assert "Updated fallback release version" not in kwargs["body"]

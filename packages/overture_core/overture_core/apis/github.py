@@ -312,9 +312,18 @@ def commit_files(
         )
     author, signoff = bot_author(bot)
     head = repo.get_git_commit(ref.object.sha)
+    # Keep existing modes (e.g. 100755) so rewriting a script isn't a mode change.
+    existing = repo.get_git_tree(head.tree.sha, recursive=True)
+    if existing.raw_data.get("truncated"):
+        log.warning(
+            "Tree of %s is truncated; new files default to mode 100644", ref.ref
+        )
+    modes = {e.path: e.mode for e in existing.tree}
     tree = repo.create_git_tree(
         [
-            InputGitTreeElement(path, "100644", "blob", content=content)
+            InputGitTreeElement(
+                path, modes.get(path, "100644"), "blob", content=content
+            )
             for path, content in files.items()
         ],
         base_tree=head.tree,
@@ -397,7 +406,7 @@ def open_pr(
     base: str | None = None,
     draft: bool = True,
     branch_mode: Literal["reuse", "reset", "recreate"] = "reuse",
-) -> str:
+) -> str | None:
     """Commit ``files`` to ``branch`` and open (or update) a PR; return its URL.
 
     Safe to rerun. Composes :func:`ensure_branch` and :func:`commit_files`
@@ -405,6 +414,13 @@ def open_pr(
     open PR for the branch gets its title and body updated instead of a
     duplicate being opened. Callers needing a different PR policy (e.g.
     refusing to reopen a closed PR) should use the building blocks directly.
+
+    Pass the full desired content of every file, not just those that differ
+    from ``base``, so a reused branch is reconciled with it.
+
+    Returns:
+        The PR URL, or ``None`` when there is no open PR and the branch has no
+        changes against ``base`` (nothing to propose).
 
     Args:
         repo: Target repository.
@@ -425,6 +441,10 @@ def open_pr(
         pr.edit(title=title, body=body)
         log.info("Updated existing PR: %s", pr.html_url)
         return pr.html_url
+
+    if not repo.compare(base, branch).files:
+        log.info("Branch %s has no changes against %s; no PR opened", branch, base)
+        return None
 
     pr = repo.create_pull(title=title, body=body, head=branch, base=base, draft=draft)
     log.info("Created PR: %s", pr.html_url)

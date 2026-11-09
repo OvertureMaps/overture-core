@@ -42,6 +42,8 @@ def repo():
     r.get_branch.return_value.commit.sha = "base-sha"
     r.get_git_ref.side_effect = GithubException(404, {}, None)
     r.get_pulls.return_value = []
+    r.get_git_tree.return_value.raw_data = {}
+    r.get_git_tree.return_value.tree = []
     r.create_pull.return_value.html_url = PR_URL
     r.create_git_tree.return_value.sha = "new-tree"
     r.get_git_commit.return_value.tree.sha = "old-tree"
@@ -343,3 +345,30 @@ def test_open_pr_branch_mode_is_forwarded(repo, bot):
     repo.get_git_ref.return_value = ref
     _call(repo, bot, branch_mode="reset")
     ref.edit.assert_any_call("base-sha", force=True)
+
+
+def test_commit_preserves_existing_file_mode(repo, bot):
+    repo.get_git_tree.return_value.tree = [mock.MagicMock(path="run.sh", mode="100755")]
+    ref = mock.MagicMock()
+    ref.object.sha = "head"
+
+    commit_files(repo, ref, bot, {"run.sh": "#!/bin/sh", "new.txt": "x"}, "m")
+
+    elements = repo.create_git_tree.call_args.args[0]
+    assert [e._identity["mode"] for e in elements] == ["100755", "100644"]
+
+
+def test_open_pr_returns_none_when_nothing_to_propose(repo, bot):
+    repo.compare.return_value.files = []
+
+    assert _call(repo, bot) is None
+
+    repo.compare.assert_called_once_with("main", "feature")
+    repo.create_pull.assert_not_called()
+
+
+def test_open_pr_updates_existing_pr_even_without_diff(repo, bot):
+    repo.compare.return_value.files = []
+    repo.get_pulls.return_value = [mock.MagicMock(html_url="u")]
+
+    assert _call(repo, bot) == "u"
