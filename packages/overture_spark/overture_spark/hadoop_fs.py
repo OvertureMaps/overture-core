@@ -11,7 +11,8 @@ copies every byte through the driver. For Python clients on workers, see
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -36,6 +37,11 @@ def read_text(spark: SparkSession, uri: str) -> str:
     # close=True closes both streams, including on failure.
     jvm.org.apache.hadoop.io.IOUtils.copyBytes(fs.open(path), buf, 65536, True)
     return buf.toString("UTF-8")
+
+
+def read_json(spark: SparkSession, uri: str) -> Any:
+    """The JSON document at ``uri``, parsed. Errors as in `read_text`."""
+    return json.loads(read_text(spark, uri))
 
 
 def write_text(spark: SparkSession, uri: str, text: str) -> None:
