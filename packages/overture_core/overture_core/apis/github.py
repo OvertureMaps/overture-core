@@ -11,7 +11,7 @@ suppressed, so the PEM and tokens never reach logs or tracebacks.
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from botocore.exceptions import ClientError
 from github import (
@@ -22,6 +22,7 @@ from github import (
     InputGitAuthor,
     InputGitTreeElement,
 )
+from github.Issue import Issue
 from github.NamedUser import NamedUser
 from github.Repository import Repository
 
@@ -126,6 +127,71 @@ def get_github_client(
     )
 
 
+def get_app_bot(gh: Github, app_slug: str) -> NamedUser:
+    """Return the bot user of the GitHub App ``app_slug`` (e.g. ``my-app``)."""
+    return gh.get_user(f"{app_slug}[bot]")
+
+
+def bot_identity(bot: NamedUser) -> tuple[str, str]:
+    """Return the ``(name, email)`` to use as commit author and sign-off.
+
+    cncf/dco2 fails a PR whose ``Signed-off-by`` email differs from the commit
+    author email, so both sides must use this one identity.
+    """
+    return bot.name or bot.login, f"{bot.id}+{bot.login}@users.noreply.github.com"
+
+
+def truncate_for_github(text: str | None, max_chars: int = 60000) -> str | None:
+    """Keep the tail of ``text`` within GitHub's ~65k char comment body limit."""
+    if not text or len(text) <= max_chars:
+        return text
+    return "...(truncated)\n" + text[-max_chars:]
+
+
+def find_open_issue(gh: Github, repo: Repository, title: str) -> Issue | None:
+    """Return the open issue in ``repo`` whose title is exactly ``title``.
+
+    Matches on title only, not labels: label automation can replace labels
+    after triage, and filtering on them would duplicate triaged issues.
+    """
+    escaped = title.replace('"', " ")
+    query = f'is:issue is:open in:title repo:{repo.full_name} "{escaped}"'
+    for issue in gh.search_issues(query=query):
+        if issue.title == title and issue.state == "open":
+            return issue
+    return None
+
+
+def open_or_comment_issue(
+    gh: Github,
+    repo: Repository,
+    title: str,
+    body: str,
+    comment: str | Callable[[Issue], str] | None = None,
+    labels: Sequence[str] = (),
+) -> str:
+    """Open an issue titled ``title``, or comment on the open one; return its URL.
+
+    Args:
+        gh: Client used for the search API.
+        repo: Target repository.
+        title: Issue title; also the dedupe key (exact match among open issues).
+        body: Body for a newly created issue.
+        comment: Comment for an existing issue: text, or a callable given the
+            issue (e.g. to number occurrences). Defaults to ``body``.
+        labels: Labels applied only when creating the issue.
+    """
+    issue = find_open_issue(gh, repo, title)
+    if issue is None:
+        issue = repo.create_issue(title=title, body=body, labels=list(labels))
+        log.info("Created issue: %s", issue.html_url)
+    else:
+        text = comment(issue) if callable(comment) else comment or body
+        issue.create_comment(text)
+        log.info("Commented on issue: %s", issue.html_url)
+    return issue.html_url
+
+
 def open_pr(
     repo: Repository,
     bot: NamedUser,
@@ -155,8 +221,7 @@ def open_pr(
         draft: Open a newly created PR as a draft.
     """
     base = base or repo.default_branch
-    bot_name = bot.name or bot.login
-    bot_email = f"{bot.id}+{bot.login}@users.noreply.github.com"
+    bot_name, bot_email = bot_identity(bot)
     author = InputGitAuthor(bot_name, bot_email)
 
     try:

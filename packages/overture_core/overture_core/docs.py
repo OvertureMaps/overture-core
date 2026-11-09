@@ -78,7 +78,7 @@ def update_docs_for_release(
     # Deferred so importing this module doesn't require PyGithub's transitive
     # deps to be resolvable in every environment that just needs the rest of
     # overture_core.
-    from overture_core.apis.github import get_github_client, open_pr
+    from overture_core.apis.github import get_app_bot, get_github_client, open_pr
 
     gh = get_github_client(
         pem_secret_name,
@@ -113,7 +113,7 @@ def update_docs_for_release(
 
     url = open_pr(
         repo,
-        gh.get_user(f"{app_slug}[bot]"),
+        get_app_bot(gh, app_slug),
         branch=f"release-update-{release_version}",
         files=files,
         title=f"[DOCS] Update docs for release {release_version}",

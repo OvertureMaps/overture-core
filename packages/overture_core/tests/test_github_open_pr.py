@@ -5,7 +5,13 @@ from unittest import mock
 import pytest
 from github import GithubException
 
-from overture_core.apis.github import open_pr
+from overture_core.apis.github import (
+    bot_identity,
+    get_app_bot,
+    open_or_comment_issue,
+    open_pr,
+    truncate_for_github,
+)
 
 PR_URL = "https://github.com/o/r/pull/1"
 
@@ -117,3 +123,61 @@ def test_non_404_ref_error_is_reraised(repo, bot):
     with pytest.raises(GithubException):
         _call(repo, bot)
     repo.create_pull.assert_not_called()
+
+
+def test_bot_identity_uses_name_then_login(bot):
+    assert bot_identity(bot) == (
+        "Test App",
+        "999+test-app[bot]@users.noreply.github.com",
+    )
+    bot.name = None
+    assert bot_identity(bot)[0] == "test-app[bot]"
+
+
+def test_get_app_bot_appends_bot_suffix():
+    gh = mock.MagicMock()
+    assert get_app_bot(gh, "my-app") is gh.get_user.return_value
+    gh.get_user.assert_called_once_with("my-app[bot]")
+
+
+def test_truncate_for_github():
+    assert truncate_for_github(None) is None
+    assert truncate_for_github("short", 10) == "short"
+    assert truncate_for_github("x" * 5 + "tail", 4) == "...(truncated)\ntail"
+
+
+class TestOpenOrCommentIssue:
+    @pytest.fixture
+    def gh(self):
+        g = mock.MagicMock()
+        g.search_issues.return_value = []
+        return g
+
+    def test_creates_issue_when_none_open(self, gh, repo):
+        repo.full_name = "o/r"
+        url = open_or_comment_issue(gh, repo, "T", "B", labels=("bug",))
+
+        assert url == repo.create_issue.return_value.html_url
+        repo.create_issue.assert_called_once_with(title="T", body="B", labels=["bug"])
+        assert 'repo:o/r "T"' in gh.search_issues.call_args.kwargs["query"]
+
+    def test_comments_on_exact_title_match_only(self, gh, repo):
+        near = mock.MagicMock(title="T extra", state="open")
+        exact = mock.MagicMock(title="T", state="open", html_url="u")
+        gh.search_issues.return_value = [near, exact]
+
+        assert open_or_comment_issue(gh, repo, "T", "B", comment="C") == "u"
+
+        exact.create_comment.assert_called_once_with("C")
+        near.create_comment.assert_not_called()
+        repo.create_issue.assert_not_called()
+
+    def test_comment_defaults_to_body_and_accepts_callable(self, gh, repo):
+        issue = mock.MagicMock(title="T", state="open", number=7)
+        gh.search_issues.return_value = [issue]
+
+        open_or_comment_issue(gh, repo, "T", "B")
+        issue.create_comment.assert_called_with("B")
+
+        open_or_comment_issue(gh, repo, "T", "B", comment=lambda i: f"#{i.number}")
+        issue.create_comment.assert_called_with("#7")
