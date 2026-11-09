@@ -19,6 +19,7 @@ _FILES = {
     "sub/lookup.tsv": "a\tb\nx\ty\n",
     "sub/data.json": json.dumps({"k": [1, 2], "ü": "v"}),
     "bom.csv": "\ufeffid,name\n1,one\n",
+    "bom.json": '\ufeff{"k": 1}',
     "short.csv": "a,b\n1\n",
     "multiline.csv": 'id,note\r\n1,"a\r\nb"\r\n2,"c\nd"\r\n',
 }
@@ -93,8 +94,24 @@ def test_read_package_json(pkg):
     assert read_package_json("sub/data.json", pkg) == {"k": [1, 2], "ü": "v"}
 
 
+def test_read_package_json_strips_bom(pkg):
+    assert read_package_json("bom.json", pkg) == {"k": 1}
+
+
 def test_read_package_text(pkg):
-    assert read_package_text("lookup.csv", pkg).startswith("country,alias,code\n")
+    assert read_package_text("lookup.csv", pkg) == _FILES["lookup.csv"]
+
+
+def test_read_package_text_preserves_line_endings(pkg):
+    assert read_package_text("multiline.csv", pkg) == _FILES["multiline.csv"]
+
+
+def test_read_package_text_strips_bom_by_default(pkg):
+    assert read_package_text("bom.csv", pkg) == "id,name\n1,one\n"
+
+
+def test_read_package_text_explicit_encoding_keeps_bom(pkg):
+    assert read_package_text("bom.csv", pkg, encoding="utf-8") == _FILES["bom.csv"]
 
 
 def test_missing_resource_raises(pkg):
