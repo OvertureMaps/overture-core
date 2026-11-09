@@ -13,12 +13,6 @@ from botocore.exceptions import ClientError
 from overture_core.docs import update_docs_for_release
 
 
-class _FakeGithubException(Exception):
-    def __init__(self, status, data=None):
-        super().__init__(data)
-        self.status = status
-
-
 def _no_such_key_error() -> ClientError:
     return ClientError(
         {
@@ -72,9 +66,7 @@ def fake_boto3_client(fake_s3, fake_secretsmanager):
 
 @pytest.fixture
 def fake_repo():
-    repo = mock.MagicMock()
-    repo.get_git_ref.side_effect = _FakeGithubException(404)
-    return repo
+    return mock.MagicMock()
 
 
 @pytest.fixture
@@ -91,10 +83,12 @@ def fake_github(fake_repo):
         mock.patch(
             "overture_core.apis.github.get_github_client", return_value=gh_instance
         ),
-        mock.patch("github.InputGitAuthor", side_effect=lambda n, e: (n, e)),
-        mock.patch("github.GithubException", _FakeGithubException),
+        mock.patch(
+            "overture_core.apis.github.open_pr",
+            return_value="https://github.com/OvertureMaps/docs/pull/1",
+        ) as open_pr,
     ):
-        yield gh_instance, fake_repo
+        yield gh_instance, fake_repo, open_pr
 
 
 def _contents(text: str, sha: str = "sha1"):
@@ -124,7 +118,8 @@ class TestNoChangesNeeded:
     def test_returns_skip_message_when_nothing_changed(
         self, fake_boto3_client, fake_s3, fake_github
     ):
-        _, repo = fake_github
+        _, repo, open_pr = fake_github
+        open_pr.return_value = None
         attribution = "same body"
         fake_s3.get_object.return_value = {
             "Body": mock.MagicMock(read=lambda: attribution.encode())
@@ -138,14 +133,17 @@ class TestNoChangesNeeded:
             "bucket", "key", "2024-01-01.0", **_DEFAULT_KWARGS
         )
         assert result == "No docs changes detected, skipping PR."
-        repo.create_pull.assert_not_called()
+        assert open_pr.call_args.kwargs["files"] == {
+            "docs/_generated_attribution.mdx": attribution,
+            "docusaurus.config.js": "const fallback = '2024-01-01.0';",
+        }
 
 
 class TestMissingFallbackPattern:
     def test_raises_value_error_when_pattern_not_found(
         self, fake_boto3_client, fake_s3, fake_github
     ):
-        _, repo = fake_github
+        _, repo, open_pr = fake_github
         fake_s3.get_object.return_value = {
             "Body": mock.MagicMock(read=lambda: b"new attribution body")
         }
@@ -158,89 +156,46 @@ class TestMissingFallbackPattern:
 
 
 class TestOpensPullRequest:
-    def test_creates_pr_with_both_changes(
-        self, fake_boto3_client, fake_s3, fake_github
-    ):
-        _, repo = fake_github
+    def _run(self, fake_s3, repo, attr_old, config_old, version="2024-08-01.0"):
         fake_s3.get_object.return_value = {
             "Body": mock.MagicMock(read=lambda: b"new attribution body")
         }
-        repo.get_contents.side_effect = [
-            _contents("old attribution body"),
-            _contents("const fallback = '2024-01-01.0';"),
-        ]
-        repo.create_pull.return_value = mock.MagicMock(
-            html_url="https://github.com/OvertureMaps/docs/pull/1"
-        )
+        repo.get_contents.side_effect = [_contents(attr_old), _contents(config_old)]
+        return update_docs_for_release("bucket", "key", version, **_DEFAULT_KWARGS)
 
-        result = update_docs_for_release(
-            "bucket", "key", "2024-08-01.0", **_DEFAULT_KWARGS
+    def test_delegates_both_changes_to_open_pr(
+        self, fake_boto3_client, fake_s3, fake_github
+    ):
+        gh, repo, open_pr = fake_github
+        result = self._run(
+            fake_s3, repo, "old attribution body", "const fallback = '2024-01-01.0';"
         )
 
         assert result == "PR created: https://github.com/OvertureMaps/docs/pull/1"
-        assert repo.update_file.call_count == 2
-        repo.create_git_ref.assert_called_once()
-        create_pull_kwargs = repo.create_pull.call_args.kwargs
-        assert "2024-08-01.0" in create_pull_kwargs["title"]
-        assert "Updated attribution page" in create_pull_kwargs["body"]
-        assert "Updated fallback release version" in create_pull_kwargs["body"]
+        args, kwargs = open_pr.call_args
+        assert args == (repo, gh.get_user.return_value)
+        gh.get_user.assert_called_once_with("test-app[bot]")
+        assert kwargs["branch"] == "release-update-2024-08-01.0"
+        assert kwargs["files"] == {
+            "docs/_generated_attribution.mdx": "new attribution body",
+            "docusaurus.config.js": "const fallback = '2024-08-01.0';",
+        }
+        assert kwargs["base"] == "main"
+        assert kwargs["draft"] is False
+        assert "2024-08-01.0" in kwargs["title"]
+        assert "Updated attribution page" in kwargs["body"]
+        assert "Updated fallback release version" in kwargs["body"]
 
-    def test_deletes_stale_branch_from_prior_run(
+    def test_unchanged_file_keeps_current_content(
         self, fake_boto3_client, fake_s3, fake_github
     ):
-        _, repo = fake_github
-        stale_ref = mock.MagicMock()
-        repo.get_git_ref.side_effect = None
-        repo.get_git_ref.return_value = stale_ref
-        fake_s3.get_object.return_value = {
-            "Body": mock.MagicMock(read=lambda: b"new attribution body")
-        }
-        repo.get_contents.side_effect = [
-            _contents("old attribution body"),
-            _contents("const fallback = '2024-01-01.0';"),
-        ]
-        repo.create_pull.return_value = mock.MagicMock(
-            html_url="https://github.com/OvertureMaps/docs/pull/2"
+        _, repo, open_pr = fake_github
+        self._run(
+            fake_s3, repo, "old attribution body", "const fallback = '2024-08-01.0';"
         )
 
-        update_docs_for_release("bucket", "key", "2024-08-01.0", **_DEFAULT_KWARGS)
-
-        stale_ref.delete.assert_called_once()
-
-    def test_reraises_non_404_github_exception_from_get_git_ref(
-        self, fake_boto3_client, fake_s3, fake_github
-    ):
-        _, repo = fake_github
-        repo.get_git_ref.side_effect = _FakeGithubException(500)
-        fake_s3.get_object.return_value = {
-            "Body": mock.MagicMock(read=lambda: b"new attribution body")
-        }
-        repo.get_contents.side_effect = [
-            _contents("old attribution body"),
-            _contents("const fallback = '2024-01-01.0';"),
-        ]
-        with pytest.raises(_FakeGithubException):
-            update_docs_for_release("bucket", "key", "2024-08-01.0", **_DEFAULT_KWARGS)
-
-    def test_only_updates_attribution_when_only_that_changed(
-        self, fake_boto3_client, fake_s3, fake_github
-    ):
-        _, repo = fake_github
-        fake_s3.get_object.return_value = {
-            "Body": mock.MagicMock(read=lambda: b"new attribution body")
-        }
-        same_fallback = "const fallback = '2024-08-01.0';"
-        repo.get_contents.side_effect = [
-            _contents("old attribution body"),
-            _contents(same_fallback),
-        ]
-        repo.create_pull.return_value = mock.MagicMock(
-            html_url="https://github.com/OvertureMaps/docs/pull/3"
+        kwargs = open_pr.call_args.kwargs
+        assert kwargs["files"]["docusaurus.config.js"] == (
+            "const fallback = \x272024-08-01.0\x27;"
         )
-
-        update_docs_for_release("bucket", "key", "2024-08-01.0", **_DEFAULT_KWARGS)
-
-        assert repo.update_file.call_count == 1
-        create_pull_kwargs = repo.create_pull.call_args.kwargs
-        assert "Updated attribution page" in create_pull_kwargs["body"]
-        assert "Updated fallback release version" not in create_pull_kwargs["body"]
+        assert "Updated fallback release version" not in kwargs["body"]
