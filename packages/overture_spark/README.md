@@ -51,16 +51,14 @@ def write_partition(batches):
 For a params file, a bundle's file list, or a scratch prefix, go through Spark's Hadoop FileSystem instead of boto3. It already has S3A's credentials on every platform:
 
 ```python
-import json
+from overture_spark.hadoop_fs import delete_prefix, list_files, read_json
 
-from overture_spark.hadoop_fs import delete_prefix, list_files, read_text
-
-params = json.loads(read_text(spark, "s3://bucket/params.json"))
+params = read_json(spark, "s3://bucket/params.json")
 files = list_files(spark, "s3://bucket/bundle/")
 delete_prefix(spark, "s3://bucket/tmp/run-1/")
 ```
 
-`read_text` decodes UTF-8. `list_files` returns sorted, Hadoop-qualified URIs of every file under the URI, recursively (`s3://b/p` lists `s3a://b/p/...`, `/tmp/x` lists `file:/tmp/x/...`), or `[]` if it doesn't exist. `delete_prefix` deletes a path recursively, not a string prefix (`s3://b/tmp/run` leaves `tmp/run-2/`), and is a no-op if the URI doesn't exist. All three read `s3://` as `s3a://`. Every byte goes through the driver over py4j, so keep files small. On S3A, deleting the last object under a parent creates an empty directory marker for the parent (`parent/`).
+`read_text` decodes UTF-8; `read_json` is `json.loads` over it. `list_files` returns sorted, Hadoop-qualified URIs of every file under the URI, recursively (`s3://b/p` lists `s3a://b/p/...`, `/tmp/x` lists `file:/tmp/x/...`), or `[]` if it doesn't exist. `delete_prefix` deletes a path recursively, not a string prefix (`s3://b/tmp/run` leaves `tmp/run-2/`), and is a no-op if the URI doesn't exist. All three read `s3://` as `s3a://`. Every byte goes through the driver over py4j, so keep files small. On S3A, deleting the last object under a parent creates an empty directory marker for the parent (`parent/`).
 
 ## Guarding plan size
 
