@@ -19,8 +19,11 @@ _ENCODING = "utf-8-sig"
 
 
 def read_package_text(path: str, pkg: str, *, encoding: str = _ENCODING) -> str:
-    """Text of the resource ``path`` (``/``-separated) inside package ``pkg``."""
-    return resources.files(pkg).joinpath(path).read_text(encoding)
+    """Text of the resource ``path`` (``/``-separated) inside package ``pkg``.
+
+    Decoded from the raw bytes, so line endings are preserved as stored.
+    """
+    return resources.files(pkg).joinpath(path).read_bytes().decode(encoding)
 
 
 def read_package_csv(
@@ -32,7 +35,7 @@ def read_package_csv(
     header yields ``None`` for its missing columns.
     """
     text = read_package_text(csv_path, pkg, encoding=encoding)
-    return list(csv.DictReader(io.StringIO(text), delimiter=delimiter))
+    return list(csv.DictReader(io.StringIO(text, newline=""), delimiter=delimiter))
 
 
 def read_package_tsv(

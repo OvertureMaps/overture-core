@@ -20,6 +20,7 @@ _FILES = {
     "sub/data.json": json.dumps({"k": [1, 2], "ü": "v"}),
     "bom.csv": "\ufeffid,name\n1,one\n",
     "short.csv": "a,b\n1\n",
+    "multiline.csv": 'id,note\r\n1,"a\r\nb"\r\n2,"c\nd"\r\n',
 }
 
 
@@ -27,7 +28,7 @@ def _write_files(root, files):
     for name, content in files.items():
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_bytes(content.encode("utf-8"))
 
 
 @pytest.fixture(params=["directory", "zip"])
@@ -71,6 +72,13 @@ def test_read_package_csv_custom_delimiter(pkg):
 
 def test_read_package_csv_strips_bom(pkg):
     assert read_package_csv("bom.csv", pkg) == [{"id": "1", "name": "one"}]
+
+
+def test_read_package_csv_preserves_embedded_line_endings(pkg):
+    assert [r["note"] for r in read_package_csv("multiline.csv", pkg)] == [
+        "a\r\nb",
+        "c\nd",
+    ]
 
 
 def test_read_package_csv_short_row_is_none(pkg):
