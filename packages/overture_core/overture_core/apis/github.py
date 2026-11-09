@@ -12,6 +12,7 @@ suppressed, so the PEM and tokens never reach logs or tracebacks.
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from typing import Literal
 
 from botocore.exceptions import ClientError
 from github import (
@@ -22,7 +23,10 @@ from github import (
     InputGitAuthor,
     InputGitTreeElement,
 )
+from github.Commit import Commit
+from github.GitRef import GitRef
 from github.Issue import Issue
+from github.PullRequest import PullRequest
 from github.NamedUser import NamedUser
 from github.Repository import Repository
 
@@ -141,6 +145,21 @@ def bot_identity(bot: NamedUser) -> tuple[str, str]:
     return bot.name or bot.login, f"{bot.id}+{bot.login}@users.noreply.github.com"
 
 
+def bot_author(bot: NamedUser) -> tuple[InputGitAuthor, str]:
+    """Return the ``(author, signoff)`` pair for a commit made as ``bot``.
+
+    Pass ``author`` as both ``author=`` and ``committer=``, and append
+    ``signoff`` (a ``Signed-off-by:`` line) to the commit message.
+    """
+    name, email = bot_identity(bot)
+    return InputGitAuthor(name, email), f"Signed-off-by: {name} <{email}>"
+
+
+def is_not_found(exc: BaseException) -> bool:
+    """Whether ``exc`` is a GitHub 404."""
+    return isinstance(exc, GithubException) and exc.status == 404
+
+
 def truncate_for_github(text: str | None, max_chars: int = 60000) -> str | None:
     """Keep the tail of ``text`` within GitHub's ~65k char comment body limit."""
     if not text or len(text) <= max_chars:
@@ -192,6 +211,182 @@ def open_or_comment_issue(
     return issue.html_url
 
 
+def upsert_issue(
+    repo: Repository,
+    title: str,
+    body: str,
+    labels: Sequence[str] = (),
+    creator: str | None = None,
+) -> Issue:
+    """Create an issue, or replace the body of the open one with this title.
+
+    Unlike :func:`open_or_comment_issue` this uses the issues list API, so it
+    can restrict matches to issues opened by ``creator`` (e.g. ``"app[bot]"``)
+    and never edits a human's issue that happens to share the title. Pull
+    requests are skipped. Labels apply only on creation.
+    """
+    kwargs = {"creator": creator} if creator else {}
+    for issue in repo.get_issues(state="open", **kwargs):
+        if issue.pull_request is None and issue.title == title:
+            issue.edit(body=body)
+            log.info("Updated issue: %s", issue.html_url)
+            return issue
+    issue = repo.create_issue(title=title, body=body, labels=list(labels))
+    log.info("Created issue: %s", issue.html_url)
+    return issue
+
+
+def get_file_text(repo: Repository, path: str, ref: str) -> str:
+    """Return the text of ``path`` at ``ref`` (branch, tag or SHA).
+
+    Raises:
+        FileNotFoundError: The path does not exist at ``ref``.
+    """
+    try:
+        return repo.get_contents(path, ref=ref).decoded_content.decode("utf-8")
+    except GithubException as e:
+        if is_not_found(e):
+            raise FileNotFoundError(f"{repo.full_name}:{path}@{ref}") from e
+        raise
+
+
+def ensure_branch(
+    repo: Repository,
+    branch: str,
+    base: str | None = None,
+    mode: Literal["reuse", "reset", "recreate"] = "reuse",
+) -> GitRef:
+    """Return the ref of ``branch``, creating it from ``base`` if missing.
+
+    ``mode`` decides what happens when the branch already exists:
+
+    - ``reuse``: keep it and its history.
+    - ``reset``: force-move it to the tip of ``base``, discarding its commits.
+    - ``recreate``: delete it, then create it fresh. GitHub closes any open PR
+      whose head was the deleted branch.
+    """
+    base = base or repo.default_branch
+    try:
+        ref = repo.get_git_ref(f"heads/{branch}")
+    except GithubException as e:
+        if not is_not_found(e):
+            raise
+    else:
+        if mode == "reuse":
+            return ref
+        if mode == "reset":
+            ref.edit(repo.get_branch(base).commit.sha, force=True)
+            log.info("Reset branch %s to %s", branch, base)
+            return repo.get_git_ref(f"heads/{branch}")
+        ref.delete()
+        log.info("Deleted stale branch %s", branch)
+
+    ref = repo.create_git_ref(
+        ref=f"refs/heads/{branch}", sha=repo.get_branch(base).commit.sha
+    )
+    log.info("Created branch %s from %s", branch, base)
+    return ref
+
+
+def commit_files(
+    repo: Repository,
+    ref: GitRef,
+    bot: NamedUser,
+    files: Mapping[str, str],
+    message: str,
+    expected_head: str | None = None,
+) -> bool:
+    """Add one signed-off commit of ``files`` on top of ``ref``; return whether made.
+
+    Appends only: the ref moves without force, so a commit pushed concurrently
+    makes the update fail instead of being overwritten. When ``expected_head``
+    is given, the commit is refused unless the branch is still at that SHA.
+    Nothing is committed if the files already match the branch tip.
+
+    Raises:
+        RuntimeError: ``expected_head`` no longer matches the branch tip.
+    """
+    if expected_head is not None and ref.object.sha != expected_head:
+        raise RuntimeError(
+            f"{ref.ref} moved: expected {expected_head}, found {ref.object.sha}."
+        )
+    author, signoff = bot_author(bot)
+    head = repo.get_git_commit(ref.object.sha)
+    tree = repo.create_git_tree(
+        [
+            InputGitTreeElement(path, "100644", "blob", content=content)
+            for path, content in files.items()
+        ],
+        base_tree=head.tree,
+    )
+    if tree.sha == head.tree.sha:
+        return False
+    commit = repo.create_git_commit(
+        f"{message}\n\n{signoff}", tree, [head], author=author, committer=author
+    )
+    ref.edit(commit.sha)
+    return True
+
+
+def is_bot_commit(commit: Commit, bot: NamedUser) -> bool:
+    """Whether ``commit`` was authored and committed by ``bot``.
+
+    Matches the account id and the :func:`bot_identity` email, so a human's
+    edit on a bot-owned branch can be detected before overwriting it.
+    """
+    _, email = bot_identity(bot)
+    return (
+        commit.author is not None
+        and commit.author.id == bot.id
+        and commit.commit.author.email == email
+        and commit.commit.committer.email == email
+    )
+
+
+def find_prs(
+    repo: Repository,
+    branch: str,
+    base: str | None = None,
+    state: Literal["open", "closed", "all"] = "open",
+) -> list[PullRequest]:
+    """Return PRs whose head is ``branch`` in this repo and that target ``base``."""
+    return list(
+        repo.get_pulls(
+            state=state,
+            head=f"{repo.owner.login}:{branch}",
+            base=base or repo.default_branch,
+        )
+    )
+
+
+def dispatch_workflow_if_idle(
+    repo: Repository,
+    workflow: str | int,
+    ref: str,
+    inputs: Mapping[str, str] | None = None,
+) -> bool:
+    """Dispatch ``workflow`` unless one of its 10 latest runs is still in flight.
+
+    Args:
+        workflow: Workflow file name (``"publish.yml"``) or ID.
+        ref: Branch or tag to run on.
+        inputs: ``workflow_dispatch`` inputs.
+
+    Returns:
+        True if dispatched, False if a run was already in flight.
+
+    Raises:
+        RuntimeError: GitHub did not accept the dispatch.
+    """
+    wf = repo.get_workflow(workflow)
+    if any(run.status != "completed" for run in wf.get_runs()[:10]):
+        log.info("Workflow %s already running; not dispatching", workflow)
+        return False
+    if not wf.create_dispatch(ref, dict(inputs or {})):
+        raise RuntimeError(f"GitHub rejected dispatch of workflow {workflow!r}.")
+    return True
+
+
 def open_pr(
     repo: Repository,
     bot: NamedUser,
@@ -201,59 +396,32 @@ def open_pr(
     body: str,
     base: str | None = None,
     draft: bool = True,
+    branch_mode: Literal["reuse", "reset", "recreate"] = "reuse",
 ) -> str:
     """Commit ``files`` to ``branch`` and open (or update) a PR; return its URL.
 
-    Safe to rerun. The branch is created from ``base`` if missing, otherwise
-    reused. All files go in one commit, authored and signed off by ``bot``
-    (cncf/dco2 requires the trailer email to match the author email); no
-    commit is made if the files already match the branch. An open PR for the
-    branch gets its title and body updated instead of a duplicate being opened.
+    Safe to rerun. Composes :func:`ensure_branch` and :func:`commit_files`
+    (one signed-off commit authored by ``bot``, none if nothing changed). An
+    open PR for the branch gets its title and body updated instead of a
+    duplicate being opened. Callers needing a different PR policy (e.g.
+    refusing to reopen a closed PR) should use the building blocks directly.
 
     Args:
         repo: Target repository.
-        bot: User the commit is attributed to, e.g. ``gh.get_user("app[bot]")``.
+        bot: User the commit is attributed to, see :func:`get_app_bot`.
         branch: Head branch to create or reuse.
         files: Mapping of repo path to full new text content.
         title: PR title; also the commit subject.
         body: PR body.
         base: Branch to branch from and target. Defaults to the repo default.
         draft: Open a newly created PR as a draft.
+        branch_mode: What to do with an existing branch, see :func:`ensure_branch`.
     """
     base = base or repo.default_branch
-    bot_name, bot_email = bot_identity(bot)
-    author = InputGitAuthor(bot_name, bot_email)
+    ref = ensure_branch(repo, branch, base, branch_mode)
+    commit_files(repo, ref, bot, files, title)
 
-    try:
-        ref = repo.get_git_ref(f"heads/{branch}")
-    except GithubException as e:
-        if e.status != 404:
-            raise
-        ref = repo.create_git_ref(
-            ref=f"refs/heads/{branch}", sha=repo.get_branch(base).commit.sha
-        )
-        log.info("Created branch %s from %s", branch, base)
-
-    head = repo.get_git_commit(ref.object.sha)
-    tree = repo.create_git_tree(
-        [
-            InputGitTreeElement(path, "100644", "blob", content=content)
-            for path, content in files.items()
-        ],
-        base_tree=head.tree,
-    )
-    if tree.sha != head.tree.sha:
-        commit = repo.create_git_commit(
-            f"{title}\n\nSigned-off-by: {bot_name} <{bot_email}>",
-            tree,
-            [head],
-            author=author,
-            committer=author,
-        )
-        ref.edit(commit.sha)
-
-    pulls = repo.get_pulls(state="open", head=f"{repo.owner.login}:{branch}", base=base)
-    for pr in pulls:
+    for pr in find_prs(repo, branch, base):
         pr.edit(title=title, body=body)
         log.info("Updated existing PR: %s", pr.html_url)
         return pr.html_url
