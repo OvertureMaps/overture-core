@@ -62,14 +62,6 @@ def update_docs_for_release(
 
     Returns the PR URL, or a message if no changes were needed.
     """
-    # Deferred so importing this module doesn't require PyGithub's transitive
-    # deps to be resolvable in every environment that just needs the rest of
-    # overture_core; callers that invoke this function already need PyGithub
-    # installed (it's a hard dependency of this package).
-    from github import GithubException, InputGitAuthor
-
-    from overture_core.apis.github import get_github_client
-
     s3 = boto3.client("s3")
     try:
         obj = s3.get_object(Bucket=s3_bucket, Key=s3_key)
@@ -83,6 +75,11 @@ def update_docs_for_release(
     attribution_body = obj["Body"].read().decode("utf-8")
     log.info("Read attribution body from s3://%s/%s", s3_bucket, s3_key)
 
+    # Deferred so importing this module doesn't require PyGithub's transitive
+    # deps to be resolvable in every environment that just needs the rest of
+    # overture_core.
+    from overture_core.apis.github import get_github_client, open_pr
+
     gh = get_github_client(
         pem_secret_name,
         app_client_id,
@@ -91,21 +88,10 @@ def update_docs_for_release(
     )
     repo = gh.get_repo(docs_repo)
 
-    # Identity for commit author + DCO Signed-off-by trailer. cncf/dco2 fails
-    # the PR if the trailer email doesn't match the commit author email, so we
-    # pin both sides to the App's bot user identity.
-    bot = gh.get_user(f"{app_slug}[bot]")
-    bot_name = bot.name or bot.login
-    bot_email = f"{bot.id}+{bot.login}@users.noreply.github.com"
-    author = InputGitAuthor(bot_name, bot_email)
-    signoff = f"Signed-off-by: {bot_name} <{bot_email}>"
-
-    # Overwrite the attribution page with the S3 body.
     attr_contents = repo.get_contents(attribution_path, ref=base_branch)
     attr_current = attr_contents.decoded_content.decode("utf-8")
     attr_changed = attribution_body.rstrip() != attr_current.rstrip()
 
-    # Edits to the docusaurus config.
     config_contents = repo.get_contents(config_path, ref=base_branch)
     config_current = config_contents.decoded_content.decode("utf-8")
 
@@ -119,47 +105,17 @@ def update_docs_for_release(
         log.info("No docs changes needed for %s", release_version)
         return "No docs changes detected, skipping PR."
 
-    branch_name = f"release-update-{release_version}"
-    # Make this idempotent across retries: if a previous run created the
-    # branch and then failed before opening the PR, delete it and start
-    # fresh from main.
-    try:
-        existing_ref = repo.get_git_ref(f"heads/{branch_name}")
-    except GithubException as e:
-        if e.status != 404:
-            raise
-    else:
-        log.info("Deleting stale branch %s from prior run", branch_name)
-        existing_ref.delete()
-
-    repo.create_git_ref(
-        ref=f"refs/heads/{branch_name}",
-        sha=repo.get_branch(base_branch).commit.sha,
-    )
-
+    files = {}
     if attr_changed:
-        repo.update_file(
-            path=attribution_path,
-            message=f"update attribution for {release_version}\n\n{signoff}",
-            content=attribution_body,
-            sha=attr_contents.sha,
-            branch=branch_name,
-            author=author,
-            committer=author,
-        )
-
+        files[attribution_path] = attribution_body
     if config_changed:
-        repo.update_file(
-            path=config_path,
-            message=f"update fallback release version to {release_version}\n\n{signoff}",
-            content=config_updated,
-            sha=config_contents.sha,
-            branch=branch_name,
-            author=author,
-            committer=author,
-        )
+        files[config_path] = config_updated
 
-    pr = repo.create_pull(
+    url = open_pr(
+        repo,
+        gh.get_user(f"{app_slug}[bot]"),
+        branch=f"release-update-{release_version}",
+        files=files,
         title=f"[DOCS] Update docs for release {release_version}",
         body=(
             "Automated docs update from the release pipeline.\n\n"
@@ -168,8 +124,7 @@ def update_docs_for_release(
             + ("- Updated attribution page\n" if attr_changed else "")
             + ("- Updated fallback release version\n" if config_changed else "")
         ),
-        head=branch_name,
         base=base_branch,
+        draft=False,
     )
-    log.info("Created PR: %s", pr.html_url)
-    return f"PR created: {pr.html_url}"
+    return f"PR created: {url}"
