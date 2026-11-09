@@ -111,8 +111,8 @@ class TestSparkDialectMatchesPython:
     the engine-specific CI job).
     """
 
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def con(cls):
         return duckdb.connect()
 
