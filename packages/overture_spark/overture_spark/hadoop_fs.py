@@ -38,6 +38,19 @@ def read_text(spark: SparkSession, uri: str) -> str:
     return buf.toString("UTF-8")
 
 
+def write_text(spark: SparkSession, uri: str, text: str) -> None:
+    """Write ``text`` to ``uri`` as UTF-8, replacing any file there.
+
+    Missing parent directories are created.
+    """
+    path, fs = _path_and_fs(spark, uri)
+    out = fs.create(path, True)
+    try:
+        out.write(bytearray(text.encode("utf-8")))
+    finally:
+        out.close()
+
+
 def list_files(spark: SparkSession, uri: str) -> list[str]:
     """Sorted URIs of every file under ``uri``; empty if it doesn't exist.
 

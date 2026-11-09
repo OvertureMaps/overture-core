@@ -7,7 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from overture_spark.hadoop_fs import delete_prefix, list_files, read_text
+from overture_spark.hadoop_fs import (
+    delete_prefix,
+    list_files,
+    read_text,
+    write_text,
+)
 
 try:
     import pyspark  # noqa: F401
@@ -55,6 +60,39 @@ def test_read_text_larger_than_copy_buffer(spark, tmp_path: Path):
 
 @pytest.mark.spark
 @needs_spark
+def test_write_text_round_trips(spark, tmp_path: Path):
+    f = tmp_path / "config.json"
+
+    write_text(spark, str(f), '{"address": ["s3://b/ü"]}')
+
+    assert f.read_text(encoding="utf-8") == '{"address": ["s3://b/ü"]}'
+    assert read_text(spark, str(f)) == '{"address": ["s3://b/ü"]}'
+
+
+@pytest.mark.spark
+@needs_spark
+def test_write_text_overwrites(spark, tmp_path: Path):
+    f = tmp_path / "marker"
+    f.write_text("a much longer original", encoding="utf-8")
+
+    write_text(spark, str(f), "new")
+
+    assert read_text(spark, str(f)) == "new"
+
+
+@pytest.mark.spark
+@needs_spark
+def test_write_text_creates_parents(spark, tmp_path: Path):
+    f = tmp_path / "a" / "b" / "_DONE"
+
+    write_text(spark, str(f), "")
+
+    assert f.exists()
+    assert read_text(spark, str(f)) == ""
+
+
+@pytest.mark.spark
+@needs_spark
 def test_list_files_is_recursive_and_sorted(spark, tmp_path: Path):
     for rel in ["b/part-1.parquet", "a/x/part-0.parquet", "_SUCCESS"]:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -92,7 +130,10 @@ def test_delete_prefix_is_recursive_and_tolerates_missing(spark, tmp_path: Path)
     assert (tmp_path / "x2" / "f").exists()
 
 
-@pytest.mark.parametrize("op", [read_text, list_files, delete_prefix])
+@pytest.mark.parametrize(
+    "op",
+    [read_text, list_files, delete_prefix, lambda s, u: write_text(s, u, "")],
+)
 @pytest.mark.parametrize(
     ("uri", "expected"),
     [
