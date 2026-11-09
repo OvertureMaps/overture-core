@@ -43,10 +43,12 @@ def write_text(spark: SparkSession, uri: str, text: str) -> None:
 
     Missing parent directories are created.
     """
+    # Encode before create: create truncates, so a bad string mustn't reach it.
+    data = bytearray(text.encode("utf-8"))
     path, fs = _path_and_fs(spark, uri)
     out = fs.create(path, True)
     try:
-        out.write(bytearray(text.encode("utf-8")))
+        out.write(data)
     finally:
         out.close()
 

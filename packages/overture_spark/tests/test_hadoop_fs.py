@@ -82,6 +82,18 @@ def test_write_text_overwrites(spark, tmp_path: Path):
 
 @pytest.mark.spark
 @needs_spark
+def test_write_text_unencodable_leaves_file_intact(spark, tmp_path: Path):
+    f = tmp_path / "config.json"
+    f.write_text("original", encoding="utf-8")
+
+    with pytest.raises(UnicodeEncodeError):
+        write_text(spark, str(f), "\ud800")
+
+    assert f.read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.spark
+@needs_spark
 def test_write_text_creates_parents(spark, tmp_path: Path):
     f = tmp_path / "a" / "b" / "_DONE"
 
