@@ -32,6 +32,11 @@ ICELAND = "-25,63,-13,67"
 ICELAND_TRIANGLE = "POLYGON ((-25 63, -13 63, -25 67, -25 63))"
 ICELAND_MULTI = "MULTIPOLYGON (((-25 63, -13 63, -13 67, -25 67, -25 63)))"
 
+# ST_Intersects raises a TopologyException on this polygon with THIN_TRIANGLE.
+INVALID_POLYGON = "POLYGON ((5 1, 5 3, 5 1, 2 1, 3 3, 5 1))"
+THIN_TRIANGLE = "POLYGON ((6 2, 2 -2, 5 2, 6 2))"
+THIN_TRIANGLE_BBOX = "0,-2,6,3"
+
 
 class TestParseBbox(unittest.TestCase):
     def test_valid(self):
@@ -133,6 +138,11 @@ class TestAreaSql(unittest.TestCase):
         self.assertIn("ST_GeomFromWKB(geometry) IS NULL", sql)
         self.assertIn("ST_Intersects", sql)
 
+    def test_intersects_sql_checks_validity_only_for_wkt_area(self):
+        geometry = "ST_GeomFromWKB(geometry)"
+        self.assertNotIn("ST_IsValid", area_intersects_sql(ICELAND, geometry))
+        self.assertIn("ST_IsValid", area_intersects_sql(ICELAND_TRIANGLE, geometry))
+
     def test_point_predicate_bbox_is_range_only(self):
         sql = area_point_predicate_sql(ICELAND)
         self.assertEqual(
@@ -193,6 +203,60 @@ class TestFilterDfToArea(unittest.TestCase):
         result = self._run_filter_job("")
         self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
         self.assertEqual(result.data["ids"], [1, 2, 3])
+
+
+@pytest.mark.spark
+@needs_spark
+class TestInvalidGeometry(unittest.TestCase):
+    ENTRY_POINTS = ("job_wkb", "df_geometry", "sql_wkb", "sql_geometry")
+
+    def _filtered_ids(self, test_area):
+        """Ids kept by each filter entry point, for WKB and geometry columns."""
+
+        class JobTest(SparkSedonaJob):
+            def execute_job(self):
+                data = [
+                    (1, INVALID_POLYGON),
+                    # INVALID_POLYGON moved 50 degrees east
+                    (2, "POLYGON ((55 1, 55 3, 55 1, 52 1, 53 3, 55 1))"),
+                    (3, "POLYGON ((4 0, 5 0, 5 2, 4 0))"),  # valid, in the triangle
+                    (4, "LINESTRING (4 1, 6 1)"),  # valid, crosses the triangle
+                    # valid, misses the triangle but its envelope does not
+                    (5, "LINESTRING (2 0, 5 3)"),
+                    (6, None),
+                ]
+                geom_df = self.spark.createDataFrame(data, ["id", "wkt"]).selectExpr(
+                    "id", "ST_GeomFromText(wkt) AS geometry"
+                )
+                wkb_df = geom_df.selectExpr("id", "ST_AsBinary(geometry) AS geometry")
+                filtered = {
+                    "job_wkb": self.apply_test_area_filter(wkb_df),
+                    "df_geometry": filter_df_to_area(geom_df, test_area, is_wkb=False),
+                    "sql_wkb": wkb_df.where(
+                        area_intersects_sql(test_area, "ST_GeomFromWKB(geometry)")
+                    ),
+                    "sql_geometry": geom_df.where(
+                        area_intersects_sql(test_area, "geometry")
+                    ),
+                }
+                for name, df in filtered.items():
+                    self.log_data(name, sorted(r.id for r in df.collect()))
+
+        result = JobTest().run(params={"test_area": test_area})
+        self.assertTrue(result.isSuccess, msg="\n".join(result.exception_traceback))
+        return result.data
+
+    def test_wkt_area_keeps_invalid_geometry_by_envelope(self):
+        self.assertEqual(
+            self._filtered_ids(THIN_TRIANGLE),
+            dict.fromkeys(self.ENTRY_POINTS, [1, 3, 4, 6]),
+        )
+
+    def test_bbox_area_does_not_raise_on_invalid_geometry(self):
+        self.assertEqual(
+            self._filtered_ids(THIN_TRIANGLE_BBOX),
+            dict.fromkeys(self.ENTRY_POINTS, [1, 3, 4, 5, 6]),
+        )
 
 
 @pytest.mark.spark

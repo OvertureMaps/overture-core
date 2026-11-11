@@ -7,6 +7,14 @@ planet. These helpers validate the param and filter a DataFrame to
 geometries intersecting the area. Rows with NULL geometry are kept: several
 checks specifically target entities whose geometry could not be built, and
 dropping them would hide those violations.
+
+An invalid geometry (``ST_IsValid`` is false) never fails the filter. With a
+WKT area it is kept when its envelope intersects the area, because
+``ST_Intersects`` on the geometry itself can raise a JTS
+``TopologyException``. Checks that look for broken geometries still get the
+ones near the area, and a few just outside it may be kept too. With a bbox
+it is tested like a valid geometry: JTS tests a rectangle without building
+the topology that raises.
 """
 
 import re
@@ -108,17 +116,33 @@ def area_polygon_wkt(area: str) -> str:
     return bbox_polygon_wkt(area)
 
 
+def _intersects_area_sql(area: str, geometry_expr: str) -> str:
+    """SQL test of a non-NULL geometry against the area.
+
+    A WKT area needs CASE WHEN, whose branches run in order (AND/OR operands
+    may not): ST_Intersects only sees a valid geometry, and ST_IsValid only
+    runs on rows whose envelope intersects the area.
+    """
+    area_expr = f"ST_GeomFromText('{area_polygon_wkt(area)}')"
+    intersects = f"ST_Intersects({geometry_expr}, {area_expr})"
+    if not is_wkt_area(area):
+        return intersects
+    return (
+        f"CASE WHEN NOT ST_Intersects(ST_Envelope({geometry_expr}), {area_expr}) "
+        f"THEN FALSE "
+        f"WHEN NOT ST_IsValid({geometry_expr}) THEN TRUE "
+        f"ELSE {intersects} END"
+    )
+
+
 def area_intersects_sql(area: str, geometry_expr: str) -> str:
     """SQL predicate: geometry_expr intersects the area (NULL geometry passes).
 
     geometry_expr must evaluate to a Sedona geometry (e.g.
-    ``ST_GeomFromWKB(geometry)``).
+    ``ST_GeomFromWKB(geometry)``). Invalid geometries do not raise (see
+    module docstring).
     """
-    wkt = area_polygon_wkt(area)
-    return (
-        f"({geometry_expr} IS NULL "
-        f"OR ST_Intersects({geometry_expr}, ST_GeomFromText('{wkt}')))"
-    )
+    return f"({geometry_expr} IS NULL OR {_intersects_area_sql(area, geometry_expr)})"
 
 
 def area_point_predicate_sql(
@@ -149,13 +173,12 @@ def filter_df_to_area(
 ):
     """Keep rows whose geometry intersects the area; no-op when area is empty.
 
-    Rows with NULL geometry are kept (see module docstring).
+    Rows with NULL geometry are kept, and invalid geometries do not raise
+    (see module docstring).
     """
     if not area:
         return df
     geometry_expr = f"ST_GeomFromWKB({geometry_col})" if is_wkb else geometry_col
     return df.where(
-        f"{geometry_col} IS NULL "
-        f"OR ST_Intersects({geometry_expr}, "
-        f"ST_GeomFromText('{area_polygon_wkt(area)}'))"
+        f"{geometry_col} IS NULL OR {_intersects_area_sql(area, geometry_expr)}"
     )
