@@ -28,13 +28,13 @@ This repo requires [Overture PR Checks (v2)](https://github.com/OvertureMaps/.gi
 
 ## Release
 
-On every push to `main`, [`publish_packages.yml`](.github/workflows/publish_packages.yml) first narrows to the packages actually touched by that push ([`tj-actions/changed-files`](https://github.com/tj-actions/changed-files), same discovery as [`test_python.yml`](.github/workflows/test_python.yml)), then runs PSR for each of those:
+On every push to `main`, [`publish_packages.yml`](.github/workflows/publish_packages.yml) first narrows to the packages actually touched by that push ([`lowlysre/are-we-changed`](https://github.com/lowlysre/are-we-changed), same discovery as [`test_python.yml`](.github/workflows/test_python.yml)), then runs PSR for each of those:
 
 ```mermaid
 %%{init: {"theme": "dark", "flowchart": {"padding": 8}, "themeVariables": {"fontFamily": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif", "fontSize": "14px", "mainBkg": "#21262d", "nodeBorder": "#4493f8"}}}%%
 flowchart TD
     classDef default rx:8,ry:8,stroke-width:0.75px
-    A[Push to main] --> B{tj-actions/changed-files:<br/>which packages did this touch?}
+    A[Push to main] --> B{are-we-changed:<br/>which packages did this touch?}
     B -->|package touched| C[Run PSR for that package]
     B -->|not touched| Z[Skip, no job runs]
     C --> D{Commits since last tag<br/>warrant a bump?}
