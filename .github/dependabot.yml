@@ -14,6 +14,12 @@ updates:
       docker:
         patterns:
           - "docker/*"
+      overture-workflows:
+        patterns:
+          - "OvertureMaps/workflows*"
+        update-types:
+          - "minor"
+          - "patch"
     labels:
       - "bot"
     cooldown:
