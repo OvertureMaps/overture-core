@@ -26,6 +26,18 @@ def pretty_print_elapsed_time(elapsed_ms: float):
     return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{int(milliseconds):03}"
 
 
+_UNSET_TEXT = {"", "none", "null"}
+
+
+def is_unset(value) -> bool:
+    """True for None and for text that is empty, "none" or "null" after
+    stripping, in any case. DAGs send "none" to mean "use the default", and
+    Airflow renders a null param as the text "None"."""
+    return value is None or (
+        isinstance(value, str) and value.strip().lower() in _UNSET_TEXT
+    )
+
+
 class MissingParameterError(Exception):
     def __init__(self, param_name):
         super().__init__(f"Missing required parameter: '{param_name}'")
@@ -259,37 +271,49 @@ class SparkSedonaJob(ABC):
     def get_param(
         self, param_name: str, default_value: str = None, is_required: bool = True
     ) -> str:
-        if not self.result or not self.result.params:
+        """Return the param, or default_value when it is unset (see is_unset).
+
+        Raises MissingParameterError when a required param and its default
+        are both unset.
+        """
+        params = (self.result.params if self.result else None) or {}
+        value = params.get(param_name)
+        if is_unset(value):
             value = default_value
-        else:
-            value = self.result.params.get(param_name, default_value)
+        if is_unset(value):
+            if is_required:
+                raise MissingParameterError(param_name)
+            return default_value
 
         if isinstance(value, str):
-            value = value.strip()
-            value = value.replace("s3://", "s3a://")
+            value = value.strip().replace("s3://", "s3a://")
+        return value
 
-        if is_required and (value is None or value == ""):
-            raise MissingParameterError(param_name)
-
-        return default_value if value is None or value == "" else value
+    def get_bool_param(self, param_name: str, default_value: bool) -> bool:
+        """Read a "true"/"false" param in any case; raise ValueError on
+        anything else, so a typo like "ture" fails instead of reading as
+        false."""
+        value = self.get_param(param_name, default_value, is_required=False)
+        text = str(value).lower()
+        if text not in ("true", "false"):
+            raise ValueError(
+                f"Parameter '{param_name}' must be 'true' or 'false', got {value!r}"
+            )
+        return text == "true"
 
     def get_test_area_param(self) -> str:
         """Optional dev/testing geographic scope.
 
         Returns the validated 'test_area' param — a bbox
         'min_lon,min_lat,max_lon,max_lat' or a (MULTI)POLYGON WKT — or ""
-        for the full planet.
-
-        Two renderings of the DAG-side value are normalized first: a DAG with
-        render_template_as_native_obj=True literal_evals a templated bbox
-        into a list of floats, and the 'none' sentinel (or a null param
-        rendered as the text "None") means no filtering.
+        for the full planet, including when the param is unset (see
+        is_unset). A DAG with render_template_as_native_obj=True
+        literal_evals a templated bbox into a list of floats, which is
+        joined back into a bbox string.
         """
         test_area = self.get_param("test_area", default_value="", is_required=False)
         if isinstance(test_area, (list, tuple)):
             test_area = ",".join(str(v) for v in test_area)
-        if str(test_area).strip().lower() == "none":
-            test_area = ""
         validate_area(test_area)  # fail fast on a malformed area
         return test_area
 

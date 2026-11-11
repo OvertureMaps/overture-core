@@ -7,6 +7,7 @@ from overture_spark.job import (
     JobResult,
     MissingParameterError,
     SparkSedonaJob,
+    is_unset,
     pretty_print_elapsed_time,
 )
 from overture_spark.plan import PlanTooLargeError
@@ -131,11 +132,56 @@ class TestJobParameters(unittest.TestCase):
         self.assertEqual(456, result.params["provided"])
 
 
+class _ParamJob(JobBaseMockSpark):
+    def __init__(self, params):
+        super().__init__()
+        self.result.params = params
+
+    def execute_job(self):
+        pass
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", "none", "None", " NULL "])
+def test_unset_param_uses_default_or_raises(value):
+    assert is_unset(value)
+    job = _ParamJob({"p": value})
+    assert job.get_param("p", "dflt", is_required=False) == "dflt"
+    with pytest.raises(MissingParameterError):
+        job.get_param("p")
+
+
+@pytest.mark.parametrize("value", ["nonesuch", "0", 0, False])
+def test_set_param_is_returned(value):
+    assert not is_unset(value)
+    assert _ParamJob({"p": value}).get_param("p", "dflt") == value
+
+
+@pytest.mark.parametrize(
+    "params, expected",
+    [
+        ({"flag": "true"}, True),
+        ({"flag": " TRUE "}, True),
+        ({"flag": "False"}, False),
+        ({"flag": True}, True),
+        ({"flag": False}, False),
+        ({"flag": "none"}, True),
+        ({}, True),
+    ],
+)
+def test_get_bool_param(params, expected):
+    assert _ParamJob(params).get_bool_param("flag", True) is expected
+
+
+@pytest.mark.parametrize("value", ["ture", "1", "yes"])
+def test_get_bool_param_rejects_other_values(value):
+    with pytest.raises(ValueError, match="flag"):
+        _ParamJob({"flag": value}).get_bool_param("flag", False)
+
+
 class TestGetTestAreaParam(unittest.TestCase):
-    """get_test_area_param() normalizes two DAG-side renderings before
-    validating: a DAG with render_template_as_native_obj=True literal_evals a
-    templated bbox into a list of floats, and a 'none' sentinel (or a null
-    param rendered as the text "None") means no filtering.
+    """get_test_area_param() returns "" for an unset param (see is_unset),
+    and joins a bbox that a DAG with render_template_as_native_obj=True
+    literal_evals into a list of floats.
     """
 
     def testUnset(self):

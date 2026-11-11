@@ -26,6 +26,8 @@ class CollectionJob(SparkSedonaJob):
         # ... your logic
 ```
 
+`get_param` treats `None` and text that is empty, `none` or `null` (any case, after stripping) as unset: an optional param returns its default, and a required one raises `MissingParameterError`. Jobs that read `self.result.params` directly use the same rule through `is_unset(value)`. `get_bool_param(name, default)` returns true for `true` and false for `false`, in any case, and raises `ValueError` on anything else.
+
 `getSparkSedonaSession` (in `overture_spark/__init__.py`) is the one call in this package that actually needs a real Spark/Sedona session — it, and everything downstream of it, imports `pyspark`/`apache-sedona` lazily and only there. Platform detection, version/JAR helpers, and `SparkSedonaJob`'s parameter/logging logic are plain Python and importable without either installed.
 
 ## Reaching S3 from Python
