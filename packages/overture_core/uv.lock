@@ -1228,6 +1228,9 @@ sql-trino = [
 stac = [
     { name = "overture-stac" },
 ]
+test-area = [
+    { name = "shapely" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1240,7 +1243,7 @@ requires-dist = [
     { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "maproulette", marker = "extra == 'maproulette'", specifier = ">=1.8.1" },
     { name = "moto", extras = ["s3"], marker = "extra == 'dev'", specifier = ">=5.1.5" },
-    { name = "overture-core", extras = ["azure", "compression", "maproulette", "stac"], marker = "extra == 'dev'" },
+    { name = "overture-core", extras = ["azure", "compression", "maproulette", "stac", "test-area"], marker = "extra == 'dev'" },
     { name = "overture-dataset-configs", specifier = ">=1.0.0" },
     { name = "overture-serverless", directory = "../overture_serverless" },
     { name = "overture-stac", marker = "extra == 'stac'" },
@@ -1254,10 +1257,11 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "rich", specifier = ">=13.0" },
     { name = "shapely", marker = "extra == 'maproulette'", specifier = ">=2.1.1" },
+    { name = "shapely", marker = "extra == 'test-area'", specifier = ">=2.0.4" },
     { name = "sqlglot", specifier = ">=30.15.0" },
     { name = "trino", marker = "extra == 'sql-trino'", specifier = ">=0.328" },
 ]
-provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "azure", "compression", "dev"]
+provides-extras = ["stac", "maproulette", "sql-spark", "sql-trino", "azure", "compression", "test-area", "dev"]
 
 [[package]]
 name = "overture-dataset-configs"

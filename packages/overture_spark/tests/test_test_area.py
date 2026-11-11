@@ -1,17 +1,12 @@
 import unittest
+from unittest.mock import Mock
 
 import pytest
 
 from overture_spark.test_area import (
     area_intersects_sql,
     area_point_predicate_sql,
-    area_polygon_wkt,
-    bbox_polygon_wkt,
     filter_df_to_area,
-    is_wkt_area,
-    parse_area_envelope,
-    parse_bbox,
-    validate_area,
 )
 
 try:
@@ -35,104 +30,16 @@ ICELAND_MULTI = "MULTIPOLYGON (((-25 63, -13 63, -13 67, -25 67, -25 63)))"
 # ST_Intersects raises a TopologyException on this polygon with THIN_TRIANGLE.
 INVALID_POLYGON = "POLYGON ((5 1, 5 3, 5 1, 2 1, 3 3, 5 1))"
 THIN_TRIANGLE = "POLYGON ((6 2, 2 -2, 5 2, 6 2))"
+# THIN_TRIANGLE plus a part that is far from every test row.
+THIN_TRIANGLE_MULTI = (
+    "MULTIPOLYGON (((6 2, 2 -2, 5 2, 6 2)), ((60 60, 61 60, 61 61, 60 60)))"
+)
 THIN_TRIANGLE_BBOX = "0,-2,6,3"
-
-
-class TestParseBbox(unittest.TestCase):
-    def test_valid(self):
-        self.assertEqual(parse_bbox(ICELAND), (-25.0, 63.0, -13.0, 67.0))
-
-    def test_wrong_arity(self):
-        with self.assertRaises(ValueError):
-            parse_bbox("-25,63,-13")
-
-    def test_non_numeric(self):
-        with self.assertRaises(ValueError):
-            parse_bbox("a,b,c,d")
-
-    def test_out_of_range_lon(self):
-        with self.assertRaises(ValueError):
-            parse_bbox("-181,63,-13,67")
-
-    def test_out_of_range_lat(self):
-        with self.assertRaises(ValueError):
-            parse_bbox("-25,63,-13,91")
-
-    def test_min_not_below_max(self):
-        with self.assertRaises(ValueError):
-            parse_bbox("-13,63,-25,67")
-
-
-class TestWktArea(unittest.TestCase):
-    def test_is_wkt_area(self):
-        self.assertTrue(is_wkt_area(ICELAND_TRIANGLE))
-        self.assertTrue(is_wkt_area("  multipolygon (((0 0, 1 0, 1 1, 0 0)))"))
-        self.assertFalse(is_wkt_area(ICELAND))
-        self.assertFalse(is_wkt_area(""))
-
-    def test_is_wkt_area_rejects_malformed_type_keyword(self):
-        # A prefix match ("POLYGONX".startswith("POLYGON")) must not count:
-        # it would otherwise pass shape validation only to fail later at
-        # ST_GeomFromText.
-        self.assertFalse(is_wkt_area("POLYGONX ((0 0, 1 0, 1 1, 0 0))"))
-        self.assertFalse(is_wkt_area("MULTIPOLYGONX (((0 0, 1 0, 1 1, 0 0)))"))
-
-    def test_malformed_type_keyword_fails_as_bbox_instead(self):
-        with self.assertRaises(ValueError):
-            parse_area_envelope("POLYGONX ((0 0, 1 0, 1 1, 0 0))")
-
-    def test_envelope_of_polygon(self):
-        self.assertEqual(
-            parse_area_envelope(ICELAND_TRIANGLE), (-25.0, 63.0, -13.0, 67.0)
-        )
-
-    def test_envelope_of_multipolygon(self):
-        self.assertEqual(parse_area_envelope(ICELAND_MULTI), (-25.0, 63.0, -13.0, 67.0))
-
-    def test_envelope_of_bbox(self):
-        self.assertEqual(parse_area_envelope(ICELAND), (-25.0, 63.0, -13.0, 67.0))
-
-    def test_rejects_unbalanced_parens(self):
-        with self.assertRaises(ValueError):
-            parse_area_envelope("POLYGON ((-25 63, -13 63, -25 67, -25 63)")
-
-    def test_rejects_too_few_vertices(self):
-        with self.assertRaises(ValueError):
-            parse_area_envelope("POLYGON ((-25 63, -13 63, -25 67))")
-
-    def test_rejects_out_of_range_coordinates(self):
-        with self.assertRaises(ValueError):
-            parse_area_envelope("POLYGON ((0 0, 200 0, 200 1, 0 0))")
-
-    def test_rejects_sql_breakout_characters(self):
-        with self.assertRaises(ValueError):
-            parse_area_envelope("POLYGON ((0 0, 1 0, 1 1, 0 0))'); DROP TABLE x;--")
-
-    def test_rejects_non_polygon_wkt_as_bbox(self):
-        with self.assertRaises(ValueError):
-            parse_area_envelope("POINT (1 1)")
-
-    def test_validate_area_accepts_empty(self):
-        validate_area("")
-
-    def test_validate_area_rejects_malformed(self):
-        with self.assertRaises(ValueError):
-            validate_area("not-a-bbox")
+# Self-intersecting ring: not a valid area.
+BOWTIE = "POLYGON ((0 0, 4 4, 4 0, 0 4, 0 0))"
 
 
 class TestAreaSql(unittest.TestCase):
-    def test_bbox_polygon_wkt(self):
-        self.assertEqual(
-            bbox_polygon_wkt(ICELAND),
-            "POLYGON((-25.0 63.0, -13.0 63.0, -13.0 67.0, -25.0 67.0, -25.0 63.0))",
-        )
-
-    def test_area_polygon_wkt_passes_wkt_through(self):
-        self.assertEqual(area_polygon_wkt(f"  {ICELAND_TRIANGLE} "), ICELAND_TRIANGLE)
-
-    def test_area_polygon_wkt_converts_bbox(self):
-        self.assertEqual(area_polygon_wkt(ICELAND), bbox_polygon_wkt(ICELAND))
-
     def test_intersects_sql_keeps_null(self):
         sql = area_intersects_sql(ICELAND, "ST_GeomFromWKB(geometry)")
         self.assertIn("ST_GeomFromWKB(geometry) IS NULL", sql)
@@ -142,6 +49,16 @@ class TestAreaSql(unittest.TestCase):
         geometry = "ST_GeomFromWKB(geometry)"
         self.assertNotIn("ST_IsValid", area_intersects_sql(ICELAND, geometry))
         self.assertIn("ST_IsValid", area_intersects_sql(ICELAND_TRIANGLE, geometry))
+
+    def test_invalid_area_is_rejected_before_sql_is_built(self):
+        with self.assertRaises(ValueError):
+            area_intersects_sql(BOWTIE, "geometry")
+        with self.assertRaises(ValueError):
+            area_point_predicate_sql(BOWTIE)
+        df = Mock()
+        with self.assertRaises(ValueError):
+            filter_df_to_area(df, BOWTIE)
+        df.where.assert_not_called()
 
     def test_point_predicate_bbox_is_range_only(self):
         sql = area_point_predicate_sql(ICELAND)
@@ -224,6 +141,9 @@ class TestInvalidGeometry(unittest.TestCase):
                     # valid, misses the triangle but its envelope does not
                     (5, "LINESTRING (2 0, 5 3)"),
                     (6, None),
+                    (7, "POLYGON EMPTY"),
+                    # invalid; its envelope is a line that crosses the triangle
+                    (8, "POLYGON ((3 1, 4 1, 5 1, 3 1))"),
                 ]
                 geom_df = self.spark.createDataFrame(data, ["id", "wkt"]).selectExpr(
                     "id", "ST_GeomFromText(wkt) AS geometry"
@@ -247,15 +167,17 @@ class TestInvalidGeometry(unittest.TestCase):
         return result.data
 
     def test_wkt_area_keeps_invalid_geometry_by_envelope(self):
-        self.assertEqual(
-            self._filtered_ids(THIN_TRIANGLE),
-            dict.fromkeys(self.ENTRY_POINTS, [1, 3, 4, 6]),
-        )
+        for area in (THIN_TRIANGLE, THIN_TRIANGLE_MULTI):
+            with self.subTest(area=area):
+                self.assertEqual(
+                    self._filtered_ids(area),
+                    dict.fromkeys(self.ENTRY_POINTS, [1, 3, 4, 6, 8]),
+                )
 
     def test_bbox_area_does_not_raise_on_invalid_geometry(self):
         self.assertEqual(
             self._filtered_ids(THIN_TRIANGLE_BBOX),
-            dict.fromkeys(self.ENTRY_POINTS, [1, 3, 4, 5, 6]),
+            dict.fromkeys(self.ENTRY_POINTS, [1, 3, 4, 5, 6, 8]),
         )
 
 

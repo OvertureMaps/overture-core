@@ -25,6 +25,7 @@ on:
       - packages/overture_core/pyproject.toml
       - packages/overture_core/uv.lock
       - packages/overture_spark/**
+      - packages/overture_core/overture_core/test_area.py
       - .github/workflows/sql_engines.yml
   push:
     branches:
@@ -36,6 +37,7 @@ on:
       - packages/overture_core/pyproject.toml
       - packages/overture_core/uv.lock
       - packages/overture_spark/**
+      - packages/overture_core/overture_core/test_area.py
       - .github/workflows/sql_engines.yml
   workflow_dispatch:
 
@@ -85,6 +87,8 @@ jobs:
               - .github/workflows/sql_engines.yml
             overture_spark:
               - packages/overture_spark/**
+              # overture_spark.test_area builds its SQL on this module.
+              - packages/overture_core/overture_core/test_area.py
               - .github/workflows/sql_engines.yml
 
   spark:

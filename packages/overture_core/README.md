@@ -22,6 +22,7 @@ Heavier dependencies are optional extras, so consumers on constrained runtimes (
 | `azure` | `cloud.azure` |
 | `maproulette` | `apis.maproulette.MapRouletteClient` |
 | `compression` | `deflate64.enable_zipfile_deflate64` |
+| `test-area` | `test_area` with a WKT area (a bbox needs no extra) |
 | `sql-spark`, `sql-trino` | The SQL-engine test lanes only |
 
 `cloud.aws.object.read_parquet_prefix` needs a `pyarrow` of your choosing on the path. Optional provider SDKs stay out of the base dependencies: add an extra and import the SDK lazily inside the helper.
@@ -53,6 +54,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `file_io` | Stdlib-only file readers (CSV, TSV, JSON). Currently reads data files shipped inside a Python package, including from a zipped wheel. No Spark or pandas, so usable in UDF setup on workers. |
 | `deflate64` | Letting the stdlib `zipfile` read Deflate64 (method 9) archives, such as Windows-built vendor zips, which it otherwise rejects. Patches `zipfile` process-wide. |
 | `bbox` | Validating and safely rendering an optional bounding-box string param ("min_lon,min_lat,max_lon,max_lat", `''` = full planet), shared by any entry point that accepts one. |
+| `test_area` | Validating an optional test-area string param (a bbox or a `POLYGON` / `MULTIPOLYGON` WKT, `''` = full planet) that scopes a dev or test run to a region, and deriving its envelope and polygon WKT, shared by any entry point that accepts one. |
 | `stac` | STAC catalog reads/writes and the jobs that publish them (see [Jobs](#jobs)). |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
