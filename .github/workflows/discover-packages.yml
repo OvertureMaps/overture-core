@@ -5,7 +5,7 @@
 # its own copy of this logic.
 #
 # On pull_request/push, finds the packages/ subdirectories actually touched
-# by the diff (tj-actions/changed-files). On workflow_dispatch, considers
+# by the diff (lowlysre/are-we-changed). On workflow_dispatch, considers
 # every directory under packages/, since a manual run always operates
 # repo-wide. Either way, a directory only counts if it looks like a real
 # package (has both pyproject.toml and tests/).
@@ -39,7 +39,7 @@ jobs:
       - name: Find changed package directories
         id: changed-dirs
         if: github.event_name != 'workflow_dispatch'
-        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        uses: lowlysre/are-we-changed@6055afb587c46c0585ddc7caac0cbfe65322622a # v0.1.0
         with:
           files: packages/**
           files_ignore: packages/**/*.md
