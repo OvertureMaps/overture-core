@@ -7,7 +7,7 @@ Portable, framework-agnostic runtime helpers for Overture's Spark jobs. Moved fr
 
 It contains:
 - `SparkSedonaJob` (in `job.py`) — cluster-side base class for jobs: platform detection, parameter parsing, logging, and the Sedona `SparkSession` lifecycle. Subclass it and implement `execute_job()`.
-- `test_area` — helpers for a job's optional `test_area` param (a bbox or WKT polygon that scopes a dev/test run to a small region instead of the full planet).
+- `test_area` — helpers for a job's optional `test_area` param (a bbox or WKT polygon that scopes a dev/test run to a small region instead of the full planet). The param's contract (parsing and validation) comes from `overture_core.test_area`; this module adds the Spark SQL that filters a DataFrame to the area.
 - `s3` — S3 credentials for Python clients (boto3, PyArrow) that need the same access as Spark's S3A, e.g. on Wherobots, where only S3A gets the storage-integration role.
 - `hadoop_fs` — small driver-side file operations (read, write, list, delete) through Spark's Hadoop FileSystem, so they use S3A's credentials.
 - `plan` — `plan_size` / `assert_plan_size` guards against runaway Spark query plans (see [Guarding plan size](#guarding-plan-size)).

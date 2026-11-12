@@ -326,7 +326,8 @@ class SparkSedonaJob(ABC):
     ):
         """Filter df to the job's test_area param; no-op when the param is unset.
 
-        Rows with NULL geometry are kept (see overture_spark.test_area docs).
+        Rows with NULL geometry are kept and invalid geometries do not raise
+        (see overture_spark.test_area docs).
         """
         test_area = self.get_test_area_param() if test_area is None else test_area
         if test_area:

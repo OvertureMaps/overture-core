@@ -3,122 +3,74 @@
 Jobs accept an optional ``test_area`` param — a single geometry string that
 is either a bbox ``"min_lon,min_lat,max_lon,max_lat"`` (e.g. Iceland:
 ``-25,63,-13,67``) or a ``POLYGON``/``MULTIPOLYGON`` WKT; empty = full
-planet. These helpers validate the param and filter a DataFrame to
-geometries intersecting the area. Rows with NULL geometry are kept: several
-checks specifically target entities whose geometry could not be built, and
-dropping them would hide those violations.
+planet. ``overture_core.test_area`` owns that contract (parsing and
+validation), shared with the other entry points that accept a test area; its
+helpers are re-exported here. This module adds the Spark SQL that filters a
+DataFrame to geometries intersecting the area. Rows with NULL geometry are
+kept: several checks specifically target entities whose geometry could not
+be built, and dropping them would hide those violations.
+
+An invalid geometry (``ST_IsValid`` is false) does not fail the filter. With
+a WKT area it is kept when its envelope intersects the area, because
+``ST_Intersects`` on the geometry itself can raise a JTS
+``TopologyException``. Checks that look for broken geometries still get the
+ones near the area, and a few just outside it may be kept too. With a bbox
+it is tested like a valid geometry: JTS tests a rectangle without building
+the topology that raises. An invalid area never reaches the SQL:
+``overture_core.test_area`` rejects it with a ``ValueError``.
 """
 
-import re
-from typing import Tuple
+from overture_core.test_area import (
+    Envelope,
+    area_polygon_wkt,
+    bbox_polygon_wkt,
+    is_wkt_area,
+    parse_area_envelope,
+    parse_bbox,
+    validate_area,
+)
 
-Envelope = Tuple[float, float, float, float]
+__all__ = [
+    "Envelope",
+    "area_intersects_sql",
+    "area_point_predicate_sql",
+    "area_polygon_wkt",
+    "bbox_polygon_wkt",
+    "filter_df_to_area",
+    "is_wkt_area",
+    "parse_area_envelope",
+    "parse_bbox",
+    "validate_area",
+]
 
-_WKT_TYPE = re.compile(r"^(MULTIPOLYGON|POLYGON)\s*\(", re.IGNORECASE)
-_NUMBER = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
-_COORD_PAIR = re.compile(rf"({_NUMBER})\s+({_NUMBER})")
-# Restrict WKT to its grammar's alphabet so it can be safely inlined in SQL.
-_WKT_CHARS = re.compile(r"[A-Za-z0-9\s(),.+\-]+")
 
+def _intersects_area_sql(area: str, geometry_expr: str) -> str:
+    """SQL test of a non-NULL geometry against the area.
 
-def is_wkt_area(area: str) -> bool:
-    """True when the area string is a (MULTI)POLYGON WKT rather than a bbox.
-
-    Matches the type keyword followed by whitespace/`(`, not a bare string
-    prefix: a malformed type like ``POLYGONX (...)`` must not pass here,
-    since it would clear this and the shape checks below only to fail at
-    job runtime when Sedona's ST_GeomFromText rejects the invalid keyword.
+    A WKT area needs CASE WHEN, whose branches run in order (AND/OR operands
+    may not): ST_Intersects only sees a valid geometry, and ST_IsValid only
+    runs on rows whose envelope intersects the area.
     """
-    return bool(area) and bool(_WKT_TYPE.match(area.strip()))
-
-
-def _check_lon_lat_ranges(min_lon, min_lat, max_lon, max_lat, area: str) -> None:
-    if not (-180.0 <= min_lon <= 180.0 and -180.0 <= max_lon <= 180.0):
-        raise ValueError(f"test_area longitudes must be in [-180, 180], got: {area!r}")
-    if not (-90.0 <= min_lat <= 90.0 and -90.0 <= max_lat <= 90.0):
-        raise ValueError(f"test_area latitudes must be in [-90, 90], got: {area!r}")
-
-
-def parse_bbox(bbox: str) -> Envelope:
-    """Parse and validate a 'min_lon,min_lat,max_lon,max_lat' string."""
-    parts = bbox.split(",")
-    if len(parts) != 4:
-        raise ValueError(
-            f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: {bbox!r}"
-        )
-    try:
-        min_lon, min_lat, max_lon, max_lat = (float(p) for p in parts)
-    except ValueError as exc:
-        raise ValueError(f"bbox values must be numbers, got: {bbox!r}") from exc
-    _check_lon_lat_ranges(min_lon, min_lat, max_lon, max_lat, bbox)
-    if min_lon >= max_lon or min_lat >= max_lat:
-        raise ValueError(f"bbox min must be < max on both axes, got: {bbox!r}")
-    return min_lon, min_lat, max_lon, max_lat
-
-
-def _parse_wkt_envelope(wkt: str) -> Envelope:
-    """Envelope of a (MULTI)POLYGON WKT from its coordinate pairs.
-
-    Shape-level validation only (prefix, balanced parens, >= 4 vertices,
-    lon/lat ranges); Sedona's ST_GeomFromText is the authoritative parser
-    when the area is applied.
-    """
-    body = wkt.strip()
-    if not _WKT_CHARS.fullmatch(body):
-        raise ValueError(f"test_area WKT contains unexpected characters: {wkt!r}")
-    if body.count("(") == 0 or body.count("(") != body.count(")"):
-        raise ValueError(f"test_area WKT has unbalanced parentheses: {wkt!r}")
-    pairs = _COORD_PAIR.findall(body)
-    if len(pairs) < 4:
-        raise ValueError(f"test_area WKT needs at least 4 vertices, got: {wkt!r}")
-    lons = [float(lon) for lon, _ in pairs]
-    lats = [float(lat) for _, lat in pairs]
-    envelope = (min(lons), min(lats), max(lons), max(lats))
-    _check_lon_lat_ranges(*envelope, wkt)
-    return envelope
-
-
-def parse_area_envelope(area: str) -> Envelope:
-    """Validate a test_area (bbox or WKT) and return its lon/lat envelope."""
-    if is_wkt_area(area):
-        return _parse_wkt_envelope(area)
-    return parse_bbox(area)
-
-
-def validate_area(area: str) -> None:
-    """Raise ValueError when a non-empty test_area is malformed."""
-    if area:
-        parse_area_envelope(area)
-
-
-def bbox_polygon_wkt(bbox: str) -> str:
-    """Polygon WKT covering the bbox (counter-clockwise ring)."""
-    min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
+    area_expr = f"ST_GeomFromText('{area_polygon_wkt(area)}')"
+    intersects = f"ST_Intersects({geometry_expr}, {area_expr})"
+    if not is_wkt_area(area):
+        return intersects
     return (
-        f"POLYGON(({min_lon} {min_lat}, {max_lon} {min_lat}, "
-        f"{max_lon} {max_lat}, {min_lon} {max_lat}, {min_lon} {min_lat}))"
+        f"CASE WHEN NOT ST_Intersects(ST_Envelope({geometry_expr}), {area_expr}) "
+        f"THEN FALSE "
+        f"WHEN NOT ST_IsValid({geometry_expr}) THEN TRUE "
+        f"ELSE {intersects} END"
     )
-
-
-def area_polygon_wkt(area: str) -> str:
-    """WKT for the test_area: the WKT itself, or a polygon covering the bbox."""
-    if is_wkt_area(area):
-        _parse_wkt_envelope(area)
-        return area.strip()
-    return bbox_polygon_wkt(area)
 
 
 def area_intersects_sql(area: str, geometry_expr: str) -> str:
     """SQL predicate: geometry_expr intersects the area (NULL geometry passes).
 
     geometry_expr must evaluate to a Sedona geometry (e.g.
-    ``ST_GeomFromWKB(geometry)``).
+    ``ST_GeomFromWKB(geometry)``). Invalid geometries do not raise (see
+    module docstring).
     """
-    wkt = area_polygon_wkt(area)
-    return (
-        f"({geometry_expr} IS NULL "
-        f"OR ST_Intersects({geometry_expr}, ST_GeomFromText('{wkt}')))"
-    )
+    return f"({geometry_expr} IS NULL OR {_intersects_area_sql(area, geometry_expr)})"
 
 
 def area_point_predicate_sql(
@@ -149,13 +101,12 @@ def filter_df_to_area(
 ):
     """Keep rows whose geometry intersects the area; no-op when area is empty.
 
-    Rows with NULL geometry are kept (see module docstring).
+    Rows with NULL geometry are kept, and invalid geometries do not raise
+    (see module docstring).
     """
     if not area:
         return df
     geometry_expr = f"ST_GeomFromWKB({geometry_col})" if is_wkb else geometry_col
     return df.where(
-        f"{geometry_col} IS NULL "
-        f"OR ST_Intersects({geometry_expr}, "
-        f"ST_GeomFromText('{area_polygon_wkt(area)}'))"
+        f"{geometry_col} IS NULL OR {_intersects_area_sql(area, geometry_expr)}"
     )

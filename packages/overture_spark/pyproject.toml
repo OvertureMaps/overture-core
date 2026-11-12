@@ -17,7 +17,12 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
 ]
-dependencies = []
+dependencies = [
+    # overture_spark.test_area takes the test_area contract from
+    # overture_core.test_area, which 1.15.0 is the first release to ship. The
+    # extra brings shapely, which checks that a WKT area is a valid polygon.
+    "overture-core[test-area]>=1.15.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/OvertureMaps/overture-core"
@@ -66,6 +71,9 @@ git_describe_command = "git describe --dirty --tags --long --match 'overture_spa
 # unreleased/dirty builds (e.g. the workflow_dispatch smoke test) — a real
 # release always builds from a clean tag.
 local_scheme = "no-local-version"
+
+[tool.uv.sources]
+overture-core = { path = "../overture_core" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
