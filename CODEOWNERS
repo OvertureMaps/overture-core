@@ -7,3 +7,5 @@
 # Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
 * @OvertureMaps/omf-public-reviewers @OvertureMaps/omf-eng-ops
+
+/.github/ @OvertureMaps/overture-devops-reviewers
