@@ -60,7 +60,7 @@ covers it; only add a new row/module when nothing existing fits.
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
 | `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
 | [`dataset`](overture_core/dataset/README.md) | Parsing, validating and rendering provider/resource dataset configs and the license policy, plus the `overture-datasets` CLI. |
-| `bundle` | The pipeline data bundle model: an S3 directory of `data/` plus `metadata.json` and a `success` marker under Hive-style partitions, with its path layout and components, lifecycle and status, partition resolution and retention/cleanup; `bundle.registry` maps an S3 path to its bundle type. Storage goes through a pluggable `BundleStore` (S3 by default; an in-memory store for tests and offline tools). Orchestrator concerns (default buckets, namespacing, the metadata writer, catalogue table drops) are passed in by the caller. |
+| `bundle` | The lifecycle and S3 layout for pipeline-managed bundles: `data/`, `metadata.json` and a `success` marker under Hive-style partitions, with components, status, partition resolution and retention/cleanup; `bundle.registry` maps an S3 path to its bundle type. A provider-dropped raw input may have only data and a `success` marker, without `metadata.json`; it need not have been initialized as a pipeline-managed bundle. Storage uses a pluggable `BundleStore` (S3 by default; in-memory for tests and offline tools). The caller supplies bucket/namespace choices and the metadata writer. See the [pipeline bundle docs](https://github.com/OvertureMaps/tf-data-platform/blob/dev/docs/managed-aws-environment/Pipeline%20Bundles.md). |
 
 ## Jobs
 

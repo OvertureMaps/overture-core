@@ -156,14 +156,19 @@ class _PublishingBundle(_MetricsBundle):
 
 
 class SourceRawBundle(_ProviderResourceBundle):
-    """Raw data collected from a provider, rooted at ``datasets``."""
+    """Raw provider data, rooted at ``datasets`` and partitioned by its identifiers.
+
+    The platform's guiding convention places raw data in ``managed-source-data``.
+    Provider-dropped inputs may be complete with a ``success`` marker and no
+    ``metadata.json``.
+    """
 
     BUNDLE_TYPE = "source_raw"
     ROOT_PATH = "datasets"
 
 
 class SourceIngestBundle(_MetricsBundle, _ProviderResourceBundle):
-    """Ingested / normalised source data, rooted at ``feeds``."""
+    """Ingested / normalised source output, rooted at ``feeds``."""
 
     BUNDLE_TYPE = "source_ingest"
     ROOT_PATH = "feeds"
