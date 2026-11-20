@@ -158,9 +158,9 @@ class _PublishingBundle(_MetricsBundle):
 class SourceRawBundle(_ProviderResourceBundle):
     """Raw provider data, rooted at ``datasets`` and partitioned by its identifiers.
 
-    The platform's guiding convention places raw data in ``managed-source-data``.
-    Provider-dropped inputs may be complete with a ``success`` marker and no
-    ``metadata.json``.
+    The platform's guiding convention places raw data in a shared source-data
+    location. Provider-dropped inputs may be complete with a ``success`` marker
+    and no ``metadata.json``.
     """
 
     BUNDLE_TYPE = "source_raw"

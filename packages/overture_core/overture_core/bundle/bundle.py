@@ -21,9 +21,9 @@ Bundles follow a lifecycle:
 
 For platform source data, `SourceRawBundle` uses the
 ``datasets/provider=.../resource=.../version=.../run=...`` layout. The guiding
-platform flow places raw data in the shared ``managed-source-data`` bucket,
-whether a provider drops it there or a collection DAG fetches it. A provider
-drop may have only raw data and a ``success`` marker, without ``metadata.json``.
+platform flow places raw data in a shared source-data location, whether a
+provider drops it there or a collection DAG fetches it. A provider drop may
+have only raw data and a ``success`` marker, without ``metadata.json``.
 Ingest writes its Parquet output as a `SourceIngestBundle` under ``feeds/``;
 matching and loading into the corpus follow. When the ingest bundle is
 initialized, ``datasets_dir`` can enrich its input provenance from the Dataset
