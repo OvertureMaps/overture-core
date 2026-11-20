@@ -103,8 +103,11 @@ def _run_batch(
 class Bundle:
     """Base data bundle on S3.
 
-    Every bundle has a ``data`` directory, a ``metadata.json`` file, and a
-    ``success`` marker.  Subclasses add components (``COMPONENTS``).
+    A pipeline-managed bundle has a ``data`` directory, a ``metadata.json``
+    file, and a ``success`` marker. Subclasses add components (``COMPONENTS``).
+    A provider-dropped raw input may be read as a source bundle with only a
+    ``success`` marker and no ``metadata.json``; it has not been initialized
+    through this lifecycle.
 
     The path is composed of ``root_path`` followed by Hive-style
     ``key=value`` segments for each entry in the ``partitions`` dict.

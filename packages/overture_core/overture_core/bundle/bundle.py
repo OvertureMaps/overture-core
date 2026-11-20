@@ -1,6 +1,6 @@
 """Data bundle model for pipeline directories.
 
-A *bundle* is an S3 directory that contains:
+A pipeline-managed *bundle* is an S3 directory that contains:
 
 - A ``data/`` subdirectory with the final output data for the bundle.
 - A ``metadata.json`` file tracking pipeline execution.
@@ -18,6 +18,17 @@ Bundles follow a lifecycle:
    a new ``success`` file for ``"success"``, or delete it for any other.
 
 `Bundle.status` reports where a stored bundle is in this lifecycle.
+
+For platform source data, `SourceRawBundle` uses the
+``datasets/provider=.../resource=.../version=.../run=...`` layout. The guiding
+platform flow places raw data in a shared source-data location, whether a
+provider drops it there or a collection DAG fetches it. A provider drop may
+have only raw data and a ``success`` marker, without ``metadata.json``.
+Ingest writes its Parquet output as a `SourceIngestBundle` under ``feeds/``;
+matching and loading into the corpus follow. When the ingest bundle is
+initialized, ``datasets_dir`` can enrich its input provenance from the Dataset
+catalogue; it does not add metadata to the raw input. The orchestrator supplies
+the bucket, collection and ingest steps, and metadata writer.
 
 Each bundle type defines an ordered ``partitions`` dict whose keys
 become Hive-style ``key=value`` path segments appended to the root
