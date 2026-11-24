@@ -1,13 +1,17 @@
 """Unit tests for overture_core.file_io: packaged CSV/TSV/JSON readers."""
 
 import importlib
+import io
 import json
 import sys
 import zipfile
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from overture_core.file_io import (
+    NonSeekableReader,
     read_package_csv,
     read_package_json,
     read_package_text,
@@ -122,3 +126,66 @@ def test_missing_resource_raises(pkg):
 def test_missing_package_raises():
     with pytest.raises(ModuleNotFoundError):
         read_package_csv("lookup.csv", "no_such_package_xyz")
+
+
+PAYLOAD = b"".join(f"{i},row\n".encode() for i in range(200_000))
+
+
+@pytest.fixture
+def decompressed(monkeypatch):
+    """Count bytes decompressed by ``ZipExtFile.read``, which its own ``seek`` also uses."""
+    count = {"bytes": 0}
+    original = zipfile.ZipExtFile.read
+
+    def counting_read(self, n=-1):
+        data = original(self, n)
+        count["bytes"] += len(data)
+        return data
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", counting_read)
+    return count
+
+
+@pytest.fixture
+def zip_entry():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("data.csv", PAYLOAD)
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf, zf.open("data.csv") as entry:
+        yield entry
+
+
+@pytest.fixture
+def s3():
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket="bucket")
+        yield client
+
+
+def test_not_seekable():
+    reader = NonSeekableReader(io.BytesIO(b"abc"))
+    assert reader.readable() and not reader.seekable() and not reader.writable()
+
+
+def test_read_and_readinto_delegate():
+    reader = NonSeekableReader(io.BytesIO(b"abcdef"))
+    assert reader.read(2) == b"ab"
+    buf = bytearray(2)
+    assert reader.readinto(buf) == 2
+    assert bytes(buf) == b"cd"
+    assert reader.read() == b"ef"
+
+
+def test_wrapped_zip_entry_is_read_once_by_upload_fileobj(s3, zip_entry, decompressed):
+    s3.upload_fileobj(NonSeekableReader(zip_entry), "bucket", "out.csv")
+
+    assert decompressed["bytes"] == len(PAYLOAD)
+    assert s3.get_object(Bucket="bucket", Key="out.csv")["Body"].read() == PAYLOAD
+
+
+def test_unwrapped_zip_entry_is_read_twice(s3, zip_entry, decompressed):
+    s3.upload_fileobj(zip_entry, "bucket", "out.csv")
+
+    assert decompressed["bytes"] == 2 * len(PAYLOAD)
