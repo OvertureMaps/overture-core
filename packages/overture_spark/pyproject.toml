@@ -49,10 +49,17 @@ s3 = [
     "boto3>=1.28",
     "pyarrow>=16",
 ]
+# overture_spark.unzip uploads ZIP entries with boto3; Deflate64 entries need
+# inflate64 from overture-core's `compression` extra. 1.16.0 is the first
+# overture-core release with NonSeekableReader.
+zip = [
+    "overture-spark[s3]",
+    "overture-core[compression]>=1.16.0",
+]
 dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
-    "overture-spark[s3]",
+    "overture-spark[zip]",
 ]
 
 [build-system]

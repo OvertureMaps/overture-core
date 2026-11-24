@@ -10,6 +10,7 @@ It contains:
 - `test_area` — helpers for a job's optional `test_area` param (a bbox or WKT polygon that scopes a dev/test run to a small region instead of the full planet). The param's contract (parsing and validation) comes from `overture_core.test_area`; this module adds the Spark SQL that filters a DataFrame to the area.
 - `s3` — S3 credentials for Python clients (boto3, PyArrow) that need the same access as Spark's S3A, e.g. on Wherobots, where only S3A gets the storage-integration role.
 - `hadoop_fs` — small driver-side file operations (read, write, list, delete) through Spark's Hadoop FileSystem, so they use S3A's credentials.
+- `unzip` — `unzip_to_s3` extracts a ZIP on S3 to another S3 prefix, streaming each entry (Deflate64 included) in a single pass. Needs `overture-spark[zip]`.
 - `plan` — `plan_size` / `assert_plan_size` guards against runaway Spark query plans (see [Guarding plan size](#guarding-plan-size)).
 
 ## Writing a job
