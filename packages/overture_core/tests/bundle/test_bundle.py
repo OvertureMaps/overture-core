@@ -2015,15 +2015,24 @@ class TestRetentionEdgeCases:
 
 class TestScanEdgeCases:
     def test_enrichment_skips_entries_with_provenance_or_without_ids(self, store):
+        enriched = SourceIngestBundle(
+            provider="acme",
+            resource="widgets",
+            bucket="src",
+            version="1",
+            run="a",
+            store=store,
+        )
+        unlabelled = Bundle(bucket="src", root_path="b", store=store)
         meta = RecordingMetadata()
         meta.section["inputs"] = [
-            {"path": "s3://src/a", "provider": {}, "resource": {}},
-            {"path": "s3://src/b"},
+            {"path": enriched.base_uri, "provider": {}, "resource": {}},
+            {"path": unlabelled.base_uri},
         ]
         meta.init = lambda input_paths=None, capture_variables=True: None
         b = ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store)
         b.initialize(
-            input_bundles=[Bundle(bucket="src", root_path="b", store=store)],
+            input_bundles=[enriched, unlabelled],
             metadata=meta,
             provenance_resolver=acme_resolver,
         )
