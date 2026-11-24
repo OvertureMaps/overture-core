@@ -134,6 +134,47 @@ def test_unzip_to_s3_uses_64_mib_parts(deflate64_zip: Path):
         assert config.multipart_threshold == 64 * 1024 * 1024
 
 
+@pytest.mark.parametrize(
+    ("n_entries", "max_workers", "expected"),
+    [(1, 16, 10), (4, 16, 4), (100, 16, 1)],
+)
+def test_unzip_to_s3_sizes_part_concurrency_from_idle_workers(
+    tmp_path: Path, n_entries: int, max_workers: int, expected: int
+):
+    path = tmp_path / "many.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for i in range(n_entries):
+            zf.writestr(f"{i}.txt", SMALL)
+    *_, dst, _, _ = _run(
+        path, "s3://src/a.zip", "s3://dst/out", max_workers=max_workers
+    )
+
+    for config in dst.configs:
+        assert config.max_concurrency == expected
+        assert config.max_in_memory_upload_chunks == expected
+
+
+def test_unzip_to_s3_opens_the_zip_once_per_thread(tmp_path: Path):
+    path = tmp_path / "many.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for i in range(50):
+            zf.writestr(f"{i}.txt", SMALL)
+    opened: list[zipfile.ZipFile] = []
+
+    class CountingZipFile(zipfile.ZipFile):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            opened.append(self)
+
+    with patch("overture_spark.s3.zipfile.ZipFile", CountingZipFile):
+        *_, dst, _, _ = _run(path, "s3://src/a.zip", "s3://dst/out", max_workers=4)
+
+    assert len(dst.uploaded) == 50
+    # One handle to list entries, then at most one per worker thread.
+    assert len(opened) <= 4 + 1
+    assert all(zf.fp is None for zf in opened)
+
+
 def test_unzip_to_s3_accepts_s3a_and_skips_directories(tmp_path: Path):
     path = tmp_path / "plain.zip"
     with zipfile.ZipFile(path, "w") as zf:

@@ -1,4 +1,4 @@
-"""S3 credentials for Python clients (boto3, PyArrow) in Spark jobs.
+"""S3 helpers for Spark jobs: credentials for Python clients, and ZIP extraction.
 
 Spark's JVM S3 clients (Hadoop S3A, Iceberg) can get per-bucket credentials
 that Python clients don't see. On Wherobots, for example, only S3A gets the
@@ -18,6 +18,9 @@ it there::
 Where S3A has no such config (e.g. Glue), clients use the default credential
 chain as before. ``boto3`` and ``pyarrow`` are imported lazily; install them
 directly or with ``overture-spark[s3]``.
+
+:func:`unzip_to_s3` extracts a ZIP on S3 to another S3 prefix using those
+clients; it also needs ``overture-spark[zip]``.
 """
 
 from __future__ import annotations
@@ -251,7 +254,8 @@ def unzip_to_s3(
 ) -> str:
     """Extract a ZIP from S3 to ``dest_s3_prefix``.
 
-    Downloads the archive once, then uploads each entry from its own thread.
+    Downloads the archive once, then uploads entries from `max_workers` threads,
+    each reading through its own ZIP handle.
     Entries are wrapped in :class:`~overture_core.file_io.NonSeekableReader` so
     ``upload_fileobj`` streams them in one pass instead of decompressing each
     one twice to learn its size. Deflate64 entries are supported.
@@ -266,7 +270,8 @@ def unzip_to_s3(
         dest_s3_prefix: ``s3://`` or ``s3a://`` prefix to extract into.
         entry_filter: Predicate on entry names; ``None`` extracts every file.
             Directory entries are always skipped.
-        max_workers: Number of concurrent uploads.
+        max_workers: Number of threads. When there are fewer entries than threads,
+            the spare ones upload parts of each entry concurrently (up to 10).
 
     Returns:
         ``dest_s3_prefix``.
@@ -289,14 +294,6 @@ def unzip_to_s3(
         resolve_s3_access(spark, dest_s3_prefix),
         config=Config(max_pool_connections=max_workers),
     )
-    transfer_config = TransferConfig(
-        multipart_threshold=_PART_SIZE,
-        multipart_chunksize=_PART_SIZE,
-        max_concurrency=1,
-    )
-    # Non-seekable streams buffer parts in memory; hold one at a time per thread.
-    transfer_config.max_in_memory_upload_chunks = 1
-
     delete_prefix(spark, dest_s3_prefix)
 
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
@@ -311,9 +308,32 @@ def unzip_to_s3(
                 if (entry_filter is None or entry_filter(n)) and not n.endswith("/")
             ]
 
+        # Few big entries (NAD is one 42 GB entry) leave workers idle, so spread
+        # them over each entry's parts; many small entries get one part at a time.
+        per_entry = max(1, min(10, max_workers // max(1, len(entries))))
+        transfer_config = TransferConfig(
+            multipart_threshold=_PART_SIZE,
+            multipart_chunksize=_PART_SIZE,
+            max_concurrency=per_entry,
+        )
+        # Not a constructor argument. Non-seekable parts are buffered in memory.
+        transfer_config.max_in_memory_upload_chunks = per_entry
+        local = threading.local()
+        handles: list[zipfile.ZipFile] = []
+        handles_lock = threading.Lock()
+
+        def _archive() -> zipfile.ZipFile:
+            # One handle per thread, not per entry: opening re-reads the whole
+            # central directory, which is quadratic over thousands of entries.
+            zf = getattr(local, "zf", None)
+            if zf is None:
+                zf = local.zf = zipfile.ZipFile(tmp_path)
+                with handles_lock:
+                    handles.append(zf)
+            return zf
+
         def _upload(name: str) -> None:
-            # A ZipFile handle isn't thread-safe, so each thread opens its own.
-            with zipfile.ZipFile(tmp_path) as thread_zf, thread_zf.open(name) as entry:
+            with _archive().open(name) as entry:
                 s3.upload_fileobj(
                     NonSeekableReader(entry),
                     dst_bucket,
@@ -321,10 +341,17 @@ def unzip_to_s3(
                     Config=transfer_config,
                 )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            # Consuming the iterator re-raises the first failure.
-            list(pool.map(_upload, entries))
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                try:
+                    # Consuming the iterator re-raises the first failure.
+                    list(pool.map(_upload, entries))
+                except BaseException:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
+        finally:
+            for zf in handles:
+                zf.close()
     finally:
         os.unlink(tmp_path)
-
     return dest_s3_prefix
