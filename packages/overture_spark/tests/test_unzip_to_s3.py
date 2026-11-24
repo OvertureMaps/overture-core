@@ -11,7 +11,7 @@ import inflate64
 import pytest
 
 from overture_core.deflate64 import ZIP_DEFLATE64, enable_zipfile_deflate64
-from overture_spark.unzip import unzip_to_s3
+from overture_spark.s3 import unzip_to_s3
 
 # Larger than the 64 KiB Deflate64 window and than one zipfile read chunk.
 PAYLOAD = b"".join(f"{i},NAD_r24,street {i % 97}\n".encode() for i in range(20_000))
@@ -88,14 +88,14 @@ def _run(zip_path: Path, src_uri: str, dst_uri: str, **kwargs):
     clients = {f"access:{src_uri}": src, f"access:{dst_uri}": dst}
     with (
         patch(
-            "overture_spark.unzip.resolve_s3_access",
+            "overture_spark.s3.resolve_s3_access",
             side_effect=lambda _spark, uri: f"access:{uri}",
         ) as resolve,
         patch(
-            "overture_spark.unzip.s3_client",
+            "overture_spark.s3.s3_client",
             side_effect=lambda access, **_: clients[access],
         ),
-        patch("overture_spark.unzip.delete_prefix") as delete,
+        patch("overture_spark.s3.delete_prefix") as delete,
     ):
         out = unzip_to_s3(spark, src_uri, dst_uri, **kwargs)
     return spark, out, src, dst, resolve, delete
