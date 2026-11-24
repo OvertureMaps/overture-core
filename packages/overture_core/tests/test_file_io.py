@@ -128,7 +128,7 @@ def test_missing_package_raises():
         read_package_csv("lookup.csv", "no_such_package_xyz")
 
 
-PAYLOAD = b"".join(f"{i},row\n".encode() for i in range(200_000))
+PAYLOAD = b"".join(f"{i},row\n".encode() for i in range(1_000_000))
 
 
 @pytest.fixture
