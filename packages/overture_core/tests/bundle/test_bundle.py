@@ -415,9 +415,16 @@ class TestLifecycle:
             input_bundles=[upstream], metadata=meta, provenance_resolver=acme_resolver
         )
         (inp,) = meta.section["inputs"]
-        assert inp["provider"]["label"] == "acme"
-        assert inp["resource"]["label"] == "widgets"
-        assert inp["resource"]["version"] == "7"
+        assert inp == {
+            "path": upstream.base_uri,
+            "provider": {"label": "acme", "name": "Acme Corp", "url": {}},
+            "resource": {
+                "label": "widgets",
+                "name": "Acme Widgets",
+                "collection": {"license": {"type": "MIT"}},
+                "version": "7",
+            },
+        }
         assert "version" not in _ACME_RESOURCES["widgets"]
 
     def test_initialize_records_provenance(self, store):
