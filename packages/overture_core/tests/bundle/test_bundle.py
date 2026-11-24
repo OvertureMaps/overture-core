@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from overture_core.artifacts import LicenseArtifact
 from overture_core.bundle.bundle import (
     Bundle,
     BundleComponent,
@@ -26,14 +25,13 @@ from overture_core.bundle.bundle import (
     SourceIngestBundle,
     SourceRawBundle,
     ThemeAssembleBundle,
+    Provenance,
     ThemePromoteBundle,
     _natural_key,
     _resolve_partitions,
-    provenance_sections,
 )
 from overture_core.bundle.status import _derive_status, _metadata_section_statuses
 from overture_core.bundle.store import InMemoryBundleStore, S3BundleStore
-from overture_core.dataset.dataset import Dataset
 
 _DEFAULT_LM = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
 
@@ -43,23 +41,22 @@ def keys(store: InMemoryBundleStore, bucket: str = "bkt") -> set[str]:
     return set(store.iter_keys(bucket, ""))
 
 
-def _write_acme_dataset(directory) -> None:
-    (directory / "acme.json").write_text(
-        json.dumps(
-            {
-                "provider": {"label": "acme", "name": "Acme Corp", "url": {}},
-                "resources": [
-                    {
-                        "label": "widgets",
-                        "name": "Acme Widgets",
-                        "collection": {"license": {"type": "MIT"}},
-                    },
-                    {"label": "gadgets", "name": "Acme Gadgets", "collection": {}},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+_ACME = {"label": "acme", "name": "Acme Corp", "url": {}}
+_ACME_RESOURCES = {
+    "widgets": {
+        "label": "widgets",
+        "name": "Acme Widgets",
+        "collection": {"license": {"type": "MIT"}},
+    },
+    "gadgets": {"label": "gadgets", "name": "Acme Gadgets", "collection": {}},
+}
+
+
+def acme_resolver(provider: str, resource: str) -> Provenance:
+    """A `ProvenanceResolver` over the acme provider; raises for anything else."""
+    if provider != "acme":
+        raise KeyError(provider)
+    return {"provider": _ACME, "resource": _ACME_RESOURCES[resource]}
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -403,8 +400,7 @@ class TestLifecycle:
             ("add", "k", "v"),
         ]
 
-    def test_initialize_enriches_inputs_when_datasets_dir_given(self, store, tmp_path):
-        _write_acme_dataset(tmp_path)
+    def test_initialize_enriches_inputs_from_resolver(self, store):
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
             provider="acme",
@@ -415,24 +411,17 @@ class TestLifecycle:
             store=store,
         )
         b = ThemeAssembleBundle(theme="places", bucket="bkt", run="r1", store=store)
-        b.initialize(input_bundles=[upstream], metadata=meta, datasets_dir=tmp_path)
+        b.initialize(
+            input_bundles=[upstream], metadata=meta, provenance_resolver=acme_resolver
+        )
         (inp,) = meta.section["inputs"]
         assert inp["provider"]["label"] == "acme"
         assert inp["resource"]["label"] == "widgets"
         assert inp["resource"]["version"] == "7"
+        assert "version" not in _ACME_RESOURCES["widgets"]
 
-    def test_provenance_sections_copy_dataset_and_add_version(self, tmp_path):
-        _write_acme_dataset(tmp_path)
-        ds = Dataset.from_name("acme", "widgets", tmp_path)
-        sections = provenance_sections(ds, "7")
-        assert sections["provider"] == ds.provider_data
-        assert sections["resource"] == {**ds.resource_data, "version": "7"}
-        assert "version" not in ds.resource_data
-        assert "version" not in provenance_sections(ds)["resource"]
-
-    def test_initialize_records_source_dataset(self, store, tmp_path):
-        _write_acme_dataset(tmp_path)
-        ds = Dataset.from_name("acme", "widgets", tmp_path)
+    def test_initialize_records_provenance(self, store):
+        prov = acme_resolver("acme", "widgets")
         meta = RecordingMetadata()
         b = SourceIngestBundle(
             provider="acme",
@@ -442,20 +431,15 @@ class TestLifecycle:
             run="r",
             store=store,
         )
-        b.initialize(source_dataset=ds, custom_metadata={"k": "v"}, metadata=meta)
+        b.initialize(provenance=prov, custom_metadata={"k": "v"}, metadata=meta)
         assert meta.calls[1:] == [
             ("add", "bundle_type", "source_ingest"),
-            ("add", "provider", ds.provider_data),
-            ("add", "resource", ds.resource_data),
+            ("add", "provider", _ACME),
+            ("add", "resource", _ACME_RESOURCES["widgets"]),
             ("add", "k", "v"),
         ]
-        (entry,) = LicenseArtifact.entries(meta.section)
-        assert (entry["provider_label"], entry["resource_label"]) == (
-            "acme",
-            "widgets",
-        )
 
-    def test_initialize_skips_enrichment_without_datasets_dir(self, store):
+    def test_initialize_skips_enrichment_without_resolver(self, store):
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
             provider="acme",
@@ -470,7 +454,7 @@ class TestLifecycle:
         )
         assert not any(c[0] == "update_inputs" for c in meta.calls)
 
-    def test_enrichment_failure_is_not_fatal(self, store, tmp_path):
+    def test_enrichment_failure_is_not_fatal(self, store, caplog):
         meta = RecordingMetadata()
         upstream = SourceIngestBundle(
             provider="missing",
@@ -481,9 +465,10 @@ class TestLifecycle:
             store=store,
         )
         ThemeAssembleBundle(theme="t", bucket="bkt", run="r1", store=store).initialize(
-            input_bundles=[upstream], metadata=meta, datasets_dir=tmp_path
+            input_bundles=[upstream], metadata=meta, provenance_resolver=acme_resolver
         )
         assert meta.section["inputs"] == [{"path": upstream.base_uri}]
+        assert "Could not resolve provenance for missing/x" in caplog.text
 
     @pytest.mark.parametrize("earlier_marker", [False, True])
     @pytest.mark.parametrize(
@@ -534,9 +519,11 @@ class TestLifecycle:
             made[b.base_uri] = RecordingMetadata()
             return made[b.base_uri]
 
-        source = Dataset({"label": "p"}, {"label": "r"}, dataset_id="p/r")
         Bundle.initialize_batch(
-            bundles, metadata_factory=factory, source_dataset=source, max_workers=2
+            bundles,
+            metadata_factory=factory,
+            provenance={"provider": {"label": "p"}, "resource": {"label": "r"}},
+            max_workers=2,
         )
         assert set(made) == {b.base_uri for b in bundles}
         assert all(m.calls[0][0] == "init" for m in made.values())
@@ -596,8 +583,7 @@ class TestLifecycle:
         Bundle.initialize_batch([], metadata_factory=lambda b: RecordingMetadata())
         Bundle.finalize_batch([], metadata_factory=lambda b: RecordingMetadata())
 
-    def test_batch_per_bundle_inputs_enriches_rehydrated_inputs(self, store, tmp_path):
-        _write_acme_dataset(tmp_path)
+    def test_batch_per_bundle_inputs_enriches_rehydrated_inputs(self, store):
         raw_widgets = SourceRawBundle(
             provider="acme", resource="widgets", bucket="raw", version="1", run="r0"
         )
@@ -625,7 +611,7 @@ class TestLifecycle:
             bundles,
             metadata_factory=factory,
             per_bundle_inputs=[[raw_widgets], [raw_gadgets]],
-            datasets_dir=tmp_path,
+            provenance_resolver=acme_resolver,
         )
         for b, raw, label, version in (
             (bundles[0], raw_widgets, "widgets", "1"),
@@ -2028,9 +2014,7 @@ class TestRetentionEdgeCases:
 
 
 class TestScanEdgeCases:
-    def test_enrichment_skips_entries_with_provenance_or_without_ids(
-        self, store, tmp_path
-    ):
+    def test_enrichment_skips_entries_with_provenance_or_without_ids(self, store):
         meta = RecordingMetadata()
         meta.section["inputs"] = [
             {"path": "s3://src/a", "provider": {}, "resource": {}},
@@ -2041,7 +2025,7 @@ class TestScanEdgeCases:
         b.initialize(
             input_bundles=[Bundle(bucket="src", root_path="b", store=store)],
             metadata=meta,
-            datasets_dir=tmp_path,
+            provenance_resolver=acme_resolver,
         )
         assert not any(c[0] == "update_inputs" for c in meta.calls)
 

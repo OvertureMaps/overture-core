@@ -1,12 +1,9 @@
-"""The `BundleMetadata` writer protocol and input provenance from the Dataset catalogue."""
+"""The `BundleMetadata` writer protocol and caller-supplied input provenance."""
 
 from __future__ import annotations
 
 import logging
-from os import PathLike
-from typing import Any, Protocol
-
-from overture_core.dataset.dataset import Dataset
+from typing import Any, Callable, Protocol, TypedDict
 
 log = logging.getLogger(__name__)
 
@@ -33,30 +30,39 @@ class BundleMetadata(Protocol):
     def finalize(self, status: str = "success") -> Any: ...
 
 
-def provenance_sections(
-    dataset: Dataset, version: str = ""
-) -> dict[str, dict[str, Any]]:
-    """``provider`` and ``resource`` metadata sections for *dataset*.
+class Provenance(TypedDict):
+    """The ``provider`` and ``resource`` metadata sections that credit a dataset.
 
-    License artifacts credit any metadata dict that carries both.  A non-empty
-    *version* is added to the resource section.
+    Metadata artifacts (e.g. license files) credit any metadata dict carrying
+    both.  Their contents are the caller's; this package does not interpret them.
     """
-    resource = dataset.resource_data
+
+    provider: dict[str, Any]
+    resource: dict[str, Any]
+
+
+ProvenanceResolver = Callable[[str, str], Provenance]
+"""Returns the `Provenance` for a ``(provider, resource)`` label pair, or raises."""
+
+
+def _with_version(provenance: Provenance, version: str = "") -> Provenance:
+    """Copy *provenance*, adding a non-empty *version* to the resource section."""
+    resource = dict(provenance["resource"])
     if version:
         resource["version"] = version
-    return {"provider": dataset.provider_data, "resource": resource}
+    return {"provider": dict(provenance["provider"]), "resource": resource}
 
 
-def _enrich_inputs_from_dataset(
+def _enrich_inputs(
     metadata: BundleMetadata,
     input_bundles: list[dict[str, str]],
-    datasets_dir: str | PathLike[str],
+    resolver: ProvenanceResolver,
 ) -> None:
-    """Add Dataset catalogue ``provider``/``resource`` sections to metadata inputs.
+    """Add ``provider``/``resource`` sections from *resolver* to metadata inputs.
 
     An input is enriched when it lacks either section and its *input_bundles*
-    entry names a provider and resource.  A failed catalogue lookup is logged
-    as a warning.
+    entry names a provider and resource.  The entry's version, if any, is added
+    to the resource section.  A resolver error is logged as a warning.
     """
     bundle_lookup = {b["path"]: b for b in input_bundles}
 
@@ -75,17 +81,15 @@ def _enrich_inputs_from_dataset(
         if not provider or not resource:
             continue
         try:
-            ds = Dataset.from_name(provider, resource, datasets_dir)
-            entry.update(provenance_sections(ds, version))
+            entry.update(_with_version(resolver(provider, resource), version))
             modified = True
             log.info(
-                "Enriched input %s with Dataset catalogue for %s/%s",
-                path,
-                provider,
-                resource,
+                "Enriched input %s with provenance for %s/%s", path, provider, resource
             )
         except Exception as exc:
-            log.warning("Could not load Dataset for %s/%s: %s", provider, resource, exc)
+            log.warning(
+                "Could not resolve provenance for %s/%s: %s", provider, resource, exc
+            )
 
     if modified:
         metadata.update_inputs(inputs)
