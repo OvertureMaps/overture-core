@@ -23,7 +23,6 @@ classifiers = [
 ]
 dependencies = [
     "overture-serverless>=1.0.0",
-    "overture-dataset-configs>=1.0.0",
     "pystac>=1.8.4",
     # Floor only, no ceiling. Our boto3 usage is basic sts/s3/secretsmanager/
     # codeartifact calls that work on anything modern, and this package is
@@ -33,20 +32,15 @@ dependencies = [
     # backtrack to an older overture-core instead of failing loudly. Runtime
     # compatibility belongs in the consumer's constraints file, not here.
     "boto3>=1.28",
-    "pydantic>=2.0",
     "PyGithub>=2.3",
     "requests>=2.31",
     "packaging>=23.0",
-    "rich>=13.0",
     # Floor follows MWAA: its Airflow 3.3.1 constraints file pins
     # sqlglot==30.15.0, and a floor above that makes overture-core
     # uninstallable there. The MWAA Compatibility workflow fails if a bump
     # breaks this.
     "sqlglot>=30.15.0",
 ]
-
-[project.scripts]
-overture-datasets = "overture_core.dataset.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/OvertureMaps/overture-core"

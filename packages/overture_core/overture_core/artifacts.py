@@ -5,28 +5,19 @@ derived files alongside the bundle. Each subclass defines its own generation
 logic; the base class provides the interface and the module exposes
 tree-traversal utilities that any artifact can use.
 
-To add an artifact, subclass MetadataArtifact, implement generate(), and
-register an instance in ARTIFACT_REGISTRY.
+This package registers no artifacts. To add one, subclass MetadataArtifact,
+implement generate(), and pass an instance to register_artifact. Artifacts run
+in registration order, so register one that reads another's output after it.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Iterator, TypeVar
 from urllib.parse import urlparse
 
 from overture_core.cloud.aws.object import get_object_bytes, put_object
-from overture_dataset_configs.attribution import (
-    license_entry,
-    render_attribution_bullet,
-)
-
-log = logging.getLogger(__name__)
-
-_THEME_IN_PATH = re.compile(r"(?:^|/)theme=([^/]+)")
 
 C = TypeVar("C")
 
@@ -139,128 +130,18 @@ class MetadataArtifact(ABC):
         put_object(bucket, key, text.encode("utf-8"), content_type=content_type)
 
 
-def _accumulate_themes(node: dict[str, Any], themes: frozenset[str]) -> frozenset[str]:
-    """Augment *themes* with any ``theme=X`` segments in node's ``path``."""
-    path = node.get("path")
-    if isinstance(path, str):
-        return themes | frozenset(_THEME_IN_PATH.findall(path))
-    return themes
+ARTIFACT_REGISTRY: dict[str, MetadataArtifact] = {}
+"""Registered artifacts by name, in the order they run."""
 
 
-class LicenseArtifact(MetadataArtifact):
+def register_artifact(artifact: MetadataArtifact) -> MetadataArtifact:
+    """Add *artifact* to `ARTIFACT_REGISTRY` under its name and return it.
+
+    Raises ``ValueError`` if a different artifact already holds the name;
+    re-registering the same instance is a no-op.
     """
-    Extract license/attribution info from all input entries.
-    The way these fields are represented + extracted is coupled to the structure
-    of the dataset config files (see ``overture_core.dataset.schema``)
-    """
-
-    name = "license"
-
-    _PATTERN = {
-        "provider": has_keys("label", "name"),
-        "resource": has_keys("label", "name"),
-    }
-
-    def generate(self, metadata: dict[str, Any], bundle_uri: str) -> None:
-        entries = self.entries(metadata)
-        if not entries:
-            log.info("No license data found in metadata for %s", bundle_uri)
-            return
-
-        self._write_json(bundle_uri, "license.json", entries)
-        log.info(
-            "Wrote %d license entries to %s/license.json", len(entries), bundle_uri
-        )
-
-    @classmethod
-    def entries(cls, metadata: dict[str, Any]) -> list[dict[str, Any]]:
-        """License entries for every provider/resource node in *metadata*.
-
-        Entries with the same provider+resource are merged so a license that
-        applies to multiple themes lists them all. Keyed on labels (the
-        stable Dataset.dataset_id components), not display names.
-        """
-        by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        for node, themes in find_nodes_with_context(
-            metadata, cls._PATTERN, _accumulate_themes, frozenset()
-        ):
-            entry = cls._extract(node)
-            key = (entry["provider_label"], entry["resource_label"])
-            existing = by_key.get(key)
-            if existing is None:
-                entry["themes"] = sorted(themes)
-                by_key[key] = entry
-            else:
-                existing["themes"] = sorted(set(existing["themes"]) | themes)
-        return list(by_key.values())
-
-    @staticmethod
-    def _extract(node: dict[str, Any]) -> dict[str, Any]:
-        return license_entry(node["provider"], node["resource"])
-
-
-def render_attribution_mdx(entries: list[dict[str, Any]]) -> str:
-    """Render license entries as the body of an attribution.mdx file.
-
-    Produces one ``<details>`` block per theme, with a bullet list of
-    sources inside. Entries with multiple themes appear under each.
-    Entries with no themes are skipped. Identical lines within a theme are
-    collapsed; entries with the same attribution but a different license
-    render differently and stay distinct.
-    """
-    by_theme: dict[str, list[dict[str, Any]]] = {}
-    for entry in entries:
-        for theme in entry.get("themes") or []:
-            by_theme.setdefault(theme, []).append(entry)
-
-    sections: list[str] = []
-    for theme in sorted(by_theme):
-        title = theme.replace("_", " ").title()
-        # Distinct resources can render identical bullets; keep one of each.
-        unique = dict.fromkeys(
-            render_attribution_bullet(e)
-            for e in sorted(by_theme[theme], key=lambda e: e["resource_name"])
-        )
-        bullets = "\n".join(unique)
-        sections.append(
-            "<details>\n"
-            "    <summary>\n"
-            f"### {title}\n"
-            "    </summary>\n"
-            f"{bullets}\n"
-            "</details>"
-        )
-    return "\n\n".join(sections) + "\n" if sections else ""
-
-
-class AttributionArtifact(MetadataArtifact):
-    """Render an attribution.mdx body from the bundle's license.json."""
-
-    name = "attribution"
-
-    def generate(self, metadata: dict[str, Any], bundle_uri: str) -> None:
-        try:
-            entries = self._read_json(bundle_uri, "license.json")
-        except Exception as exc:
-            log.info(
-                "Skipping attribution.mdx for %s: cannot read license.json (%s)",
-                bundle_uri,
-                exc,
-            )
-            return
-
-        body = render_attribution_mdx(entries or [])
-        if not body:
-            log.info("No themed entries; skipping attribution.mdx for %s", bundle_uri)
-            return
-
-        self._write_text(
-            bundle_uri, "attribution.mdx", body, content_type="text/markdown"
-        )
-        log.info("Wrote attribution.mdx to %s", bundle_uri)
-
-
-ARTIFACT_REGISTRY: dict[str, MetadataArtifact] = {
-    "license": LicenseArtifact(),
-    "attribution": AttributionArtifact(),
-}
+    existing = ARTIFACT_REGISTRY.get(artifact.name)
+    if existing is not None and existing is not artifact:
+        raise ValueError(f"Artifact {artifact.name!r} is already registered")
+    ARTIFACT_REGISTRY[artifact.name] = artifact
+    return artifact

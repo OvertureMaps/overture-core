@@ -26,8 +26,8 @@ provider drops it there or a collection DAG fetches it. A provider drop may
 have only raw data and a ``success`` marker, without ``metadata.json``.
 Ingest writes its Parquet output as a `SourceIngestBundle` under ``feeds/``;
 matching and loading into the corpus follow. When the ingest bundle is
-initialized, ``datasets_dir`` can enrich its input provenance from the Dataset
-catalogue; it does not add metadata to the raw input. The orchestrator supplies
+initialized, a caller-supplied ``provenance_resolver`` can enrich its input
+provenance; it does not add metadata to the raw input. The orchestrator supplies
 the bucket, collection and ingest steps, and metadata writer.
 
 Each bundle type defines an ordered ``partitions`` dict whose keys
@@ -68,9 +68,10 @@ classes to supply defaults.
   (the batch variants take a ``metadata_factory``).
 - `Bundle.delete` / `Bundle.cleanup_all` take an optional `TableDropper`
   to drop any catalogue tables registered for a bundle.
-- `Bundle.initialize` takes the ``datasets_dir`` used to enrich input
-  provenance from the ``overture_core`` Dataset catalogue, and an optional
-  ``source_dataset`` recorded as the bundle's own provenance.
+- `Bundle.initialize` takes an optional ``provenance_resolver`` that maps an
+  input bundle's provider/resource labels to its `Provenance`, and an optional
+  ``provenance`` recorded as the bundle's own.  The caller owns the catalogue
+  (e.g. ``overture-dataset-configs``); this package never reads one.
 - ``store`` is the `BundleStore` used for S3 access; ``None`` opens a
   fresh `S3BundleStore` per operation.  Classmethods over many bundles use
   an explicit ``store`` for all of them; otherwise each bundle uses its own,
@@ -110,10 +111,8 @@ from overture_core.bundle.cleanup import (
 from overture_core.bundle.components import BundleComponent, ComponentKind
 from overture_core.bundle.metadata import (
     BundleMetadata,
-    provenance_sections,
-)
-from overture_core.bundle.metadata import (
-    _enrich_inputs_from_dataset as _enrich_inputs_from_dataset,
+    Provenance,
+    ProvenanceResolver,
 )
 from overture_core.bundle.partitions import PartitionResolutionError
 from overture_core.bundle.partitions import _natural_key as _natural_key
@@ -134,6 +133,8 @@ __all__ = [
     "DeleteResult",
     "ModelBundle",
     "PartitionResolutionError",
+    "Provenance",
+    "ProvenanceResolver",
     "ReleaseCandidateBundle",
     "S3BundleStore",
     "ScratchBundle",
@@ -142,5 +143,4 @@ __all__ = [
     "TableDropper",
     "ThemeAssembleBundle",
     "ThemePromoteBundle",
-    "provenance_sections",
 ]

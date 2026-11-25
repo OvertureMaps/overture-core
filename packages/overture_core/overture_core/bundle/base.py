@@ -7,7 +7,6 @@ import datetime
 import logging
 from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
-from os import PathLike
 from typing import Any, ClassVar, Self, TypeVar
 from urllib.parse import urlparse
 
@@ -25,8 +24,9 @@ from overture_core.bundle.components import (
 )
 from overture_core.bundle.metadata import (
     BundleMetadata,
-    _enrich_inputs_from_dataset,
-    provenance_sections,
+    Provenance,
+    ProvenanceResolver,
+    _enrich_inputs,
 )
 from overture_core.bundle.partitions import (
     PartitionResolutionError,
@@ -46,7 +46,6 @@ from overture_core.bundle.status import (
     _metadata_section_statuses,
 )
 from overture_core.cloud.cloud import Partition
-from overture_core.dataset.dataset import Dataset
 
 log = logging.getLogger(__name__)
 
@@ -447,15 +446,15 @@ class Bundle:
         custom_metadata: dict[str, Any] | None = None,
         *,
         metadata: BundleMetadata,
-        datasets_dir: str | PathLike[str] | None = None,
-        source_dataset: Dataset | None = None,
+        provenance_resolver: ProvenanceResolver | None = None,
+        provenance: Provenance | None = None,
     ) -> None:
         """Initialize the bundle: delete the success file and write metadata.
 
         *metadata* is the `BundleMetadata` writer bound to this bundle's
-        ``base_uri``.  When *datasets_dir* is given, input bundles that carry
-        ``provider``/``resource`` are enriched with their Dataset catalogue
-        sections.  *source_dataset*, when given, is written as top-level
+        ``base_uri``.  When *provenance_resolver* is given, input bundles that
+        carry ``provider``/``resource`` are enriched with the sections it
+        returns.  *provenance*, when given, is written as top-level
         ``provider``/``resource`` sections so license artifacts credit it.
         """
         bucket, key = self._success_marker()
@@ -474,12 +473,12 @@ class Bundle:
         metadata.init(input_paths=input_paths, capture_variables=capture_variables)
         metadata.add("bundle_type", self.BUNDLE_TYPE)
 
-        if input_bundle_info and datasets_dir is not None:
-            _enrich_inputs_from_dataset(metadata, input_bundle_info, datasets_dir)
+        if input_bundle_info and provenance_resolver is not None:
+            _enrich_inputs(metadata, input_bundle_info, provenance_resolver)
 
-        if source_dataset is not None:
-            for key, value in provenance_sections(source_dataset).items():
-                metadata.add(key, value)
+        if provenance is not None:
+            metadata.add("provider", dict(provenance["provider"]))
+            metadata.add("resource", dict(provenance["resource"]))
 
         if custom_metadata:
             for key, value in custom_metadata.items():
@@ -1377,8 +1376,8 @@ class Bundle:
         per_bundle_inputs: list[list[Bundle]] | None = None,
         capture_variables: bool = True,
         custom_metadata: dict[str, Any] | None = None,
-        datasets_dir: str | PathLike[str] | None = None,
-        source_dataset: Dataset | None = None,
+        provenance_resolver: ProvenanceResolver | None = None,
+        provenance: Provenance | None = None,
         max_workers: int = 32,
         store: BundleStore | None = None,
     ) -> None:
@@ -1412,8 +1411,8 @@ class Bundle:
                 capture_variables=capture_variables,
                 custom_metadata=custom_metadata,
                 metadata=metadata_factory(bundles[i]),
-                datasets_dir=datasets_dir,
-                source_dataset=source_dataset,
+                provenance_resolver=provenance_resolver,
+                provenance=provenance,
             )
 
         _run_batch("initialize", _one, bundles, max_workers, store)

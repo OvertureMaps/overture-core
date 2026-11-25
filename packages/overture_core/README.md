@@ -58,9 +58,8 @@ covers it; only add a new row/module when nothing existing fits.
 | `stac` | STAC catalog reads/writes and the jobs that publish them (see [Jobs](#jobs)). |
 | `data` | Describing a data location and its sync configuration, independent of the mechanism used to move it. |
 | `docs` | Automating docs-repo updates for a release, via a GitHub App. |
-| `artifacts` | Release artifact types (metadata, license, attribution) and the tree-search/S3 I/O to read and write them. |
-| [`dataset`](overture_core/dataset/README.md) | Parsing, validating and rendering provider/resource dataset configs and the license policy, plus the `overture-datasets` CLI. |
-| `bundle` | The lifecycle and S3 layout for pipeline-managed bundles: `data/`, `metadata.json` and a `success` marker under Hive-style partitions, with components, status, partition resolution and retention/cleanup; `bundle.registry` maps an S3 path to its bundle type. A provider-dropped raw input may have only data and a `success` marker, without `metadata.json`; it need not have been initialized as a pipeline-managed bundle. Storage uses a pluggable `BundleStore` (S3 by default; in-memory for tests and offline tools). The caller supplies bucket/namespace choices and the metadata writer. |
+| `artifacts` | The `MetadataArtifact` base for files derived from a bundle's `metadata.json`, the tree-search helpers they use, and a registry that other packages add their artifacts to. This package registers none. |
+| `bundle` | The lifecycle and S3 layout for pipeline-managed bundles: `data/`, `metadata.json` and a `success` marker under Hive-style partitions, with components, status, partition resolution and retention/cleanup; `bundle.registry` maps an S3 path to its bundle type. A provider-dropped raw input may have only data and a `success` marker, without `metadata.json`; it need not have been initialized as a pipeline-managed bundle. Storage uses a pluggable `BundleStore` (S3 by default; in-memory for tests and offline tools). The caller supplies bucket/namespace choices, the metadata writer, and any provider/resource provenance. |
 
 ## Jobs
 
