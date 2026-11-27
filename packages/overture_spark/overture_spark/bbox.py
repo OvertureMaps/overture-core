@@ -12,6 +12,10 @@ wrong way is nudged back past the original. Each bound is the nearest float32
 on the outer side of the geometry's bound, or the one after it, so the result
 always contains the geometry.
 
+The nudge is relative (one part in 2**23), which is too small to move a value
+below the smallest normal float32 (about 1.2e-38), where float32 values are a
+fixed 2**-149 apart. Those bounds are moved by that fixed gap instead.
+
 A NULL geometry gives a struct of four NULLs, not a NULL struct.
 
 To store the bounds as another type, cast the struct to a type whose fields
@@ -28,6 +32,11 @@ BBOX_FIELDS = ("xmin", "ymin", "xmax", "ymax")
 _RND_TOWARDS_ZERO = "0.9999998807907104"
 _RND_AWAY_FROM_ZERO = "1.0000001192092896"
 
+# The smallest normal float32 (2**-126). Below it, float32 values are a fixed
+# 2**-149 apart, and the relative factors above no longer move a value.
+_MIN_NORMAL = "1.1754943508222875E-38"
+_SUBNORMAL_GAP = "CAST(1.401298464324817E-45 AS FLOAT)"
+
 
 def _next_float_below_sql(value_sql: str) -> str:
     """SQL for a float32 at or below the double ``value_sql``.
@@ -35,7 +44,10 @@ def _next_float_below_sql(value_sql: str) -> str:
     It is the nearest float32 at or below the value, or the one before it.
     """
     return (
-        f"(CASE WHEN CAST({value_sql} AS FLOAT) > {value_sql} AND {value_sql} < 0 "
+        f"(CASE WHEN CAST({value_sql} AS FLOAT) > {value_sql} "
+        f"AND abs({value_sql}) < {_MIN_NORMAL} "
+        f"THEN CAST({value_sql} AS FLOAT) - {_SUBNORMAL_GAP} "
+        f"WHEN CAST({value_sql} AS FLOAT) > {value_sql} AND {value_sql} < 0 "
         f"THEN CAST({value_sql} * {_RND_AWAY_FROM_ZERO} AS FLOAT) "
         f"WHEN CAST({value_sql} AS FLOAT) > {value_sql} "
         f"THEN CAST({value_sql} * {_RND_TOWARDS_ZERO} AS FLOAT) "
@@ -49,7 +61,10 @@ def _next_float_above_sql(value_sql: str) -> str:
     It is the nearest float32 at or above the value, or the one after it.
     """
     return (
-        f"(CASE WHEN CAST({value_sql} AS FLOAT) < {value_sql} AND {value_sql} < 0 "
+        f"(CASE WHEN CAST({value_sql} AS FLOAT) < {value_sql} "
+        f"AND abs({value_sql}) < {_MIN_NORMAL} "
+        f"THEN CAST({value_sql} AS FLOAT) + {_SUBNORMAL_GAP} "
+        f"WHEN CAST({value_sql} AS FLOAT) < {value_sql} AND {value_sql} < 0 "
         f"THEN CAST({value_sql} * {_RND_TOWARDS_ZERO} AS FLOAT) "
         f"WHEN CAST({value_sql} AS FLOAT) < {value_sql} "
         f"THEN CAST({value_sql} * {_RND_AWAY_FROM_ZERO} AS FLOAT) "

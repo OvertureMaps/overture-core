@@ -40,6 +40,9 @@ GEOMETRIES = {
         "LINESTRING (-127.99999420924175 -127.99999420924175, "
         "127.99999420924175 127.99999420924175)"
     ),
+    # Below the smallest normal float32, where a plain cast moves every bound
+    # inward and the two smallest ones become zero.
+    "subnormal": "LINESTRING (-1e-40 -1e-46, 1e-46 1e-40)",
     "exact_in_float32": "LINESTRING (-180 -1.5, 0 0.25)",
     "point": "POINT (-122.4194155 37.7749295)",
     "null": None,
@@ -164,15 +167,18 @@ class TestBboxInSpark(unittest.TestCase):
     def test_fixtures_cover_every_rounding_branch(self):
         """Guards the fixtures: a plain cast moves each of these bounds inward."""
         for name, sign in (("all_positive", 1), ("all_negative", -1)):
+            for value in self.rows[name]["exact"].values():
+                self.assertGreater(value * sign, 0)
+        for name in ("all_positive", "all_negative", "subnormal"):
             exact = self.rows[name]["exact"]
             for field in ("xmin", "ymin"):
                 with self.subTest(name=name, field=field):
-                    self.assertGreater(exact[field] * sign, 0)
                     self.assertGreater(_as_float32(exact[field]), exact[field])
             for field in ("xmax", "ymax"):
                 with self.subTest(name=name, field=field):
-                    self.assertGreater(exact[field] * sign, 0)
                     self.assertLess(_as_float32(exact[field]), exact[field])
+        self.assertEqual(_as_float32(self.rows["subnormal"]["exact"]["ymin"]), 0)
+        self.assertEqual(_as_float32(self.rows["subnormal"]["exact"]["xmax"]), 0)
 
     def test_values_float32_holds_exactly_are_unchanged(self):
         self.assertEqual(
